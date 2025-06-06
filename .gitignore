@@ -4,3 +4,6 @@ venv/
 .idea
 data/final_data.json
 data/final_data_slice.json
+data/vitality_10000_with_embeddings.json
+data/vitality_10000_marqo_ready.json
+data/vitality_10000_marqo_fixed.json

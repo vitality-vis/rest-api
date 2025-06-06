@@ -1,0 +1,26 @@
+name: rest_api
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.8  # specify your desired Python version
+  - numpy
+  - pandas
+  - flask
+  - flask-cors
+  - pydantic
+  - pymongo
+  - faiss-cpu
+  - scikit-learn
+  - requests
+  - packaging
+  - python-dotenv
+  - chromadb
+  - umap-learn
+  - pip  # required for pip-based dependencies
+  - pip:
+      - langchain
+      - langchain-core
+      - langchain-community
+      - langchain-openai
+      - langchain-mongodb
