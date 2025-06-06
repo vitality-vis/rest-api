@@ -60,7 +60,11 @@
 
 ### Credits
 vitaLITy was created by 
+
 <a target="_blank" href="https://www.cc.gatech.edu/~anarechania3">Arpit Narechania</a>, <a target="_blank" href="https://www.karduni.com/">Alireza Karduni</a>, <a target="_blank" href="https://wesslen.netlify.app/">Ryan Wesslen</a>, and <a target="_blank" href="https://emilywall.github.io/">Emily Wall</a>.
+
+<a target="_blank" href="https://arpitnarechania.github.io">Arpit Narechania</a>, <a target="_blank" href="https://www.karduni.com/">Alireza Karduni</a>, <a target="_blank" href="https://wesslen.netlify.app/">Ryan Wesslen</a>, and <a target="_blank" href="https://emilywall.github.io/">Emily Wall</a>.
+
 
 
 ### Citation
@@ -69,7 +73,11 @@ vitaLITy was created by
   title={vitaLITy: Promoting Serendipitous Discovery of Academic Literature with Transformers \& Visual Analytics},
   author={Narechania, Arpit and Karduni, Alireza and Wesslen, Ryan and Wall, Emily},
   journal={IEEE Transactions on Visualization and Computer Graphics},
+
   year={2021},
+=======
+  year={2022},
+
   doi={10.1109/TVCG.2021.3114820},
   publisher={IEEE}
 }
@@ -80,4 +88,7 @@ The software is available under the [MIT License](https://github.com/vitality-vi
 
 
 ### Contact
+
 If you have any questions, feel free to [open an issue](https://github.com/vitality-vis/rest-api/issues/new/choose) or contact [Arpit Narechania](https://www.cc.gatech.edu/~anarechania3).
+
+If you have any questions, feel free to [open an issue](https://github.com/vitality-vis/rest-api/issues/new/choose) or contact [Arpit Narechania](https://narechania.com).
