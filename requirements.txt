@@ -1,0 +1,40 @@
+# === Core dependencies ===
+numpy
+pandas
+scikit-learn
+umap-learn
+
+# === Web server ===
+Flask
+Flask-Cors
+gunicorn            
+
+# === Data validation ===
+pydantic>=2.0
+typing-extensions
+
+# === HTTP + env ===
+requests
+python-dotenv
+packaging
+
+# === Embedding + local LLM ===
+sentence-transformers
+transformers
+torch
+accelerate          
+safetensors        
+huggingface-hub     
+
+# === Vector DB ===
+chromadb
+
+# === LangChain ecosystem ===
+langchain
+langchain-core
+langchain-community
+langchain-openai   
+
+# === Optional utilities ===
+tqdm
+colorama

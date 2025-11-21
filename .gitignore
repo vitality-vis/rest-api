@@ -1,0 +1,11 @@
+venv/
+.DS_Store
+.pyc
+.idea
+data/VitaLITy-2.0.0.json
+data/VitaLITy-2.0.0_final.json
+data.db
+.env
+config.py
+__pycache__/
+chroma_db/
