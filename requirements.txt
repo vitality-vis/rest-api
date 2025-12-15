@@ -7,7 +7,9 @@ umap-learn
 # === Web server ===
 Flask
 Flask-Cors
-gunicorn            
+Flask-SocketIO
+gunicorn
+python-socketio            
 
 # === Data validation ===
 pydantic>=2.0
@@ -38,3 +40,6 @@ langchain-openai
 # === Optional utilities ===
 tqdm
 colorama
+
+# === Logging ===
+google-cloud-logging

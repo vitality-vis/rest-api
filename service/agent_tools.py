@@ -273,7 +273,17 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
                     k.lower(): next((v for v in vals if v), "").strip()
                     for k, *vals in matches
                 }
-        elif not isinstance(filters, dict):
+        
+        # Handle case where filters is a list (malformed agent call)
+        if isinstance(filters, list):
+            logging.warning(f"[metadata_search] Received list instead of dict, attempting conversion: {filters}")
+            # Try to convert list to dict if possible
+            if len(filters) > 0 and isinstance(filters[0], dict):
+                filters = filters[0]  # Use first dict in list
+            else:
+                filters = {}  # Empty dict as fallback
+        
+        if not isinstance(filters, dict):
             return "❌ Invalid input: filters must be a JSON string or dict."
     except Exception as e:
         logging.error(f"[metadata_search] Parse error: {e}")
@@ -495,16 +505,23 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
         return Document(page_content="\n".join(parts), metadata=meta_norm)
 
     if chat_id not in SESSIONS:
-        SESSIONS[chat_id] = {"docs": []}
-    # SESSIONS[chat_id]["docs"] = [make_doc(d) for d in results]
+        SESSIONS[chat_id] = {"docs": [], "mem": None}
+    
+    # Ensure docs key exists in session
     session = SESSIONS.get(chat_id)
+    if "docs" not in session:
+        session["docs"] = []
+    
+    # Add docs to session
+    session["docs"].extend([make_doc(d) for d in results])
+    
+    # Also add to turn buffer
     turn_buffer = session.setdefault("_turn_docs", [])
     turn_buffer.extend([make_doc(d) for d in results])
     logging.info(f"[metadata_search] ✅ Saved {len(results)} docs to chat_id={chat_id}")
 
     # Sync with structured memory
-    session = SESSIONS.get(chat_id)
-    if session and "mem" in session:
+    if session and "mem" in session and session["mem"] is not None:
         session["mem"].set_docs(session["docs"])
 
     # Format output for display

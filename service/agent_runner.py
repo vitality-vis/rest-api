@@ -186,6 +186,7 @@ def get_or_create_chat_session(chat_id):
         "agent": agent,
         "mem": MemoryManager(),
         "_turn_docs": [],
+        "docs": [],  # Required for metadata_search to work
     }
 
     return SESSIONS[chat_id]

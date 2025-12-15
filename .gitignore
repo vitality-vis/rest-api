@@ -9,3 +9,11 @@ data.db
 config.py
 __pycache__/
 chroma_db/
+
+# Google Cloud credentials - NEVER commit these!
+*-key.json
+*-credentials.json
+service-account*.json
+.gcp/
+gcp-*.json
+vitality-*-logging-*.json

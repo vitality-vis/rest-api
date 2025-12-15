@@ -11,20 +11,20 @@ from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesP
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.runnables import Runnable, RunnableBranch, RunnableLambda, RunnablePassthrough
 # from langchain_ollama import ChatOllama
-from langchain_core.embeddings import Embeddings 
-from service.embed_chroma import LocalSpecterEmbedding, LocalSentenceTransformerEmbedding 
-import chromadb  
-from pydantic import Field, model_validator 
+from langchain_core.embeddings import Embeddings
+from service.embed_chroma import LocalSpecterEmbedding, LocalSentenceTransformerEmbedding
+import chromadb
+from pydantic import Field, model_validator
 import config
 from prompt import RESPONSE_TEMPLATE, LITERATURE_REVIEW_PROMPT, SUMMARIZE_PROMPT, REPHRASE_TEMPLATE
-import numpy as np 
-import logging 
+import numpy as np
 import os
 from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
+from logger_config import get_logger
 
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Use centralized logger
+logging = get_logger()
 
 load_dotenv(path.join(config.PROJ_ROOT_DIR, '.env'))
 
@@ -528,9 +528,7 @@ from langchain_openai import AzureChatOpenAI
 import re
 from dataclasses import dataclass
 
-
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Note: Centralized logger already initialized at top of file
 
 load_dotenv(path.join(config.PROJ_ROOT_DIR, '.env'))
 

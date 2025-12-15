@@ -6,8 +6,14 @@ load_dotenv()
 
 import json
 import numpy as np
-import logging  
 from datetime import datetime
+from logger_config import setup_logger
+
+# Initialize centralized logger (with Google Cloud Logging)
+# Note: Import as custom_logger to avoid shadowing the logging module
+from logger_config import get_logger
+import logging as logging_module
+logger = get_logger()
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO, emit
@@ -45,26 +51,34 @@ def get_rag_agent():
         _rag_agent = build_agent()
     return _rag_agent
 
-# Configure logging (consistent with embed_chroma.py or adjust as needed)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # ===== Flask + SocketIO Init =====
 app = Flask(__name__, static_folder='./build', static_url_path='/')
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type'
-socketio = SocketIO(app, cors_allowed_origins=['http://localhost:8080'])
+socketio = SocketIO(app, cors_allowed_origins=[
+    'http://localhost:8080',  # User study dev server
+    'http://localhost:8081'   # Standalone dev server
+])
+
+# Configure Flask's logger to work with our custom logger
+app.logger.handlers = logger.handlers
+app.logger.setLevel(logger.level)
+
+# Reduce SocketIO/engineio logging noise (set to WARNING to only show important messages)
+logging_module.getLogger('socketio').setLevel(logging_module.WARNING)
+logging_module.getLogger('engineio').setLevel(logging_module.WARNING)
 
 # ===== SocketIO Event Handlers =====
 @socketio.on('connect')
 def handle_connect(auth):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    logging.info(f'[{timestamp}] WebSocket Client connected: {request.sid}')
+    logger.info(f'[{timestamp}] WebSocket Client connected: {request.sid}')
     emit('connected', {'data': 'Connected to Flask-SocketIO server'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    logging.info(f'[{timestamp}] WebSocket Client disconnected: {request.sid}')
+    logger.info(f'[{timestamp}] WebSocket Client disconnected: {request.sid}')
 
 
 ##############insertion#######################
@@ -73,26 +87,29 @@ def handle_log_event(data):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
         print("✅ PYTHON SERVER - Received log_event!")
-        log_data = {
-            "event": {
-                "name": data.get("eventName"),
-                "source": "socket"
-            },
-            "user": {
-                "user_id": data.get("userId"),
-                "session_id": data.get("sessionId"),
-                "study_id": data.get("studyId")
-            },
-            "data": data.get("eventData")
-        }
-        logging.info(log_data)
-        # logging.info(f'[{timestamp}] Socket Event - User ID: {data["userId"]} | Session ID: {data["sessionId"]} | Event: {data["eventName"]} | Data: {json.dumps(data["eventData"])}') # keyerror and exception logger error handling, display raw data
+
+        # Extract event details
+        event_name = data.get("eventName", "unknown_event")
+        user_id = data.get("userId")
+        session_id = data.get("sessionId")
+        study_id = data.get("studyId")
+        event_data = data.get("eventData")
+
+        # Log detailed information to TERMINAL and GCP (automatically sent to both)
+        logger.info(
+            f"[{timestamp}] Socket Event - "
+            f"Event: {event_name} | "
+            f"User ID: {user_id} | "
+            f"Session ID: {session_id} | "
+            f"Study ID: {study_id} | "
+            f"Data: {json.dumps(event_data)}"
+        )
     except KeyError as e:
-        logging.error(f"[{timestamp}] Couldn't process the following: {e}")
-        logging.info(f"Raw data received: {data}")
+        logger.error(f"[{timestamp}] Couldn't process the following: {e}")
+        logger.info(f"Raw data received: {data}")
     except Exception as e:
-        logging.error(f"[{timestamp}] An error occured during logging event: {e}")
-        logging.info(f"Raw data received: {data}")
+        logger.error(f"[{timestamp}] An error occured during logging event: {e}")
+        logger.info(f"Raw data received: {data}")
 
 
 
@@ -140,7 +157,7 @@ def get_papers():
         max_citation_counts=input_payload.get('max_citation_counts'),
         id_list=input_payload.get('id_list'),
         offset=int(input_payload.get('offset', 0)),
-        limit=int(input_payload.get('limit', 50))
+        limit=int(input_payload.get('limit', 1000))
     )
     return jsonify(query_docs(query))
 
@@ -220,7 +237,7 @@ def get_similar_papers_by_abstract():
         elif embedding_type == EMBED.SPECTER:
             query_embedding = embed_service.specter_embedding({'Title': title_text, 'Abstract': abstract_text})
         else:
-            logging.error(f"Unsupported embedding type: {embedding_type}")
+            logger.error(f"Unsupported embedding type: {embedding_type}")
             return jsonify({"message": f"Unsupported embedding type: {embedding_type}"}), 400
 
         # Handle nested embeddings safely
@@ -230,13 +247,13 @@ def get_similar_papers_by_abstract():
                 query_embedding = first
 
         if not query_embedding or not isinstance(query_embedding, (list, np.ndarray)):
-            logging.error(f"Invalid or empty embedding: {query_embedding}")
+            logger.error(f"Invalid or empty embedding: {query_embedding}")
             return jsonify({"message": "Failed to generate embedding"}), 500
 
         query_embedding_np = np.array(query_embedding)
         query_embedding_norm = np.linalg.norm(query_embedding_np)
-        logging.debug(f"Real-time query_embedding L2 Norm: {query_embedding_norm:.6f}")
-        logging.debug(f"[Embedding] Final query embedding length: {len(query_embedding)}")
+        logger.debug(f"Real-time query_embedding L2 Norm: {query_embedding_norm:.6f}")
+        logger.debug(f"[Embedding] Final query embedding length: {len(query_embedding)}")
 
         language_filter = {"lang": query_lang} if query_lang and query_lang != "all" else {}
 
@@ -251,8 +268,8 @@ def get_similar_papers_by_abstract():
         return jsonify(results)
 
     except Exception as e:
-        logging.error(f"Error in get_similar_papers_by_abstract: {e}")
-        traceback.print_exc()  
+        logger.error(f"Error in get_similar_papers_by_abstract: {e}")
+        traceback.print_exc()
         return jsonify({"message": f"Internal server error: {e}"}), 500
 
 @app.route('/getSimilarPapers', methods=['POST'])
@@ -317,7 +334,7 @@ def get_similar_papers():
         return jsonify(results)
 
     except Exception as e:
-        logging.error(f"Error in get_similar_papers: {e}")
+        logger.error(f"Error in get_similar_papers: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"message": f"Internal server error: {e}"}), 500
@@ -356,7 +373,7 @@ from flask_cors import cross_origin
 @cross_origin()
 def chat():
     """
-    Stable streaming endpoint
+    Unified streaming endpoint for both normal chat and RAG chat
     --------------------------------
     ✔ No event-loop destruction
     ✔ No 'Task was destroyed but it is pending!'
@@ -367,11 +384,46 @@ def chat():
     data = request.get_json(force=True) or {}
     text = data.get('text', '').strip()
     chat_id = data.get('chat_id', 'default')
+    mode = data.get('mode', 'normal')
+    chat_history_raw = data.get('chat_history_raw', [])
 
     if not text:
         return Response("Please Input Your Text", status=400)
 
-    # ---- Create ONE event loop for this request ----
+    # ---- NORMAL CHAT MODE ----
+    if mode == 'normal':
+        # Convert chat_history_raw to LangChain message format
+        from langchain.schema import HumanMessage, AIMessage
+        messages = []
+        for msg in chat_history_raw:
+            if msg.get('role') == 'user':
+                messages.append(HumanMessage(content=msg.get('text', '')))
+            elif msg.get('role') == 'ai':
+                messages.append(AIMessage(content=msg.get('text', '')))
+
+        # Add current query
+        messages.append(HumanMessage(content=text))
+
+        # Stream normal chat response
+        def stream_normal():
+            try:
+                for chunk in llm.stream(messages):
+                    if chunk.content:
+                        yield chunk.content
+            except Exception as e:
+                logger.error(f"Error in normal chat: {e}")
+                import traceback
+                traceback.print_exc()
+                yield f"Error: {str(e)}"
+
+        return Response(
+            stream_normal(),
+            status=200,
+            mimetype="text/plain"
+        )
+
+    # ---- RAG CHAT MODE ----
+    # Create ONE event loop for this request
     loop = asyncio.new_event_loop()
 
     # Run async generator inside this loop
@@ -461,12 +513,19 @@ def get_umap_points():
 @app.route('/getMetaData', methods=['GET'])
 @cross_origin()
 def get_metas():
+    # Use cached metadata instead of computing it every time
+    cached_metadata = cached_data.get_aggregated_metadata()
+    if cached_metadata:
+        return jsonify(cached_metadata)
+
+    # Fallback to real-time computation if cache is not available
+    logger.warning("⚠️ Metadata cache not available, computing in real-time (slow)")
     return jsonify({
         'authors_summary': chroma.get_distinct_authors_with_counts(),
         'sources_summary': chroma.get_distinct_sources_with_counts(),
         'keywords_summary': chroma.get_distinct_keywords_with_counts(),
         'years_summary': chroma.get_distinct_years_with_counts(),
-        'titles': chroma.get_distinct_titles(),
+        # 'titles': chroma.get_distinct_titles(),
         'citation_counts': chroma.get_distinct_citation_counts()
     })
 

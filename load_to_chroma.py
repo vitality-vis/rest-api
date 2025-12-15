@@ -3,10 +3,10 @@ import os
 import chromadb
 from tqdm import tqdm
 import numpy as np
-import logging
+from logger_config import get_logger
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Use centralized logger
+logging = get_logger()
 
 # Configure embedding field to collection name mapping
 embed_collection_map = {

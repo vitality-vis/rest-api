@@ -2,11 +2,12 @@ from typing import List, Dict, Union
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
-import logging
-from transformers import AutoTokenizer, AutoModel 
-from langchain_core.embeddings import Embeddings 
+from transformers import AutoTokenizer, AutoModel
+from langchain_core.embeddings import Embeddings
+from logger_config import get_logger
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Use centralized logger
+logging = get_logger()
 
 # === Constants ===
 MAX_BATCH_SIZE = 16

@@ -2,14 +2,18 @@ import json
 import numpy as np
 from typing import List, Dict, Any
 import config
-from model.const import EMBED 
+from model.const import EMBED
 from model.chroma import ChromaQuerySchema
-import chromadb 
-import logging 
-import math 
+import chromadb
+import math
 
 from typing import Optional
 from pydantic import BaseModel
+from logger_config import get_logger
+
+# Use centralized logger
+logging = get_logger()
+
 class ChromaQuerySchema(BaseModel):
     title: Optional[str] = None
     abstract: Optional[str] = None
@@ -21,8 +25,6 @@ class ChromaQuerySchema(BaseModel):
     id_list: Optional[List[str]] = None
     offset: int = 0
     limit: Optional[int] = None  # ✅ make it optional
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 CHROMA_PATH = "chroma_db"
 COLLECTION_MAPPING = {
@@ -41,6 +43,50 @@ except Exception as e:
 _ready_docs_cache = None
 _all_docs_cache = None
 _ready_docs_by_id = None
+_all_papers_cache = {}  # Cache papers by collection name
+
+def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER):
+    """Load all papers from ChromaDB into memory cache at startup"""
+    global _all_papers_cache
+
+    if _chroma_client is None:
+        logging.error("Cannot load papers to cache: ChromaDB client not initialized")
+        return
+
+    collection_name = COLLECTION_MAPPING.get(embedding_type)
+    if not collection_name:
+        logging.error(f"No collection found for embedding type: {embedding_type}")
+        return
+
+    try:
+        logging.info(f"🔄 Loading all papers from {collection_name} into memory cache...")
+        collection = _chroma_client.get_collection(collection_name)
+        results = collection.get(include=["metadatas"])
+
+        # Pre-format all papers for frontend
+        cached_papers = []
+        for metadata in results.get("metadatas", []):
+            if metadata:
+                cached_papers.append(format_doc_for_frontend(metadata))
+
+        _all_papers_cache[collection_name] = cached_papers
+        logging.info(f"✅ Cached {len(cached_papers)} papers in memory for {collection_name}")
+
+    except Exception as e:
+        logging.error(f"Failed to load papers to cache: {e}", exc_info=True)
+        _all_papers_cache[collection_name] = []
+
+def get_cached_papers(embedding_type: str = EMBED.SPECTER):
+    """Get cached papers or load them if not cached"""
+    collection_name = COLLECTION_MAPPING.get(embedding_type)
+    if not collection_name:
+        return []
+
+    # If not cached yet, load now
+    if collection_name not in _all_papers_cache:
+        load_all_papers_to_cache(embedding_type)
+
+    return _all_papers_cache.get(collection_name, [])
 
 # def query_docs(query: ChromaQuerySchema):
 #     docs = get_ready_docs()
@@ -105,29 +151,19 @@ _ready_docs_by_id = None
 
 
 def query_docs(query: ChromaQuerySchema, embedding_type: str = EMBED.SPECTER):
-    if _chroma_client is None:
-        return {"papers": [], "total": 0}
-
     try:
-        collection_name = COLLECTION_MAPPING.get(embedding_type)
-        if not collection_name:
-            logging.error(f"No collection found for embedding type: {embedding_type}")
+        # Use cached papers instead of querying ChromaDB every time
+        all_papers = get_cached_papers(embedding_type)
+
+        if not all_papers:
+            logging.warning("No cached papers available")
             return {"papers": [], "total": 0}
 
-        collection = _chroma_client.get_collection(collection_name)
-
-        if query.id_list:
-            results = collection.get(
-                where={"ID": {"$in": [str(i) for i in query.id_list]}},
-                include=["metadatas"]
-            )
-        else:
-            results = collection.get(include=["metadatas"])
-
+        # Filter papers based on query criteria
         docs = []
-        for metadata in results.get("metadatas", []):
-            if metadata and match_doc(metadata, query):
-                docs.append(format_doc_for_frontend(metadata))
+        for paper in all_papers:
+            if match_doc(paper, query):
+                docs.append(paper)
 
         total_count = len(docs)  # Count BEFORE pagination
         offset = int(query.offset or 0)
