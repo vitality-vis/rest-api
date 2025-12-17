@@ -57,7 +57,8 @@ cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type'
 socketio = SocketIO(app, cors_allowed_origins=[
     'http://localhost:8080',  # User study dev server
-    'http://localhost:8081'   # Standalone dev server
+    'http://localhost:8081', # standalone
+    'https://vitality.mathcs.emory.edu'  # Production  server
 ])
 
 # Configure Flask's logger to work with our custom logger
@@ -373,7 +374,7 @@ from flask_cors import cross_origin
 @cross_origin()
 def chat():
     """
-    Unified streaming endpoint for both normal chat and RAG chat
+    Stable streaming endpoint
     --------------------------------
     ✔ No event-loop destruction
     ✔ No 'Task was destroyed but it is pending!'
@@ -384,46 +385,11 @@ def chat():
     data = request.get_json(force=True) or {}
     text = data.get('text', '').strip()
     chat_id = data.get('chat_id', 'default')
-    mode = data.get('mode', 'normal')
-    chat_history_raw = data.get('chat_history_raw', [])
 
     if not text:
         return Response("Please Input Your Text", status=400)
 
-    # ---- NORMAL CHAT MODE ----
-    if mode == 'normal':
-        # Convert chat_history_raw to LangChain message format
-        from langchain.schema import HumanMessage, AIMessage
-        messages = []
-        for msg in chat_history_raw:
-            if msg.get('role') == 'user':
-                messages.append(HumanMessage(content=msg.get('text', '')))
-            elif msg.get('role') == 'ai':
-                messages.append(AIMessage(content=msg.get('text', '')))
-
-        # Add current query
-        messages.append(HumanMessage(content=text))
-
-        # Stream normal chat response
-        def stream_normal():
-            try:
-                for chunk in llm.stream(messages):
-                    if chunk.content:
-                        yield chunk.content
-            except Exception as e:
-                logger.error(f"Error in normal chat: {e}")
-                import traceback
-                traceback.print_exc()
-                yield f"Error: {str(e)}"
-
-        return Response(
-            stream_normal(),
-            status=200,
-            mimetype="text/plain"
-        )
-
-    # ---- RAG CHAT MODE ----
-    # Create ONE event loop for this request
+    # ---- Create ONE event loop for this request ----
     loop = asyncio.new_event_loop()
 
     # Run async generator inside this loop
@@ -525,7 +491,7 @@ def get_metas():
         'sources_summary': chroma.get_distinct_sources_with_counts(),
         'keywords_summary': chroma.get_distinct_keywords_with_counts(),
         'years_summary': chroma.get_distinct_years_with_counts(),
-        # 'titles': chroma.get_distinct_titles(),
+        'titles': chroma.get_distinct_titles(),
         'citation_counts': chroma.get_distinct_citation_counts()
     })
 
@@ -683,9 +649,12 @@ def reset_memory():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
+cached_data.init()
+
+
 # === Start the Flask-SocketIO server ===
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
-    cached_data.init()
+    #cached_data.init()
     print(f"🚀 Starting Flask-SocketIO server on http://localhost:{port}")
     socketio.run(app, host="0.0.0.0", port=port, debug=False)

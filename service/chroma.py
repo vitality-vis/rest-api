@@ -1260,20 +1260,10 @@ SIMILARITY_DECAY_ALPHA = 3.0
 def format_doc_for_frontend(doc: dict, score_key="_score") -> dict:
     distance = doc.get(score_key)
     final_sim_value = 0.0
-
-    for key in ["ada_umap", "glove_umap", "specter_umap"]:
-        val = doc.get(key)
-        if isinstance(val, str):
-            try:
-                doc[key] = json.loads(val)
-            except json.JSONDecodeError:
-                doc[key] = None
-
-    # compute similarity from distance
     try:
         float_distance = float(distance) if distance is not None else float("nan")
         if not math.isnan(float_distance):
-            final_sim_value = max(0.0, min(1.0, math.exp(-SIMILARITY_DECAY_ALPHA * float_distance)))
+            final_sim_value = 1.0 / (1.0 + float_distance)
     except Exception as e:
         logging.warning(f"Distance parse error for doc {doc.get('ID')}: {e}")
 
@@ -1287,6 +1277,15 @@ def format_doc_for_frontend(doc: dict, score_key="_score") -> dict:
     if isinstance(keywords, str):
         keywords = [k.strip() for k in keywords.split(",") if k.strip()]
 
+    # Parse UMAP coordinates (stored as JSON strings in ChromaDB)
+    def parse_coords(val):
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except:
+                return None
+        return val
+
     # return formatted dict
     return {
         "ID": doc.get("ID"),
@@ -1296,10 +1295,11 @@ def format_doc_for_frontend(doc: dict, score_key="_score") -> dict:
         "Keywords": keywords,
         "Source": doc.get("Source", ""),
         "Year": doc.get("Year"),
+        "CitationCounts": doc.get("CitationCounts"),
         "_Sim": final_sim_value,
         "Sim": final_sim_value,
         "score": final_sim_value,
-        "ada_umap": doc.get("ada_umap"),
-        "glove_umap": doc.get("glove_umap"),
-        "specter_umap": doc.get("specter_umap"),
+        "ada_umap": parse_coords(doc.get("ada_umap")),
+        "glove_umap": parse_coords(doc.get("glove_umap")),
+        "specter_umap": parse_coords(doc.get("specter_umap")),
     }

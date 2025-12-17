@@ -4,13 +4,34 @@ import torch
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModel
 from langchain_core.embeddings import Embeddings
+from tqdm import tqdm
 from logger_config import get_logger
+
+# === New Imports for Azure OpenAI ===
+import os
+from openai import AzureOpenAI
 
 # Use centralized logger
 logging = get_logger()
 
 # === Constants ===
 MAX_BATCH_SIZE = 16
+
+# ==========================================
+# Azure OpenAI Configuration
+# ==========================================
+AZURE_EMBED_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_EMBED_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
+AZURE_EMBED_API_VERSION = os.getenv("AZURE_OPENAI_EMBED_API_VERSION")
+
+# Initialize Azure Client
+# Ensure these environment variables are set before running
+embed_client = AzureOpenAI(
+    api_version=AZURE_EMBED_API_VERSION,
+    azure_endpoint=AZURE_EMBED_ENDPOINT,
+    api_key=AZURE_EMBED_API_KEY
+)
 
 
 
@@ -91,9 +112,15 @@ class LocalSpecterEmbedding(Embeddings):
         return embeddings
 
 
-ada_model_instance = LocalSentenceTransformerEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# ==========================================
+# Model Instantiation
+# ==========================================
+# NOTE: Ada model is now handled via Azure OpenAI API, so we do NOT instantiate a local model for it.
+
+# Glove Model (Still Local)
 glove_model_instance = LocalSentenceTransformerEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
+# Specter Model (Still Local)
 specter_model_instance = LocalSpecterEmbedding(model_name="allenai/specter")
 
 
@@ -119,11 +146,35 @@ specter_model_instance = LocalSpecterEmbedding(model_name="allenai/specter")
 #         logging.error(f"Error generating ADA embedding for text: '{abstract_text[:50]}...': {e}")
 #         return []
 
-def ada_embedding(text_to_embed: str) -> List[float]:
-    if not text_to_embed:
-       logging.warning("No abstract found for ADA embedding. Returning empty list.")
+# ==========================================
+# Embedding Functions
+# ==========================================
+def ada_embedding(text_to_embed: Union[str, Dict]) -> List[float]:
+    """
+    Generates embeddings using Azure OpenAI (Ada).
+    Accepts string or dictionary (extracting 'abstract').
+    """
+    # 1. Handle Input Types
+    if isinstance(text_to_embed, dict):
+        text_to_embed = text_to_embed.get('abstract', '')
+
+    # 2. Validation
+    if not text_to_embed or not isinstance(text_to_embed, str):
+       logging.warning("No valid text found for ADA embedding. Returning empty list.")
        return []
-    return ada_model_instance.embed_query(text_to_embed)
+
+    # 3. Call Azure OpenAI
+    try:
+        response = embed_client.embeddings.create(
+            model=AZURE_EMBED_DEPLOYMENT,
+            input=[text_to_embed]  # API expects a list
+        )
+        # Extract embedding
+        embedding = response.data[0].embedding
+        return embedding
+    except Exception as e:
+        logging.error(f"Error generating Azure OpenAI Ada embedding: {e}")
+        return []
 
 
 # # === Glove Embedding (local SentenceTransformer model) ===
@@ -146,11 +197,32 @@ def ada_embedding(text_to_embed: str) -> List[float]:
 #         logging.error(f"Error generating Glove embedding for text: '{text_to_embed[:50]}...': {e}")
 #         return []
 
-def glove_embedding(text_to_embed: str) -> List[float]:
-    if not text_to_embed:
-        logging.warning("No text found for Glove embedding. Returning empty list.")
+def glove_embedding(text_to_embed: Union[str, Dict]) -> List[float]:
+    """
+    Generates Glove-like embeddings using local SentenceTransformer.
+    Robustly handles dict inputs by checking 'abstract', 'text', and 'Title'.
+    """
+    # 1. Handle Dictionary Input (Extract text safely)
+    if isinstance(text_to_embed, dict):
+        # Try 'abstract' first, then 'text', then 'Title', then combine them if needed
+        extracted_text = text_to_embed.get('abstract') or text_to_embed.get('text') or text_to_embed.get('Title')
+        # If still nothing, try lowercase keys
+        if not extracted_text:
+             extracted_text = text_to_embed.get('title', '')
+        text_to_embed = extracted_text
+
+    # 2. Validation
+    if not text_to_embed or not isinstance(text_to_embed, str) or not text_to_embed.strip():
+        logging.warning("[Glove] No valid text found to embed. Returning empty list.")
         return []
-    return glove_model_instance.embed_query(text_to_embed)
+
+    # 3. Generate Embedding
+    try:
+        # logging.info(f"[Glove] Embedding text: {text_to_embed[:30]}...") # Uncomment to debug
+        return glove_model_instance.embed_query(text_to_embed)
+    except Exception as e:
+        logging.error(f"[Glove] Error during embedding generation: {e}")
+        return []
 
 
 
