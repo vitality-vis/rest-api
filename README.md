@@ -1,69 +1,172 @@
-# vitaLITy - REST API
+# VitaLITy 2.0 - REST API
 
-### Requirements: 
-- Python 3.8+
-- [Conda](https://docs.conda.io/en/latest/) *(similar to virtualenv + pip)*
+Backend API server for VitaLITy, built with Flask, ChromaDB, and LangChain.
 
-### Setup
-- Create a new environment: `conda create --name env_vitality_rest_api anaconda` or `conda create --name env_vitality_rest_api python=3.8` (based on specific python version)
-- Activate the environment: `conda activate env_vitality_rest_api`
-- Add conda-forge to the channel: `conda config --append channels conda-forge`
-- Install requirements: `conda install --yes --file requirements.txt`
+---
 
-### Run
-- Configure options pertaining to the input data source, its type in `config.py` 
-- `python server.py` - wait until you see three logs: "loaded data" and "created query index for glove" and "created query index for specter"; this may take 3-4 minutes and look like the below screenshot:
-![Logs](run.png "Logs on successful run")
+## Requirements
 
-- The REST-API will then be available at `http://localhost:3000`. Use this in the [frontend](https://github.com/vitality-vis/frontend)/src/components/App.tsx file as the `baseUrl` variable.
+- Python 3.9+
+- Azure OpenAI API access (for LLM features)
 
+---
 
-### API configuration
-- GET /getPapers(): Returns all papers
-- POST /getSimilarPapers(): Returns similar papers by ID, Title
-    ```json
-    {
-        "input_data": ["An Intermittent Click Planning Model.", "Tool Extension in Human-Computer Interaction."], // [list<Title>], [list<ID>] depending on the input_type below
-        "input_type": "Title", // Title, ID
-        "limit": 3, // any number less than the number of papers available.
-        "embedding": "glove", //glove, specter
-        "dimensions": "2D" // 2D, nD
-    }
-    ```
-    
-- POST /getSimilarPapersByKeyword(): Returns similar papers by Keywords
-    ```json
-    {
-        "input_data": ["DaTa VisUaLiSAtion"], // [list<Keywords>], case insensitive
-        "limit": 3, // any number, -1 for all
-    }
-    ```
-    
-- POST /getSimilarPapersByAbstract(): Returns similar papers by Abstract and Title
-    ```json
-    {
+## Setup
+
+### 1. Create Virtual Environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+### 2. Install Dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 3. Configure Environment Variables
+
+Create a `.env` file in the project root:
+
+```bash
+# Azure OpenAI (required for LLM features)
+AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2025-04-01-preview
+AZURE_OPENAI_DEPLOYMENT=your-deployment-name
+AZURE_OPENAI_API_KEY=your-api-key
+
+# Azure OpenAI Embeddings
+AZURE_OPENAI_EMBED_DEPLOYMENT=text-embedding-3-small
+AZURE_OPENAI_EMBED_API_VERSION=2024-02-01
+
+# Optional: Semantic Scholar API
+SEMANTIC_SCHOLAR_API_KEY=your-key
+```
+
+### 4. Load Data into ChromaDB
+
+```bash
+python load_to_chroma.py
+```
+
+This creates the vector database in `chroma_db/` from `data/VitaLITy-2.0.0_final.json`.
+
+---
+
+## Run
+
+### Development
+
+```bash
+python main_chroma.py
+```
+
+The API will be available at `http://localhost:8000`.
+
+### Production (with Gunicorn)
+
+```bash
+pip install gunicorn eventlet
+gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main_chroma:app
+```
+
+---
+
+## API Endpoints
+
+### Paper Retrieval
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/getPapers` | POST | Get papers by IDs or titles |
+| `/getSimilarPapers` | POST | Find similar papers by embedding |
+| `/getSimilarPapersByAbstract` | POST | Find similar papers by abstract text |
+| `/getUmapPoints` | GET | Get 2D UMAP coordinates for visualization |
+| `/getMetaData` | GET | Get metadata for UI filters |
+
+### LLM Features
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/chat` | POST | Chat with LLM about selected papers |
+| `/summarize` | POST | Summarize selected papers |
+| `/literatureReview` | POST | Generate a literature review |
+
+### Example Requests
+
+**Get Similar Papers:**
+```json
+POST /getSimilarPapers
+{
+    "input_data": ["Paper Title 1", "Paper Title 2"],
+    "input_type": "Title",
+    "limit": 10,
+    "embedding": "ada",
+    "dimensions": "2D"
+}
+```
+
+**Find Papers by Abstract:**
+```json
+POST /getSimilarPapersByAbstract
+{
     "input_data": {
-        "title": "Any WIP Title", // string
-        "abstract": "Any WIP abstract" // string
+        "title": "My Paper Title",
+        "abstract": "This paper explores..."
     },
-    "limit": 3
-    }
-    ```
+    "limit": 10
+}
+```
 
-- POST /checkoutPapers(): Download a list of dictionaries (JSON) of papers by ID, Title.
-    ```json
-    {
-        "input_data": ["An Intermittent Click Planning Model.", "Tool Extension in Human-Computer Interaction."], // [list<Title>], [list<ID>] depending on the input_type below
-        "input_type": "Title" // Title, ID
-    }
-    ```
+**Chat with Papers:**
+```json
+POST /chat
+{
+    "papers": [...],
+    "message": "What are the main themes in these papers?"
+}
+```
 
-### Credits
-vitaLITy was created by 
+---
+
+## Project Structure
+
+```
+rest-api-main/
+├── main_chroma.py      # Main Flask application
+├── config.py           # Configuration settings
+├── load_to_chroma.py   # Script to load data into ChromaDB
+├── prompt.py           # LLM prompts
+├── requirements.txt    # Python dependencies
+├── .env                # Environment variables (not committed)
+├── data/
+│   └── VitaLITy-2.0.0_final.json  # Paper data with embeddings
+├── chroma_db/          # ChromaDB vector database
+├── service/            # Query and RAG functions
+├── model/              # Constants and schemas
+└── extension/          # Data caching
+```
+
+---
+
+## Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for VM deployment instructions.
+
+---
+
+## Credits
+
+VitaLITy was created by 
 <a target="_blank" href="https://arpitnarechania.github.io">Arpit Narechania</a>, <a target="_blank" href="https://www.karduni.com/">Alireza Karduni</a>, <a target="_blank" href="https://wesslen.netlify.app/">Ryan Wesslen</a>, and <a target="_blank" href="https://emilywall.github.io/">Emily Wall</a>.
 
+---
 
-### Citation
+## Citation
+
 ```bibTeX
 @article{narechania2021vitality,
   title={vitaLITy: Promoting Serendipitous Discovery of Academic Literature with Transformers \& Visual Analytics},
@@ -75,9 +178,14 @@ vitaLITy was created by
 }
 ```
 
-### License
+---
+
+## License
+
 The software is available under the [MIT License](https://github.com/vitality-vis/rest-api/blob/master/LICENSE).
 
+---
 
-### Contact
+## Contact
+
 If you have any questions, feel free to [open an issue](https://github.com/vitality-vis/rest-api/issues/new/choose) or contact [Arpit Narechania](https://narechania.com).
