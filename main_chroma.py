@@ -80,7 +80,7 @@ def handle_disconnect():
 
 ##############insertion#######################
 @socketio.on('log_event')
-def handle_log_event(data):
+def handle_log_event(data, callback=None):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
         print("PYTHON SERVER - Received log_event!")
@@ -101,12 +101,23 @@ def handle_log_event(data):
             f"Study ID: {study_id} | "
             f"Data: {json.dumps(event_data)}"
         )
+
+        # Send acknowledgment to client
+        if callback:
+            callback({"status": "success", "timestamp": timestamp})
+
     except KeyError as e:
         logger.error(f"[{timestamp}] Couldn't process the following: {e}")
         logger.info(f"Raw data received: {data}")
+        # Send error acknowledgment
+        if callback:
+            callback({"status": "error", "message": f"KeyError: {str(e)}"})
     except Exception as e:
         logger.error(f"[{timestamp}] An error occured during logging event: {e}")
         logger.info(f"Raw data received: {data}")
+        # Send error acknowledgment
+        if callback:
+            callback({"status": "error", "message": str(e)})
 
 
 

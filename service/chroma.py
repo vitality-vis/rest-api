@@ -746,7 +746,20 @@ def get_all_metadatas_from_chroma(embedding_type: str = EMBED.SPECTER) -> List[d
 
 def get_distinct_authors(embedding_type: str = EMBED.SPECTER) -> List[str]:
     docs = get_all_metadatas_from_chroma(embedding_type)
-    return list(set(a for doc in docs for a in doc.get("Authors", []) if a))
+    authors_set = set()
+    for doc in docs:
+        authors = doc.get("Authors", "")
+        if isinstance(authors, str):
+            # Split comma-separated string into individual authors
+            for a in authors.split(","):
+                a = a.strip()
+                if a:
+                    authors_set.add(a)
+        elif isinstance(authors, list):
+            for a in authors:
+                if a and isinstance(a, str):
+                    authors_set.add(a.strip())
+    return list(authors_set)
 
 # def get_distinct_sources(embedding_type: str = EMBED.SPECTER) -> List[str]:
 #     docs = get_all_metadatas_from_chroma(embedding_type)
@@ -764,7 +777,20 @@ def get_distinct_sources(embedding_type: str = EMBED.SPECTER):
 
 def get_distinct_keywords(embedding_type: str = EMBED.SPECTER) -> List[str]:
     docs = get_all_metadatas_from_chroma(embedding_type)
-    return list(set(k for doc in docs for k in doc.get("Keywords", []) if k))
+    keywords_set = set()
+    for doc in docs:
+        keywords = doc.get("Keywords", "")
+        if isinstance(keywords, str):
+            # Split comma-separated string into individual keywords
+            for k in keywords.split(","):
+                k = k.strip()
+                if k:
+                    keywords_set.add(k)
+        elif isinstance(keywords, list):
+            for k in keywords:
+                if k and isinstance(k, str):
+                    keywords_set.add(k.strip())
+    return list(keywords_set)
 
 def get_distinct_years(embedding_type: str = EMBED.SPECTER) -> List[int]:
     docs = get_all_metadatas_from_chroma(embedding_type)
@@ -787,11 +813,16 @@ def _aggregate_count_from_chroma(field: str, embedding_type: str = EMBED.SPECTER
         if values is None:
             continue
         if not isinstance(values, list):
-            values = [values]
+            # For Authors and Keywords, split comma-separated strings into individual items
+            if field in ("Authors", "Keywords") and isinstance(values, str):
+                values = [v.strip() for v in values.split(",") if v.strip()]
+            else:
+                values = [values]
         for v in values:
             if v:
-                key_str = str(v)
-                counter[key_str] = counter.get(key_str, 0) + 1
+                key_str = str(v).strip()
+                if key_str:  # Only count non-empty strings
+                    counter[key_str] = counter.get(key_str, 0) + 1
 
     return sorted([{"_id": k, "count": v} for k, v in counter.items()], key=lambda x: -x["count"])
 

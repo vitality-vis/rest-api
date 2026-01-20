@@ -65,11 +65,16 @@ class CachedData:
                 if values is None:
                     continue
                 if not isinstance(values, list):
-                    values = [values]
+                    # For Authors and Keywords, split comma-separated strings into individual items
+                    if field in ("Authors", "Keywords") and isinstance(values, str):
+                        values = [v.strip() for v in values.split(",") if v.strip()]
+                    else:
+                        values = [values]
                 for v in values:
                     if v:
-                        key_str = str(v)
-                        counter[key_str] = counter.get(key_str, 0) + 1
+                        key_str = str(v).strip()
+                        if key_str:  # Only count non-empty strings
+                            counter[key_str] = counter.get(key_str, 0) + 1
             return sorted([{"_id": k, "count": v} for k, v in counter.items()], key=lambda x: -x["count"])
         
         authors_summary = aggregate_count("Authors")
