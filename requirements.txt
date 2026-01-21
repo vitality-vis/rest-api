@@ -27,6 +27,7 @@ torch
 accelerate          
 safetensors        
 huggingface-hub     
+rank_bm25
 
 # === Vector DB ===
 chromadb
