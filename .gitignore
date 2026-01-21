@@ -2,5 +2,18 @@ venv/
 .DS_Store
 .pyc
 .idea
-data/final_data.json
-data/final_data_slice.json
+data/VitaLITy-2.0.0.json
+data/VitaLITy-2.0.0_final.json
+data.db
+.env
+# config.py
+__pycache__/
+chroma_db/
+
+# Google Cloud credentials - NEVER commit these!
+*-key.json
+*-credentials.json
+service-account*.json
+.gcp/
+gcp-*.json
+vitality-*-logging-*.json
