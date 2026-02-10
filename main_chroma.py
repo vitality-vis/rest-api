@@ -558,10 +558,13 @@ def summarize_output_streaming_with_citations(prompt_data, papers, segments_map)
         segments_map
     )
 
-    # Send separator and metadata
-    yield "\n\n[[CITATIONS_START]]\n"
-    yield json.dumps(citations_metadata, ensure_ascii=False)
-    yield "\n[[CITATIONS_END]]"
+    # Send separator and metadata as a single block
+    citations_block = (
+        "\n\n[[CITATIONS_START]]\n" +
+        json.dumps(citations_metadata, ensure_ascii=False) +
+        "\n[[CITATIONS_END]]"
+    )
+    yield citations_block
 
 def literature_review_output_streaming_with_citations(prompt_data, papers, segments_map):
     """
@@ -595,10 +598,14 @@ def literature_review_output_streaming_with_citations(prompt_data, papers, segme
         segments_map
     )
 
-    # Send separator and metadata
-    yield "\n\n[[CITATIONS_START]]\n"
-    yield json.dumps(citations_metadata, ensure_ascii=False)
-    yield "\n[[CITATIONS_END]]"
+    # Send separator and metadata as a single block
+    citations_block = (
+        "\n\n[[CITATIONS_START]]\n" +
+        json.dumps(citations_metadata, ensure_ascii=False) +
+        "\n[[CITATIONS_END]]"
+    )
+
+    yield citations_block
 
 @app.route('/summarize', methods=['POST'])
 @cross_origin()

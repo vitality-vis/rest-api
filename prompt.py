@@ -197,16 +197,7 @@ Formatting rules (must follow):
    - NEVER add ** around headings
    - NEVER add — after headings
 - Bold text: Use ** only for emphasis within paragraphs, NOT for headings.
-- List items:
-   - Start with "- " (dash + space)
-   - Do NOT wrap the entire line with **
-   - Only bold specific words if needed: "- The **key finding** is..."
-   - NEVER: "**- The entire line is bold**"
-- Em-dash (—):
-   - NEVER use em-dash (—) in your output
-   - Use comma (,) or period (.) instead
-   - If you need to add more information, start a new sentenceDo NOT use em-dash (—) to break sentences.
-   - Hyphens (-) in compound words are ALLOWED and should be used normally, e.g., "multi-modal"
+- List items: Start with "- " (dash + space)
 - Bold lead-in phrases:
    - For key points, you may start with a bold phrase: "**Brief descriptive phrase.** [detailed text...]"
    - Keep it short (3-8 words), not a full sentence
@@ -241,7 +232,6 @@ CITATION_INSTRUCTIONS = """
 5. When referring to specific papers in the main text, NEVER use "Paper 0", "Paper 1", "Paper X" in your writing
    - ❌ Wrong: "Paper 0 shows that..."
    - ✅ Correct: "Johnson et al. show that... [0.3]", "according to Johnson et al., etc."
-6. Never insert reference paragraphs (such as "references: ") in your writing, only use inline markers as described above.
 
 Write your response directly with inline citations (not in JSON format).
 """
