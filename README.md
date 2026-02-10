@@ -61,10 +61,16 @@ This creates the vector database in `chroma_db/` from `data/VitaLITy-2.0.0_final
 ### Development
 
 ```bash
+# Run in production mode (default)
 python main_chroma.py
+
+# Run in debug mode with auto-reload
+python main_chroma.py --debug
 ```
 
-The API will be available at `http://localhost:8000`.
+The API will be available at `http://localhost:3000` (or the port specified in the `PORT` environment variable).
+
+**Note:** Debug mode enables Flask's debug mode and auto-reloader, which automatically restarts the server when code changes are detected. Use `--debug` only during development.
 
 ### Production (with Gunicorn)
 
