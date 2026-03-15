@@ -267,17 +267,22 @@ def normalize_text(text: str) -> str:
 def match_doc(doc, query: QuerySchema):
     doc_id_str = str(doc.get("ID")) if doc.get("ID") is not None else None
     if query.title:
-        q_title = normalize_text(query.title)
+        # Support comma-separated keywords with AND logic (all keywords must match)
+        keywords = [k.strip() for k in query.title.split(',') if k.strip()]
         d_title = normalize_text(doc.get("Title", ""))
-        if q_title != d_title and q_title not in d_title:
-            try:
-                from rapidfuzz import fuzz
-                if fuzz.ratio(q_title, d_title) < 80:
-                    return False
-            except ImportError:
-                return False
-    if query.abstract and query.abstract.lower() not in str(doc.get("Abstract", "")).lower():
-        return False
+
+        # Check if all keywords are present in the title
+        if not all(normalize_text(kw) in d_title for kw in keywords):
+            return False
+
+    if query.abstract:
+        # Support comma-separated keywords with AND logic (all keywords must match)
+        keywords = [k.strip() for k in query.abstract.split(',') if k.strip()]
+        d_abstract = str(doc.get("Abstract", "")).lower()
+
+        # Check if all keywords are present in the abstract
+        if not all(kw.lower() in d_abstract for kw in keywords):
+            return False
     authors = doc.get("Authors", [])
     if isinstance(authors, str):
         authors = [authors]
