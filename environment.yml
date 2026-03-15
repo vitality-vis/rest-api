@@ -1,0 +1,42 @@
+name: vitality-rest-api
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scikit-learn
+  - umap-learn
+  - pip
+
+  # Web server
+  - flask
+  - flask-cors
+  - requests
+  - python-dotenv
+  - packaging
+  - pydantic>=2.0
+  - typing-extensions
+  - tqdm
+  - colorama
+
+  # Pip-only (PyPI has correct builds)
+  - pip:
+      - Flask-SocketIO
+      - gunicorn
+      - python-socketio
+      - sentence-transformers
+      - transformers
+      - torch
+      - accelerate
+      - safetensors
+      - huggingface-hub
+      - rank_bm25
+      - pymilvus
+      - langchain
+      - langchain-core
+      - langchain-community
+      - langchain-openai
+      - google-cloud-logging
