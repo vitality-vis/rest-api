@@ -122,9 +122,15 @@ def _iter_json_array(filepath: str, chunk_size: int = 1024 * 1024):
 
 def _extract_metadata(doc: dict) -> dict:
     authors = doc.get("Authors")
-    authors_str = ", ".join(authors) if isinstance(authors, list) else str(authors or "")
+    if isinstance(authors, list):
+        authors_value = json.dumps([str(a).strip() for a in authors if str(a).strip()], ensure_ascii=False)
+    else:
+        authors_value = str(authors or "")
     keywords = doc.get("Keywords")
-    keywords_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords or "")
+    if isinstance(keywords, list):
+        keywords_value = json.dumps([str(k).strip() for k in keywords if str(k).strip()], ensure_ascii=False)
+    else:
+        keywords_value = str(keywords or "")
 
     year = doc.get("Year")
     try:
@@ -141,8 +147,8 @@ def _extract_metadata(doc: dict) -> dict:
     return {
         "Title": (doc.get("Title") or "")[:2047],
         "Abstract": (doc.get("Abstract") or "")[:65534],
-        "Authors": authors_str[:8191],
-        "Keywords": keywords_str[:8191],
+        "Authors": authors_value[:8191],
+        "Keywords": keywords_value[:8191],
         "Source": (doc.get("Source") or "")[:1023],
         "Year": year if year else 0,
         "CitationCounts": citation if citation is not None else 0.0,

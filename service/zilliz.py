@@ -264,6 +264,64 @@ def get_cached_papers(embedding_type: str = EMBED.SPECTER):
 def normalize_text(text: str) -> str:
     return str(text or "").strip().lower().rstrip(".!?")
 
+
+def _parse_string_list(value) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(v).strip() for v in parsed if str(v).strip()]
+            except Exception:
+                pass
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    return [str(value).strip()]
+
+
+def _normalized_list(values) -> List[str]:
+    normalized = []
+    for value in _parse_string_list(values):
+        norm = normalize_text(value)
+        if norm:
+            normalized.append(norm)
+    return normalized
+
+
+def _contains_token_phrase(container: str, needle: str) -> bool:
+    if not container or not needle:
+        return False
+    if container == needle:
+        return True
+    if needle in container:
+        return True
+    container_tokens = set(container.replace("-", " ").split())
+    needle_tokens = [tok for tok in needle.replace("-", " ").split() if tok]
+    return bool(needle_tokens) and all(tok in container_tokens for tok in needle_tokens)
+
+
+def _author_matches(candidate: str, query_author: str) -> bool:
+    candidate_norm = normalize_text(candidate)
+    query_norm = normalize_text(query_author)
+    if not candidate_norm or not query_norm:
+        return False
+    if candidate_norm == query_norm:
+        return True
+
+    candidate_tokens = [tok for tok in candidate_norm.replace("-", " ").split() if tok]
+    query_tokens = [tok for tok in query_norm.replace("-", " ").split() if tok]
+    if not candidate_tokens or not query_tokens:
+        return False
+
+    # Treat reordered full names as equivalent, but avoid loose substring matches
+    return sorted(candidate_tokens) == sorted(query_tokens)
+
 def match_doc(doc, query: QuerySchema):
     doc_id_str = str(doc.get("ID")) if doc.get("ID") is not None else None
     if query.title:
@@ -283,11 +341,11 @@ def match_doc(doc, query: QuerySchema):
         # Check if all keywords are present in the abstract
         if not all(kw.lower() in d_abstract for kw in keywords):
             return False
-    authors = doc.get("Authors", [])
-    if isinstance(authors, str):
-        authors = [authors]
-    authors_str = " ".join(authors).lower()
-    if query.author and not any(a.lower() in authors_str for a in query.author):
+    doc_authors = _normalized_list(doc.get("Authors", []))
+    if query.author and not any(
+        any(_author_matches(author, q_author) for author in doc_authors)
+        for q_author in query.author
+    ):
         return False
     src = query.source
     if src is not None:
@@ -297,11 +355,11 @@ def match_doc(doc, query: QuerySchema):
         else:
             if src.lower() not in str(doc.get("Source", "")).lower():
                 return False
-    keywords = doc.get("Keywords", [])
-    if isinstance(keywords, str):
-        keywords = [keywords]
-    keywords_str = " ".join(keywords).lower()
-    if query.keyword and not any(k.lower() in keywords_str for k in query.keyword):
+    doc_keywords = _normalized_list(doc.get("Keywords", []))
+    if query.keyword and not any(
+        any(_contains_token_phrase(keyword, normalize_text(q_keyword)) for keyword in doc_keywords)
+        for q_keyword in query.keyword
+    ):
         return False
     try:
         doc_year = int(doc.get("Year", 0))
@@ -709,16 +767,8 @@ def format_doc_for_frontend(doc: dict, score_key: str = "_score") -> dict:
     # Support both "Title" and "title" (some backends return lowercase)
     def _get(k):
         return doc.get(k) or doc.get(k.lower()) or ""
-    authors = doc.get("Authors") or doc.get("authors") or ""
-    if isinstance(authors, list):
-        authors = [a.strip() for a in authors if a and isinstance(a, str)]
-    elif isinstance(authors, str):
-        authors = [a.strip() for a in authors.split(",") if a.strip()]
-    keywords = doc.get("Keywords") or doc.get("keywords") or ""
-    if isinstance(keywords, list):
-        keywords = [k.strip() for k in keywords if k and isinstance(k, str)]
-    elif isinstance(keywords, str):
-        keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+    authors = _parse_string_list(doc.get("Authors") or doc.get("authors") or "")
+    keywords = _parse_string_list(doc.get("Keywords") or doc.get("keywords") or "")
     def parse_coords(val):
         if isinstance(val, str):
             try:
