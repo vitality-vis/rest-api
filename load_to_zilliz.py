@@ -44,6 +44,7 @@ embed_collection_map = {
 }
 
 JSON_PATH = getattr(config, "raw_json_datafile", None) or os.path.join(config.PROJ_ROOT_DIR, "data", "VitaLITy-2.0.0.json")
+BATCH_SIZE = 500
 
 
 def _create_schema(dim: int):
@@ -66,6 +67,118 @@ def _create_schema(dim: int):
     return CollectionSchema(fields=fields, description="paper collection")
 
 
+def _iter_json_array(filepath: str, chunk_size: int = 1024 * 1024):
+    """
+    Stream a top-level JSON array from disk so large datasets do not need to be
+    fully materialized in memory.
+    """
+    decoder = json.JSONDecoder()
+    with open(filepath, "r", encoding="utf-8") as f:
+        buffer = ""
+        in_array = False
+        eof = False
+
+        while True:
+            if not eof and len(buffer) < chunk_size:
+                chunk = f.read(chunk_size)
+                if chunk:
+                    buffer += chunk
+                else:
+                    eof = True
+
+            buffer = buffer.lstrip()
+            if not in_array:
+                if not buffer and eof:
+                    raise ValueError("JSON file is empty.")
+                if not buffer:
+                    continue
+                if buffer[0] != "[":
+                    raise ValueError("Expected a top-level JSON array.")
+                buffer = buffer[1:]
+                in_array = True
+                continue
+
+            buffer = buffer.lstrip()
+            if buffer.startswith("]"):
+                return
+            if buffer.startswith(","):
+                buffer = buffer[1:]
+                continue
+            if not buffer:
+                if eof:
+                    raise ValueError("Unexpected end of JSON while parsing array.")
+                continue
+
+            try:
+                item, idx = decoder.raw_decode(buffer)
+            except json.JSONDecodeError:
+                if eof:
+                    raise
+                continue
+
+            yield item
+            buffer = buffer[idx:]
+
+
+def _extract_metadata(doc: dict) -> dict:
+    authors = doc.get("Authors")
+    authors_str = ", ".join(authors) if isinstance(authors, list) else str(authors or "")
+    keywords = doc.get("Keywords")
+    keywords_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords or "")
+
+    year = doc.get("Year")
+    try:
+        year = int(year) if year is not None else 0
+    except Exception:
+        year = 0
+
+    citation = doc.get("CitationCounts")
+    try:
+        citation = float(citation) if citation is not None else 0.0
+    except Exception:
+        citation = 0.0
+
+    return {
+        "Title": (doc.get("Title") or "")[:2047],
+        "Abstract": (doc.get("Abstract") or "")[:65534],
+        "Authors": authors_str[:8191],
+        "Keywords": keywords_str[:8191],
+        "Source": (doc.get("Source") or "")[:1023],
+        "Year": year if year else 0,
+        "CitationCounts": citation if citation is not None else 0.0,
+        "Lang": (doc.get("lang", "unknown") or "unknown").lower()[:63],
+        "ada_umap": json.dumps(doc.get("ada_umap"))[:255] if doc.get("ada_umap") else "",
+        "glove_umap": json.dumps(doc.get("glove_umap"))[:255] if doc.get("glove_umap") else "",
+        "specter_umap": json.dumps(doc.get("specter_umap"))[:255] if doc.get("specter_umap") else "",
+    }
+
+
+def _flush_batch(collection, batch: dict) -> int:
+    if not batch["ids"]:
+        return 0
+
+    collection.insert([
+        batch["ids"],
+        batch["embeddings"],
+        [m["Title"] for m in batch["meta"]],
+        [m["Abstract"] for m in batch["meta"]],
+        [m["Authors"] for m in batch["meta"]],
+        [m["Keywords"] for m in batch["meta"]],
+        [m["Source"] for m in batch["meta"]],
+        [m["Year"] for m in batch["meta"]],
+        [m["CitationCounts"] for m in batch["meta"]],
+        [m["Lang"] for m in batch["meta"]],
+        [m["ada_umap"] for m in batch["meta"]],
+        [m["glove_umap"] for m in batch["meta"]],
+        [m["specter_umap"] for m in batch["meta"]],
+    ])
+    inserted = len(batch["ids"])
+    batch["ids"].clear()
+    batch["embeddings"].clear()
+    batch["meta"].clear()
+    return inserted
+
+
 def main():
     # Credentials come from .env: ZILLIZ_URI and ZILLIZ_TOKEN (see config.py)
     if not config.ZILLIZ_URI or not config.ZILLIZ_TOKEN:
@@ -82,25 +195,29 @@ def main():
     connections.connect(uri=config.ZILLIZ_URI, token=config.ZILLIZ_TOKEN)
     logging.info("Connected to Zilliz Cloud (using ZILLIZ_URI from .env)")
 
-    try:
-        with open(JSON_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
+    if not os.path.exists(JSON_PATH):
         logging.error(f"JSON not found: {JSON_PATH}")
         return
-    except json.JSONDecodeError as e:
-        logging.error(f"JSON decode error: {e}")
+
+    try:
+        stats = {"total_docs": 0, "dims": {field: None for field in embed_collection_map}}
+        for doc in _iter_json_array(JSON_PATH):
+            stats["total_docs"] += 1
+            for embed_field in embed_collection_map:
+                if stats["dims"][embed_field] is not None:
+                    continue
+                emb = doc.get(embed_field)
+                if emb:
+                    stats["dims"][embed_field] = len(emb)
+    except (ValueError, json.JSONDecodeError) as e:
+        logging.error(f"JSON parse error while scanning {JSON_PATH}: {e}")
         return
 
-    logging.info(f"Loaded {len(data)} documents from {JSON_PATH}")
+    logging.info(f"Scanned {stats['total_docs']} documents from {JSON_PATH}")
 
+    collections = {}
     for embed_field, collection_name in embed_collection_map.items():
-        # Infer dimension from first valid embedding in data (so schema matches your JSON)
-        dim = None
-        for d in data:
-            if d.get(embed_field) and len(d.get(embed_field)) > 0:
-                dim = len(d[embed_field])
-                break
+        dim = stats["dims"][embed_field]
         if dim is None:
             dim = config.ZILLIZ_EMBED_DIM.get(collection_name, 768)
             logging.warning(f"No valid '{embed_field}' in data; using config dim={dim} for {collection_name}")
@@ -113,86 +230,50 @@ def main():
         schema = _create_schema(dim)
         collection = Collection(name=collection_name, schema=schema)
         logging.info(f"Created collection: {collection_name} (dim={dim})")
+        collections[embed_field] = collection
 
-        ids_batch, embeddings_batch, meta_batch = [], [], []
-        BATCH_SIZE = 500
+    batches = {
+        embed_field: {"ids": [], "embeddings": [], "meta": []}
+        for embed_field in embed_collection_map
+    }
+    inserted_counts = {embed_field: 0 for embed_field in embed_collection_map}
 
-        for d in tqdm(data, desc=f"Preparing {collection_name}"):
-            doc_id = str(d.get("ID"))
-            if embed_field not in d or d[embed_field] is None or not d[embed_field]:
-                continue
-            emb = np.array(d[embed_field], dtype=np.float32)
-            norm = np.linalg.norm(emb)
-            if norm <= 0:
-                continue
-            emb = (emb / norm).tolist()
+    try:
+        iterator = _iter_json_array(JSON_PATH)
+        progress = tqdm(iterator, total=stats["total_docs"], desc="Loading documents")
+        for doc in progress:
+            doc_id = str(doc.get("ID"))
+            meta = None
 
-            authors = d.get("Authors")
-            authors_str = ", ".join(authors) if isinstance(authors, list) else str(authors or "")
-            keywords = d.get("Keywords")
-            keywords_str = ", ".join(keywords) if isinstance(keywords, list) else str(keywords or "")
-            year = d.get("Year")
-            try:
-                year = int(year) if year is not None else 0
-            except Exception:
-                year = 0
-            citation = d.get("CitationCounts")
-            try:
-                citation = float(citation) if citation is not None else 0.0
-            except Exception:
-                citation = 0.0
+            for embed_field, collection in collections.items():
+                emb = doc.get(embed_field)
+                if emb is None or not emb:
+                    continue
 
-            ids_batch.append(doc_id)
-            embeddings_batch.append(emb)
-            meta_batch.append({
-                "Title": (d.get("Title") or "")[:2047],
-                "Abstract": (d.get("Abstract") or "")[:65534],
-                "Authors": authors_str[:8191],
-                "Keywords": keywords_str[:8191],
-                "Source": (d.get("Source") or "")[:1023],
-                "Year": year if year else 0,
-                "CitationCounts": citation if citation is not None else 0.0,
-                "Lang": (d.get("lang", "unknown") or "unknown").lower()[:63],
-                "ada_umap": json.dumps(d.get("ada_umap"))[:255] if d.get("ada_umap") else "",
-                "glove_umap": json.dumps(d.get("glove_umap"))[:255] if d.get("glove_umap") else "",
-                "specter_umap": json.dumps(d.get("specter_umap"))[:255] if d.get("specter_umap") else "",
-            })
+                emb = np.asarray(emb, dtype=np.float32)
+                norm = np.linalg.norm(emb)
+                if norm <= 0:
+                    continue
 
-            if len(ids_batch) >= BATCH_SIZE:
-                collection.insert([
-                    ids_batch,
-                    embeddings_batch,
-                    [m["Title"] for m in meta_batch],
-                    [m["Abstract"] for m in meta_batch],
-                    [m["Authors"] for m in meta_batch],
-                    [m["Keywords"] for m in meta_batch],
-                    [m["Source"] for m in meta_batch],
-                    [m["Year"] for m in meta_batch],
-                    [m["CitationCounts"] for m in meta_batch],
-                    [m["Lang"] for m in meta_batch],
-                    [m["ada_umap"] for m in meta_batch],
-                    [m["glove_umap"] for m in meta_batch],
-                    [m["specter_umap"] for m in meta_batch],
-                ])
-                ids_batch, embeddings_batch, meta_batch = [], [], []
+                if meta is None:
+                    meta = _extract_metadata(doc)
 
-        if ids_batch:
-            collection.insert([
-                ids_batch,
-                embeddings_batch,
-                [m["Title"] for m in meta_batch],
-                [m["Abstract"] for m in meta_batch],
-                [m["Authors"] for m in meta_batch],
-                [m["Keywords"] for m in meta_batch],
-                [m["Source"] for m in meta_batch],
-                [m["Year"] for m in meta_batch],
-                [m["CitationCounts"] for m in meta_batch],
-                [m["Lang"] for m in meta_batch],
-                [m["ada_umap"] for m in meta_batch],
-                [m["glove_umap"] for m in meta_batch],
-                [m["specter_umap"] for m in meta_batch],
-            ])
+                batch = batches[embed_field]
+                batch["ids"].append(doc_id)
+                batch["embeddings"].append((emb / norm).tolist())
+                batch["meta"].append(meta)
 
+                if len(batch["ids"]) >= BATCH_SIZE:
+                    inserted_counts[embed_field] += _flush_batch(collection, batch)
+    except (ValueError, json.JSONDecodeError) as e:
+        logging.error(f"JSON parse error while loading {JSON_PATH}: {e}")
+        return
+
+    for embed_field, collection in collections.items():
+        inserted_counts[embed_field] += _flush_batch(collection, batches[embed_field])
+
+    for embed_field, collection_name in embed_collection_map.items():
+        collection = collections[embed_field]
         index_type = getattr(config, "ZILLIZ_INDEX_TYPE", "IVF_FLAT")
         nlist = getattr(config, "ZILLIZ_INDEX_NLIST", 2048)
         if index_type.upper() == "HNSW":
@@ -201,7 +282,9 @@ def main():
             index_params = {"index_type": "IVF_FLAT", "metric_type": "L2", "params": {"nlist": nlist}}
         collection.create_index(field_name="embedding", index_params=index_params)
         collection.load()
-        logging.info(f"Inserted and loaded collection: {collection_name}")
+        logging.info(
+            f"Inserted {inserted_counts[embed_field]} rows and loaded collection: {collection_name}"
+        )
 
     logging.info("All data loaded to Zilliz Cloud.")
 
