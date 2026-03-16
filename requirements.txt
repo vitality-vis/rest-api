@@ -1,6 +1,6 @@
 # === Core dependencies ===
-numpy
-pandas
+numpy<2
+pandas<3
 scikit-learn
 umap-learn
 
@@ -12,7 +12,7 @@ gunicorn
 python-socketio            
 
 # === Data validation ===
-pydantic>=2.0
+pydantic>=2,<3
 typing-extensions
 
 # === HTTP + env ===
@@ -21,22 +21,22 @@ python-dotenv
 packaging
 
 # === Embedding + local LLM ===
-sentence-transformers
-transformers
-torch
-accelerate          
-safetensors        
-huggingface-hub     
+sentence-transformers>=3,<4
+transformers>=4.45,<5
+torch>=2.4,<3
+accelerate>=0.34,<1
+safetensors
+huggingface-hub<1
 rank_bm25
 
 # === Vector DB (Zilliz Cloud / Milvus) ===
 pymilvus
 
 # === LangChain ecosystem ===
-langchain
-langchain-core
-langchain-community
-langchain-openai   
+langchain==0.3.25
+langchain-core==0.3.59
+langchain-community==0.3.24
+langchain-openai==0.2.14
 
 # === Optional utilities ===
 tqdm
