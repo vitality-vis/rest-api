@@ -35,7 +35,8 @@ llm = NoStopAzureChatOpenAI(
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    streaming=True, 
+    temperature=1,  # GPT-5 only supports temperature=1
+    streaming=True,
 )
 
 DEFAULT_EMPTY_CONTEXT_MSG = "No documents retrieved."
@@ -214,6 +215,7 @@ def get_azure_llm():
         azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        temperature=1,  # GPT-5 only supports temperature=1
     )
 
 def debug(msg: str) -> None:
