@@ -8,6 +8,7 @@ umap-learn
 Flask
 Flask-Cors
 Flask-SocketIO
+Flask-Compress
 gunicorn
 python-socketio            
 

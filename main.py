@@ -16,6 +16,7 @@ logger = get_logger()
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO, emit
+from flask_compress import Compress
 from extension.ext_zilliz import cached_data
 from model.const import EMBED
 from model.query import QuerySchema
@@ -54,11 +55,17 @@ def get_rag_agent():
 app = Flask(__name__, static_folder='./build', static_url_path='/')
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type'
-socketio = SocketIO(app, cors_allowed_origins=[
-    'http://localhost:8080',  # User study dev server
-    'http://localhost:8081', # standalone
-    'https://vitality.mathcs.emory.edu'  # Production  server
-])
+
+# Enable Gzip compression for all responses (reduces JSON payload by ~80%)
+Compress(app)
+
+socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins (for tunnel access)
+# Original config (restore after testing):
+# socketio = SocketIO(app, cors_allowed_origins=[
+#     'http://localhost:8080',  # User study dev server
+#     'http://localhost:8081', # standalone
+#     'https://vitality.mathcs.emory.edu'  # Production  server
+# ])
 
 # Configure Flask's logger to work with our custom logger
 app.logger.handlers = logger.handlers
@@ -508,7 +515,8 @@ llm = AzureChatOpenAI(
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    streaming=True  
+    temperature=1,  # GPT-5 only supports temperature=1
+    streaming=True
 )
 
 
