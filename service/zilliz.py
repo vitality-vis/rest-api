@@ -291,6 +291,60 @@ def _normalized_list(values) -> List[str]:
             normalized.append(norm)
     return normalized
 
+
+def _split_query_terms(value) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _manual_match_required(query: QuerySchema) -> bool:
+    return bool(query.author or query.keyword)
+
+
+def _build_query_expr(query: QuerySchema) -> str:
+    parts = []
+
+    title_terms = _split_query_terms(query.title)
+    for term in title_terms:
+        esc = _escape_like(term)
+        parts.append(f'Title like "%{esc}%"')
+
+    abstract_terms = _split_query_terms(query.abstract)
+    for term in abstract_terms:
+        esc = _escape_like(term)
+        parts.append(f'Abstract like "%{esc}%"')
+
+    source_terms = _split_query_terms(query.source)
+    if source_terms:
+        source_parts = [f'Source like "%{_escape_like(term)}%"' for term in source_terms]
+        parts.append("(" + " or ".join(source_parts) + ")")
+
+    author_terms = _split_query_terms(query.author)
+    if author_terms:
+        author_parts = [f'Authors like "%{_escape_like(term)}%"' for term in author_terms]
+        parts.append("(" + " or ".join(author_parts) + ")")
+
+    keyword_terms = _split_query_terms(query.keyword)
+    if keyword_terms:
+        keyword_parts = [f'Keywords like "%{_escape_like(term)}%"' for term in keyword_terms]
+        parts.append("(" + " or ".join(keyword_parts) + ")")
+
+    if query.min_year is not None:
+        parts.append(f"Year >= {int(query.min_year)}")
+    if query.max_year is not None:
+        parts.append(f"Year <= {int(query.max_year)}")
+    if getattr(query, "min_citation_counts", None) is not None:
+        parts.append(f"CitationCounts >= {int(query.min_citation_counts)}")
+    if getattr(query, "max_citation_counts", None) is not None:
+        parts.append(f"CitationCounts <= {int(query.max_citation_counts)}")
+    if query.id_list:
+        parts.append(_ids_to_expr([str(i) for i in query.id_list]))
+
+    return " and ".join(parts) if parts else 'ID != ""'
+
 def _contains_token_phrase(container: str, needle: str) -> bool:
     if not container or not needle:
         return False
@@ -380,17 +434,31 @@ def match_doc(doc, query: QuerySchema):
 
 def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
     try:
-        all_papers = get_all_metadatas(embedding_type)
-        if not all_papers:
+        coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+        if not coll:
             return {"papers": [], "total": 0}
-        docs = [format_doc_for_frontend(p) for p in all_papers if match_doc(p, query)]
-        total_count = len(docs)
+
+        expr = _build_query_expr(query)
         offset = int(query.offset or 0)
         limit = int(query.limit or 100)
+        fetch_target = max(limit if limit != -1 else 100, 1)
+        fetch_target += max(offset, 0)
+        if _manual_match_required(query):
+            fetch_target *= 4
+        fetch_limit = min(fetch_target + 1, 16384)
+
+        rows = coll.query(expr=expr, output_fields=_SCALAR_FIELDS, limit=fetch_limit)
+        docs = [format_doc_for_frontend(p) for p in (rows or []) if p]
+        if _manual_match_required(query):
+            docs = [doc for doc in docs if match_doc(doc, query)]
+
+        has_more = len(docs) > (offset + limit if limit != -1 else offset)
         if limit == -1:
             paginated_docs = docs[offset:]
+            total_count = len(docs)
         else:
             paginated_docs = docs[offset : offset + limit]
+            total_count = offset + len(paginated_docs) + (1 if has_more else 0)
         return {"papers": paginated_docs, "total": total_count}
     except Exception as e:
         logging.error(f"Error in query_docs(): {e}", exc_info=True)
@@ -427,25 +495,22 @@ def query_doc_by_id(_id: str, embedding_type: str = EMBED.SPECTER):
     return None
 
 def query_doc_by_title(title: str, embedding_type: str = EMBED.SPECTER) -> list:
-    all_papers = [format_doc_for_frontend(p) for p in get_all_metadatas(embedding_type)]
-    if not all_papers:
+    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+    if not coll:
         return []
     normalized = title.strip().lower().rstrip(".")
-    matches = []
-    for doc in all_papers:
-        doc_title = str(doc.get("Title") or "").strip().lower().rstrip(".")
-        if normalized == doc_title or normalized in doc_title:
-            matches.append(doc)
-    if not matches:
-        try:
-            from rapidfuzz import process
-            all_titles = [str(d.get("Title") or "") for d in all_papers]
-            best_match, score, idx = process.extractOne(normalized, all_titles)
-            if score > 80:
-                matches.append(all_papers[idx])
-        except ImportError:
-            pass
-    return matches
+    if not normalized:
+        return []
+    try:
+        res = coll.query(
+            expr=f'Title like "%{_escape_like(normalized)}%"',
+            output_fields=_SCALAR_FIELDS,
+            limit=20,
+        )
+        return [format_doc_for_frontend(r) for r in (res or []) if r]
+    except Exception as e:
+        logging.error(f"Error in query_doc_by_title(): {e}", exc_info=True)
+        return []
 
 def query_doc_by_ids(ids: List[str], embedding_type: str = EMBED.SPECTER) -> List[dict]:
     if not ids:
@@ -661,13 +726,24 @@ def get_all_umap_points(embedding_type: str = EMBED.SPECTER):
         logging.error(f"Failed to load UMAP points from Zilliz: {e}", exc_info=True)
         return []
 
-def get_all_metadatas(embedding_type: str = EMBED.SPECTER) -> List[dict]:
-    """Return all metadata from Zilliz for the given embedding type (batched, no embedding vector)."""
+_METADATA_FIELDS = ["ID", "Title", "Authors", "Keywords", "Source", "Year", "CitationCounts"]
+_METADATA_SAMPLE_LIMIT = getattr(config, "ZILLIZ_METADATA_SAMPLE_LIMIT", 500)
+
+
+def get_all_metadatas(embedding_type: str = EMBED.SPECTER, limit: Optional[int] = None) -> List[dict]:
+    """Return metadata from Zilliz for the given embedding type.
+
+    When `limit` is provided, fetch only a sample to keep metadata endpoints responsive.
+    """
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
     if not coll:
         return []
     try:
-        res = _query_all_batched(coll, _SCALAR_FIELDS)
+        if limit is not None:
+            safe_limit = max(1, int(limit))
+            res = coll.query(expr='ID != ""', output_fields=_METADATA_FIELDS, limit=safe_limit)
+        else:
+            res = _query_all_batched(coll, _METADATA_FIELDS)
         return list(res or [])
     except Exception as e:
         logging.error(f"Failed to fetch metadatas from Zilliz: {e}")
@@ -752,12 +828,15 @@ def get_distinct_citation_counts(embedding_type: str = EMBED.SPECTER) -> List[in
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("CitationCounts") for doc in docs if doc.get("CitationCounts") is not None))
 
-def get_aggregated_metadata(embedding_type: str = EMBED.SPECTER) -> Dict[str, Any]:
+def get_aggregated_metadata(
+    embedding_type: str = EMBED.SPECTER,
+    sample_limit: Optional[int] = _METADATA_SAMPLE_LIMIT,
+) -> Dict[str, Any]:
     """
-    Compute all metadata aggregations from one Zilliz fetch to avoid repeated
-    full scans and reduce timeout risk on frontend startup.
+    Compute metadata aggregations from a sampled Zilliz fetch to reduce
+    frontend startup latency.
     """
-    docs = get_all_metadatas(embedding_type)
+    docs = get_all_metadatas(embedding_type, limit=sample_limit)
     if not docs:
         return {
             "authors_summary": [],
@@ -796,6 +875,7 @@ def get_aggregated_metadata(embedding_type: str = EMBED.SPECTER) -> Dict[str, An
         "years_summary": sorted(aggregate_count("Year"), key=lambda x: x["_id"]),
         "titles": titles,
         "citation_counts": citation_counts,
+        "sample_size": len(docs),
     }
 
 def format_doc_for_frontend(doc: dict, score_key: str = "_score") -> dict:

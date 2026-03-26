@@ -25,6 +25,7 @@ from model.query import QuerySchema
 from service import zilliz
 from service.zilliz import query_doc_by_ids, query_docs, normalize_results
 import config
+from extension.ext_zilliz import cached_data
 # from service.agent_runner import build_agent, run_two_stage_hybrid_rag  # include new two-stage RAG
 # from service.agent_runner import build_agent, run_two_stage_rag
 from langchain_openai import AzureChatOpenAI
@@ -178,7 +179,7 @@ def get_papers():
         max_citation_counts=input_payload.get('max_citation_counts'),
         id_list=input_payload.get('id_list'),
         offset=int(input_payload.get('offset', 0)),
-        limit=int(input_payload.get('limit', 1000))
+        limit=int(input_payload.get('limit', 50))
     )
     return jsonify(query_docs(query))
 
@@ -500,7 +501,7 @@ def get_umap_points():
         or EMBED.SPECTER
     )
 
-    points = zilliz.get_all_umap_points(embedding_type)
+    points = cached_data.get_umap_points() or []
     umap_field = {
         EMBED.ADA: "ada_umap",
         EMBED.GLOVE: "glove_umap",
@@ -557,8 +558,7 @@ def get_umap_points():
 @cross_origin()
 def get_metas():
     try:
-        logger.info("Fetching metadata directly from Zilliz...")
-        return jsonify(zilliz.get_aggregated_metadata())
+        return jsonify(cached_data.get_aggregated_metadata() or {})
     except Exception as e:
         logger.error(f"Error in getMetaData: {e}")
         import traceback
@@ -796,6 +796,7 @@ def reset_memory():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # cached_data.init()
+cached_data.init()
 
 
 # === Start the Flask-SocketIO server ===
