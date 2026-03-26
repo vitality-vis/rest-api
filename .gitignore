@@ -4,6 +4,8 @@ venv/
 .idea
 data/VitaLITy-2.0.0.json
 data/VitaLITy-2.0.0_final.json
+data/VitaLITy-2.0.0_final.jsonl
+data/local
 data.db
 .env
 # config.py
