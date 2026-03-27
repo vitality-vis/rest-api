@@ -54,12 +54,13 @@ def _create_schema(dim: int):
         FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
         FieldSchema(name="Title", dtype=DataType.VARCHAR, max_length=2048),
         FieldSchema(name="Abstract", dtype=DataType.VARCHAR, max_length=65535),
-        FieldSchema(name="Authors", dtype=DataType.VARCHAR, max_length=8192),
-        FieldSchema(name="Keywords", dtype=DataType.VARCHAR, max_length=8192),
+        FieldSchema(name="Authors", dtype=DataType.ARRAY, element_type=DataType.VARCHAR, max_capacity=256, max_length=512),
+        FieldSchema(name="Keywords", dtype=DataType.ARRAY, element_type=DataType.VARCHAR, max_capacity=256, max_length=512),
         FieldSchema(name="Source", dtype=DataType.VARCHAR, max_length=1024),
         FieldSchema(name="Year", dtype=DataType.INT64),
         FieldSchema(name="CitationCounts", dtype=DataType.DOUBLE),
         FieldSchema(name="Lang", dtype=DataType.VARCHAR, max_length=64),
+        FieldSchema(name="Doi", dtype=DataType.VARCHAR, max_length=256),
         FieldSchema(name="ada_umap", dtype=DataType.VARCHAR, max_length=256),
         FieldSchema(name="glove_umap", dtype=DataType.VARCHAR, max_length=256),
         FieldSchema(name="specter_umap", dtype=DataType.VARCHAR, max_length=256),
@@ -121,16 +122,34 @@ def _iter_json_array(filepath: str, chunk_size: int = 1024 * 1024):
 
 
 def _extract_metadata(doc: dict) -> dict:
-    authors = doc.get("Authors")
-    if isinstance(authors, list):
-        authors_value = json.dumps([str(a).strip() for a in authors if str(a).strip()], ensure_ascii=False)
-    else:
-        authors_value = str(authors or "")
-    keywords = doc.get("Keywords")
-    if isinstance(keywords, list):
-        keywords_value = json.dumps([str(k).strip() for k in keywords if str(k).strip()], ensure_ascii=False)
-    else:
-        keywords_value = str(keywords or "")
+    def _clean_list(value, max_items=256, max_length=512):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw = value.strip()
+            if raw.startswith("[") and raw.endswith("]"):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        value = parsed
+                except Exception:
+                    value = [part.strip() for part in raw.split(",") if part.strip()]
+            else:
+                value = [part.strip() for part in raw.split(",") if part.strip()]
+        elif not isinstance(value, list):
+            value = [value]
+
+        cleaned = []
+        for item in value:
+            item_str = str(item).strip()
+            if item_str:
+                cleaned.append(item_str[:max_length])
+            if len(cleaned) >= max_items:
+                break
+        return cleaned
+
+    authors_value = _clean_list(doc.get("Authors"))
+    keywords_value = _clean_list(doc.get("Keywords"))
 
     year = doc.get("Year")
     try:
@@ -147,12 +166,13 @@ def _extract_metadata(doc: dict) -> dict:
     return {
         "Title": (doc.get("Title") or "")[:2047],
         "Abstract": (doc.get("Abstract") or "")[:65534],
-        "Authors": authors_value[:8191],
-        "Keywords": keywords_value[:8191],
+        "Authors": authors_value,
+        "Keywords": keywords_value,
         "Source": (doc.get("Source") or "")[:1023],
         "Year": year if year else 0,
         "CitationCounts": citation if citation is not None else 0.0,
         "Lang": (doc.get("lang", "unknown") or "unknown").lower()[:63],
+        "Doi": (doc.get("Doi", "unknown") or "unknown").lower()[:255],
         "ada_umap": json.dumps(doc.get("ada_umap"))[:255] if doc.get("ada_umap") else "",
         "glove_umap": json.dumps(doc.get("glove_umap"))[:255] if doc.get("glove_umap") else "",
         "specter_umap": json.dumps(doc.get("specter_umap"))[:255] if doc.get("specter_umap") else "",
@@ -174,6 +194,7 @@ def _flush_batch(collection, batch: dict) -> int:
         [m["Year"] for m in batch["meta"]],
         [m["CitationCounts"] for m in batch["meta"]],
         [m["Lang"] for m in batch["meta"]],
+        [m["Doi"] for m in batch["meta"]],
         [m["ada_umap"] for m in batch["meta"]],
         [m["glove_umap"] for m in batch["meta"]],
         [m["specter_umap"] for m in batch["meta"]],
