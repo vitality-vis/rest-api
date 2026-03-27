@@ -10,6 +10,7 @@ import config
 from model.const import EMBED
 from model.query import QuerySchema
 from logger_config import get_logger
+from service.metadata_normalizer import parse_string_list
 
 logging = get_logger()
 
@@ -266,23 +267,7 @@ def normalize_text(text: str) -> str:
 
 
 def _parse_string_list(value) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    if isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return []
-        if raw.startswith("[") and raw.endswith("]"):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    return [str(v).strip() for v in parsed if str(v).strip()]
-            except Exception:
-                pass
-        return [part.strip() for part in raw.split(",") if part.strip()]
-    return [str(value).strip()]
+    return parse_string_list(value)
 
 
 def _normalized_list(values) -> List[str]:

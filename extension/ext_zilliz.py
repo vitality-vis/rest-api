@@ -1,6 +1,7 @@
 import json
 import config
 from logger_config import get_logger
+from service.metadata_normalizer import normalize_aggregated_metadata
 
 # Use centralized logger
 logging = get_logger()
@@ -19,7 +20,7 @@ class CachedData:
         logging.info(f"Loaded {len(self.umap_points) if self.umap_points else 0} UMAP points from file")
 
         self.meta_datas = self.load_json_file(config.meta_data_file_path, {})
-        self.aggregated_metadata = self.meta_datas if isinstance(self.meta_datas, dict) else {}
+        self.aggregated_metadata = normalize_aggregated_metadata(self.meta_datas)
         logging.info("Loaded aggregated metadata from file")
 
     def load_json_file(self, path, default):

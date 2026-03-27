@@ -13,13 +13,16 @@ load_dotenv(PROJECT_ROOT / ".env")
 import config
 from logger_config import get_logger
 from service import zilliz
+from service.metadata_normalizer import normalize_aggregated_metadata
 
 logging = get_logger()
 
 
 def main():
     logging.info("Exporting aggregated metadata from Zilliz...")
-    metadata = zilliz.get_aggregated_metadata(sample_limit=None)
+    metadata = normalize_aggregated_metadata(
+        zilliz.get_aggregated_metadata(sample_limit=None)
+    )
 
     logging.info("Exporting UMAP points from Zilliz...")
     umap_points = zilliz.get_all_umap_points()

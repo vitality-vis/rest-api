@@ -10,6 +10,7 @@ import config
 from model.const import EMBED
 from model.query import QuerySchema
 from logger_config import get_logger
+from service.metadata_normalizer import parse_string_list
 
 logging = get_logger()
 
@@ -265,23 +266,7 @@ def normalize_text(text: str) -> str:
     return str(text or "").strip().lower().rstrip(".!?")
 
 def _parse_string_list(value) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    if isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return []
-        if raw.startswith("[") and raw.endswith("]"):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    return [str(v).strip() for v in parsed if str(v).strip()]
-            except Exception:
-                pass
-        return [part.strip() for part in raw.split(",") if part.strip()]
-    return [str(value).strip()]
+    return parse_string_list(value)
 
 def _normalized_list(values) -> List[str]:
     normalized = []
@@ -324,12 +309,12 @@ def _build_query_expr(query: QuerySchema) -> str:
 
     author_terms = _split_query_terms(query.author)
     if author_terms:
-        author_parts = [f'Authors like "%{_escape_like(term)}%"' for term in author_terms]
+        author_parts = [f'array_contains(Authors, "{str(term).replace(chr(34), "")}")' for term in author_terms]
         parts.append("(" + " or ".join(author_parts) + ")")
 
     keyword_terms = _split_query_terms(query.keyword)
     if keyword_terms:
-        keyword_parts = [f'Keywords like "%{_escape_like(term)}%"' for term in keyword_terms]
+        keyword_parts = [f'array_contains(Keywords, "{str(term).replace(chr(34), "")}")' for term in keyword_terms]
         parts.append("(" + " or ".join(keyword_parts) + ")")
 
     if query.min_year is not None:
@@ -370,6 +355,13 @@ def _author_matches(candidate: str, query_author: str) -> bool:
     # Treat reordered full names as equivalent, but avoid loose substring matches
     return sorted(candidate_tokens) == sorted(query_tokens)
 
+
+def _list_contains_exact(values, query_value: str) -> bool:
+    query_norm = normalize_text(query_value)
+    if not query_norm:
+        return False
+    return any(normalize_text(value) == query_norm for value in _parse_string_list(values))
+
 def match_doc(doc, query: QuerySchema):
     doc_id_str = str(doc.get("ID")) if doc.get("ID") is not None else None
     if query.title:
@@ -408,6 +400,7 @@ def match_doc(doc, query: QuerySchema):
 
     doc_keywords = _normalized_list(doc.get("Keywords", []))
     if query.keyword and not any(
+        _list_contains_exact(doc.get("Keywords", []), q_keyword) or
         any(_contains_token_phrase(keyword, normalize_text(q_keyword)) for keyword in doc_keywords)
         for q_keyword in query.keyword
     ):
@@ -756,11 +749,10 @@ def _aggregate_count(field: str, embedding_type: str = EMBED.SPECTER) -> List[Di
         values = doc.get(field)
         if values is None:
             continue
-        if not isinstance(values, list):
-            if field in ("Authors", "Keywords") and isinstance(values, str):
-                values = [v.strip() for v in values.split(",") if v.strip()]
-            else:
-                values = [values]
+        if field in ("Authors", "Keywords"):
+            values = _parse_string_list(values)
+        elif not isinstance(values, list):
+            values = [values]
         for v in values:
             if v:
                 key_str = str(v).strip()
@@ -785,15 +777,9 @@ def get_distinct_authors(embedding_type: str = EMBED.SPECTER) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     authors_set = set()
     for doc in docs:
-        authors = doc.get("Authors", "")
-        if isinstance(authors, str):
-            for a in authors.split(","):
-                if a.strip():
-                    authors_set.add(a.strip())
-        elif isinstance(authors, list):
-            for a in authors:
-                if a and isinstance(a, str):
-                    authors_set.add(a.strip())
+        for a in _parse_string_list(doc.get("Authors", [])):
+            if a:
+                authors_set.add(a)
     return list(authors_set)
 
 def get_distinct_sources(embedding_type: str = EMBED.SPECTER):
@@ -805,15 +791,9 @@ def get_distinct_keywords(embedding_type: str = EMBED.SPECTER) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     keywords_set = set()
     for doc in docs:
-        keywords = doc.get("Keywords", "")
-        if isinstance(keywords, str):
-            for k in keywords.split(","):
-                if k.strip():
-                    keywords_set.add(k.strip())
-        elif isinstance(keywords, list):
-            for k in keywords:
-                if k and isinstance(k, str):
-                    keywords_set.add(k.strip())
+        for k in _parse_string_list(doc.get("Keywords", [])):
+            if k:
+                keywords_set.add(k)
     return list(keywords_set)
 
 def get_distinct_years(embedding_type: str = EMBED.SPECTER) -> List[int]:
@@ -853,11 +833,10 @@ def get_aggregated_metadata(
             values = doc.get(field)
             if values is None:
                 continue
-            if not isinstance(values, list):
-                if field in ("Authors", "Keywords") and isinstance(values, str):
-                    values = [v.strip() for v in values.split(",") if v.strip()]
-                else:
-                    values = [values]
+            if field in ("Authors", "Keywords"):
+                values = _parse_string_list(values)
+            elif not isinstance(values, list):
+                values = [values]
             for v in values:
                 if v:
                     key_str = str(v).strip()
@@ -891,15 +870,9 @@ def format_doc_for_frontend(doc: dict, score_key: str = "_score") -> dict:
     def _get(k):
         return doc.get(k) or doc.get(k.lower()) or ""
     authors = doc.get("Authors") or doc.get("authors") or ""
-    if isinstance(authors, list):
-        authors = [a.strip() for a in authors if a and isinstance(a, str)]
-    elif isinstance(authors, str):
-        authors = [a.strip() for a in authors.split(",") if a.strip()]
+    authors = _parse_string_list(authors)
     keywords = doc.get("Keywords") or doc.get("keywords") or ""
-    if isinstance(keywords, list):
-        keywords = [k.strip() for k in keywords if k and isinstance(k, str)]
-    elif isinstance(keywords, str):
-        keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+    keywords = _parse_string_list(keywords)
     def parse_coords(val):
         if isinstance(val, str):
             try:
