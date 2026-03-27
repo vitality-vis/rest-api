@@ -41,6 +41,12 @@ Place the paper dataset in the `data/` folder. The loader expects **`data/VitaLI
 Create a **`.env`** file in the project root:
 
 ```bash
+cp .env.example .env
+```
+
+Then edit `.env` and fill in your own values:
+
+```bash
 # Azure OpenAI (LLM)
 AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2025-04-01-preview
@@ -69,6 +75,12 @@ python load_to_zilliz.py
 ```
 
 This creates/updates Zilliz collections from your JSON file. Ensure `ZILLIZ_URI` and `ZILLIZ_TOKEN` are set.
+
+### 5. Export cached metadata and UMAP data
+
+```bash
+python script/export_zilliz_static_data.py
+```
 
 ---
 
@@ -153,6 +165,7 @@ POST /chat
   "message": "What are the main themes in these papers?"
 }
 ```
+
 
 ---
 
