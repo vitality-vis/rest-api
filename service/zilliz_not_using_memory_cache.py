@@ -277,46 +277,26 @@ def _normalized_list(values) -> List[str]:
     return normalized
 
 
-def _split_query_terms(value) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    return [part.strip() for part in str(value).split(",") if part.strip()]
-
-
-def _manual_match_required(query: QuerySchema) -> bool:
-    return bool(query.author or query.keyword)
+def _needs_ci_text_postfilter(query: QuerySchema) -> bool:
+    """Title/abstract/source/author/keyword matching in match_doc is case-insensitive."""
+    return bool(
+        query.title
+        or query.abstract
+        or query.source
+        or query.author
+        or query.keyword
+    )
 
 
 def _build_query_expr(query: QuerySchema) -> str:
+    """Milvus filter for exact fields only.
+
+    Do not push title/abstract/source/author/keyword into Milvus: Milvus ``LIKE`` and
+    ``array_contains`` are case-sensitive, while match_doc() normalizes case for those
+    fields. When any text filter is present, query_docs() batches on this expr then
+    applies match_doc().
+    """
     parts = []
-
-    title_terms = _split_query_terms(query.title)
-    for term in title_terms:
-        esc = _escape_like(term)
-        parts.append(f'Title like "%{esc}%"')
-
-    abstract_terms = _split_query_terms(query.abstract)
-    for term in abstract_terms:
-        esc = _escape_like(term)
-        parts.append(f'Abstract like "%{esc}%"')
-
-    source_terms = _split_query_terms(query.source)
-    if source_terms:
-        source_parts = [f'Source like "%{_escape_like(term)}%"' for term in source_terms]
-        parts.append("(" + " or ".join(source_parts) + ")")
-
-    author_terms = _split_query_terms(query.author)
-    if author_terms:
-        author_parts = [f'array_contains(Authors, "{str(term).replace(chr(34), "")}")' for term in author_terms]
-        parts.append("(" + " or ".join(author_parts) + ")")
-
-    keyword_terms = _split_query_terms(query.keyword)
-    if keyword_terms:
-        keyword_parts = [f'array_contains(Keywords, "{str(term).replace(chr(34), "")}")' for term in keyword_terms]
-        parts.append("(" + " or ".join(keyword_parts) + ")")
-
     if query.min_year is not None:
         parts.append(f"Year >= {int(query.min_year)}")
     if query.max_year is not None:
@@ -329,6 +309,28 @@ def _build_query_expr(query: QuerySchema) -> str:
         parts.append(_ids_to_expr([str(i) for i in query.id_list]))
 
     return " and ".join(parts) if parts else 'ID != ""'
+
+
+def _structured_filters_present(query: QuerySchema) -> bool:
+    if query.min_year is not None or query.max_year is not None:
+        return True
+    if getattr(query, "min_citation_counts", None) is not None:
+        return True
+    if getattr(query, "max_citation_counts", None) is not None:
+        return True
+    if query.id_list:
+        return True
+    return False
+
+
+def _collection_entity_count(coll) -> Optional[int]:
+    """Best-effort total row count for the collection (matches expr ID != \"\")."""
+    try:
+        coll.flush()
+        return int(coll.num_entities)
+    except Exception:
+        return None
+
 
 def _contains_token_phrase(container: str, needle: str) -> bool:
     if not container or not needle:
@@ -352,7 +354,6 @@ def _author_matches(candidate: str, query_author: str) -> bool:
     query_tokens = [tok for tok in query_norm.replace("-", " ").split() if tok]
     if not candidate_tokens or not query_tokens:
         return False
-    # Treat reordered full names as equivalent, but avoid loose substring matches
     return sorted(candidate_tokens) == sorted(query_tokens)
 
 
@@ -365,20 +366,15 @@ def _list_contains_exact(values, query_value: str) -> bool:
 def match_doc(doc, query: QuerySchema):
     doc_id_str = str(doc.get("ID")) if doc.get("ID") is not None else None
     if query.title:
-        # Support comma-separated keywords with AND logic (all keywords must match)
         keywords = [k.strip() for k in query.title.split(',') if k.strip()]
         d_title = normalize_text(doc.get("Title", ""))
-
-        # Check if all keywords are present in the title
         if not all(normalize_text(kw) in d_title for kw in keywords):
             return False
 
     if query.abstract:
-        # Support comma-separated keywords with AND logic (all keywords must match)
         keywords = [k.strip() for k in query.abstract.split(',') if k.strip()]
         d_abstract = str(doc.get("Abstract", "")).lower()
 
-        # Check if all keywords are present in the abstract
         if not all(kw.lower() in d_abstract for kw in keywords):
             return False
 
@@ -433,17 +429,22 @@ def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
 
         expr = _build_query_expr(query)
         offset = int(query.offset or 0)
-        limit = int(query.limit or 100)
-        fetch_target = max(limit if limit != -1 else 100, 1)
-        fetch_target += max(offset, 0)
-        if _manual_match_required(query):
-            fetch_target *= 4
-        fetch_limit = min(fetch_target + 1, 16384)
+        limit_raw = query.limit
+        limit = int(limit_raw if limit_raw is not None else 100)
+        needs_post = _needs_ci_text_postfilter(query)
+        fetch_all = limit == -1
 
-        rows = coll.query(expr=expr, output_fields=_SCALAR_FIELDS, limit=fetch_limit)
-        docs = [format_doc_for_frontend(p) for p in (rows or []) if p]
-        if _manual_match_required(query):
-            docs = [doc for doc in docs if match_doc(doc, query)]
+        if needs_post or fetch_all:
+            rows = _query_by_expr_batched(coll, expr, _SCALAR_FIELDS)
+            docs = [format_doc_for_frontend(p) for p in (rows or []) if p]
+            if needs_post:
+                docs = [doc for doc in docs if match_doc(doc, query)]
+        else:
+            fetch_target = max(limit, 1)
+            fetch_target += max(offset, 0)
+            fetch_limit = min(fetch_target + 1, 16384)
+            rows = coll.query(expr=expr, output_fields=_SCALAR_FIELDS, limit=fetch_limit)
+            docs = [format_doc_for_frontend(p) for p in (rows or []) if p]
 
         has_more = len(docs) > (offset + limit if limit != -1 else offset)
         if limit == -1:
@@ -451,7 +452,17 @@ def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
             total_count = len(docs)
         else:
             paginated_docs = docs[offset : offset + limit]
-            total_count = offset + len(paginated_docs) + (1 if has_more else 0)
+            exact_total = None
+            if (
+                not needs_post
+                and not _structured_filters_present(query)
+                and not fetch_all
+            ):
+                exact_total = _collection_entity_count(coll)
+            if exact_total is not None:
+                total_count = exact_total
+            else:
+                total_count = offset + len(paginated_docs) + (1 if has_more else 0)
         return {"papers": paginated_docs, "total": total_count}
     except Exception as e:
         logging.error(f"Error in query_docs(): {e}", exc_info=True)
@@ -897,5 +908,4 @@ def format_doc_for_frontend(doc: dict, score_key: str = "_score") -> dict:
         "specter_umap": parse_coords(doc.get("specter_umap")),
     }
 
-# For agent_tools
 _zilliz_client = get_client()
