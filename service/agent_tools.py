@@ -164,7 +164,10 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
         offset=0,
     )
 
-    logging.info(f"[metadata_search] Running query_docs with filters={q.dict(exclude_none=True)}")
+    logging.info(
+        "[metadata_search] Running query_docs with filters=%s",
+        q.model_dump(exclude_none=True) if hasattr(q, "model_dump") else q,
+    )
 
     # ============================================================
     # Step 4 — Execute query against cached papers
