@@ -1,30 +1,6 @@
-"""
-Load paper embeddings and metadata from JSON into Zilliz Cloud collections.
-
-HOW TO UPLOAD YOUR DATA TO ZILLIZ:
-----------------------------------
-1. Get your Zilliz Cloud URL and API key:
-   - Go to https://cloud.zilliz.com and sign in (or create an account).
-   - Create or select a cluster.
-   - In the cluster dashboard, find "Connect" / "Endpoint" → copy the URI
-     (e.g. https://xxx.api.gcp-us-west1.zillizcloud.com).
-   - In "API Key" or "Security" → create/copy your API key (token).
-
-2. Create a file named .env in this project root with:
-   ZILLIZ_URI=https://your-cluster-endpoint.api.region.zillizcloud.com
-   ZILLIZ_TOKEN=your_api_key_here
-
-3. Put your JSON data file in the path set below (JSON_PATH), or set
-   raw_json_datafile in config.py. The JSON must contain embedding fields
-   (e.g. specter_embedding, ada_embedding, glove_embedding).
-
-4. Run:
-   python load_to_zilliz.py
-
-Credentials are read from the .env file (via config.ZILLIZ_URI and config.ZILLIZ_TOKEN).
-"""
 import os
 import json
+import argparse
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -35,6 +11,7 @@ from logger_config import get_logger
 logging = get_logger()
 
 import config
+from service.metadata_normalizer import parse_string_list
 
 # Collection name mapping
 embed_collection_map = {
@@ -45,6 +22,24 @@ embed_collection_map = {
 
 JSON_PATH = getattr(config, "raw_json_datafile", None) or os.path.join(config.PROJ_ROOT_DIR, "data", "VitaLITy-2.0.0.json")
 BATCH_SIZE = 500
+
+
+def _embedding_seq_len(emb):
+    """Length of embedding sequence; avoids truthiness on NumPy arrays."""
+    if emb is None:
+        return 0
+    try:
+        return len(emb)
+    except TypeError:
+        return 0
+
+
+def _pick(doc: dict, *keys, default=None):
+    for key in keys:
+        value = doc.get(key)
+        if value is not None:
+            return value
+    return default
 
 
 def _create_schema(dim: int):
@@ -122,57 +117,39 @@ def _iter_json_array(filepath: str, chunk_size: int = 1024 * 1024):
 
 
 def _extract_metadata(doc: dict) -> dict:
-    def _clean_list(value, max_items=256, max_length=512):
-        if value is None:
-            return []
-        if isinstance(value, str):
-            raw = value.strip()
-            if raw.startswith("[") and raw.endswith("]"):
-                try:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, list):
-                        value = parsed
-                except Exception:
-                    value = [part.strip() for part in raw.split(",") if part.strip()]
-            else:
-                value = [part.strip() for part in raw.split(",") if part.strip()]
-        elif not isinstance(value, list):
-            value = [value]
+    def _cap_list(items, max_items=256, max_length=512):
+        out = []
+        for item in items[:max_items]:
+            s = str(item).strip()
+            if s:
+                out.append(s[:max_length])
+        return out
 
-        cleaned = []
-        for item in value:
-            item_str = str(item).strip()
-            if item_str:
-                cleaned.append(item_str[:max_length])
-            if len(cleaned) >= max_items:
-                break
-        return cleaned
+    authors_value = _cap_list(parse_string_list(_pick(doc, "Authors", "authors")))
+    keywords_value = _cap_list(parse_string_list(_pick(doc, "Keywords", "keywords")))
 
-    authors_value = _clean_list(doc.get("Authors"))
-    keywords_value = _clean_list(doc.get("Keywords"))
-
-    year = doc.get("Year")
+    year = _pick(doc, "Year", "year")
     try:
         year = int(year) if year is not None else 0
     except Exception:
         year = 0
 
-    citation = doc.get("CitationCounts")
+    citation = _pick(doc, "CitationCounts", "citationCounts", "citationcounts")
     try:
         citation = float(citation) if citation is not None else 0.0
     except Exception:
         citation = 0.0
 
     return {
-        "Title": (doc.get("Title") or "")[:2047],
-        "Abstract": (doc.get("Abstract") or "")[:65534],
+        "Title": (_pick(doc, "Title", "title", default="") or "")[:2047],
+        "Abstract": (_pick(doc, "Abstract", "abstract", default="") or "")[:65534],
         "Authors": authors_value,
         "Keywords": keywords_value,
-        "Source": (doc.get("Source") or "")[:1023],
+        "Source": (_pick(doc, "Source", "source", default="") or "")[:1023],
         "Year": year if year else 0,
         "CitationCounts": citation if citation is not None else 0.0,
-        "Lang": (doc.get("lang", "unknown") or "unknown").lower()[:63],
-        "Doi": (doc.get("Doi", "unknown") or "unknown").lower()[:255],
+        "Lang": (_pick(doc, "Lang", "lang", default="unknown") or "unknown").lower()[:63],
+        "Doi": (_pick(doc, "Doi", "doi", default="unknown") or "unknown").lower()[:255],
         "ada_umap": json.dumps(doc.get("ada_umap"))[:255] if doc.get("ada_umap") else "",
         "glove_umap": json.dumps(doc.get("glove_umap"))[:255] if doc.get("glove_umap") else "",
         "specter_umap": json.dumps(doc.get("specter_umap"))[:255] if doc.get("specter_umap") else "",
@@ -206,7 +183,43 @@ def _flush_batch(collection, batch: dict) -> int:
     return inserted
 
 
-def main():
+def _is_array_field(field) -> bool:
+    dtype_name = str(getattr(field, "dtype", "")).upper()
+    return "ARRAY" in dtype_name
+
+
+def _validate_existing_schema(collection, collection_name: str) -> bool:
+    fields = {field.name: field for field in collection.schema.fields}
+    required_array_fields = ("Authors", "Keywords")
+
+    for field_name in required_array_fields:
+        field = fields.get(field_name)
+        if field is None:
+            logging.error(
+                f"Collection {collection_name} is missing required field '{field_name}'. "
+                "Run loader without --keep-existing to recreate collections."
+            )
+            return False
+        if not _is_array_field(field):
+            logging.error(
+                f"Collection {collection_name} has incompatible schema: '{field_name}' is not ARRAY. "
+                "Run loader without --keep-existing to recreate collections."
+            )
+            return False
+    return True
+
+
+def _is_collection_empty(collection) -> bool:
+    # num_entities can lag until flush on some Milvus/Zilliz versions; flush before counting.
+    try:
+        collection.flush()
+        return int(collection.num_entities) == 0
+    except Exception as exc:
+        logging.error(f"Failed to inspect existing collection size: {exc}")
+        return False
+
+
+def main(keep_existing: bool = False, check_duplicate_ids: bool = False):
     # Credentials come from .env: ZILLIZ_URI and ZILLIZ_TOKEN (see config.py)
     if not config.ZILLIZ_URI or not config.ZILLIZ_TOKEN:
         logging.error(
@@ -234,7 +247,7 @@ def main():
                 if stats["dims"][embed_field] is not None:
                     continue
                 emb = doc.get(embed_field)
-                if emb:
+                if emb is not None and _embedding_seq_len(emb) > 0:
                     stats["dims"][embed_field] = len(emb)
     except (ValueError, json.JSONDecodeError) as e:
         logging.error(f"JSON parse error while scanning {JSON_PATH}: {e}")
@@ -243,6 +256,7 @@ def main():
     logging.info(f"Scanned {stats['total_docs']} documents from {JSON_PATH}")
 
     collections = {}
+    needs_index_build = {}
     for embed_field, collection_name in embed_collection_map.items():
         dim = stats["dims"][embed_field]
         if dim is None:
@@ -251,12 +265,30 @@ def main():
         else:
             logging.info(f"Using embedding dim={dim} for {collection_name} (from data)")
         if utility.has_collection(collection_name):
-            utility.drop_collection(collection_name)
-            logging.info(f"Dropped existing collection: {collection_name}")
-
-        schema = _create_schema(dim)
-        collection = Collection(name=collection_name, schema=schema)
-        logging.info(f"Created collection: {collection_name} (dim={dim})")
+            if keep_existing:
+                collection = Collection(name=collection_name)
+                if not _validate_existing_schema(collection, collection_name):
+                    return
+                if not _is_collection_empty(collection):
+                    logging.error(
+                        f"--keep-existing only supports empty collections, but {collection_name} already has data. "
+                        "Use default mode (drop/recreate) to avoid duplicate IDs or insertion conflicts."
+                    )
+                    return
+                logging.info(f"Using existing EMPTY collection without recreating: {collection_name}")
+                needs_index_build[embed_field] = False
+            else:
+                utility.drop_collection(collection_name)
+                logging.info(f"Dropped existing collection: {collection_name}")
+                schema = _create_schema(dim)
+                collection = Collection(name=collection_name, schema=schema)
+                logging.info(f"Created collection: {collection_name} (dim={dim})")
+                needs_index_build[embed_field] = True
+        else:
+            schema = _create_schema(dim)
+            collection = Collection(name=collection_name, schema=schema)
+            logging.info(f"Created collection: {collection_name} (dim={dim})")
+            needs_index_build[embed_field] = True
         collections[embed_field] = collection
 
     batches = {
@@ -264,17 +296,26 @@ def main():
         for embed_field in embed_collection_map
     }
     inserted_counts = {embed_field: 0 for embed_field in embed_collection_map}
+    seen_ids = set() if check_duplicate_ids else None
 
     try:
         iterator = _iter_json_array(JSON_PATH)
         progress = tqdm(iterator, total=stats["total_docs"], desc="Loading documents")
         for doc in progress:
-            doc_id = str(doc.get("ID"))
+            raw_id = _pick(doc, "ID", "id")
+            if raw_id is None or str(raw_id).strip() == "":
+                continue
+            doc_id = str(raw_id).strip()
+            if seen_ids is not None:
+                if doc_id in seen_ids:
+                    logging.warning("Skipping duplicate document ID in JSON: %s", doc_id)
+                    continue
+                seen_ids.add(doc_id)
             meta = None
 
             for embed_field, collection in collections.items():
                 emb = doc.get(embed_field)
-                if emb is None or not emb:
+                if emb is None or _embedding_seq_len(emb) == 0:
                     continue
 
                 emb = np.asarray(emb, dtype=np.float32)
@@ -307,7 +348,8 @@ def main():
             index_params = {"index_type": "HNSW", "metric_type": "L2", "params": {"M": 16, "efConstruction": 256}}
         else:
             index_params = {"index_type": "IVF_FLAT", "metric_type": "L2", "params": {"nlist": nlist}}
-        collection.create_index(field_name="embedding", index_params=index_params)
+        if needs_index_build.get(embed_field, False):
+            collection.create_index(field_name="embedding", index_params=index_params)
         collection.load()
         logging.info(
             f"Inserted {inserted_counts[embed_field]} rows and loaded collection: {collection_name}"
@@ -317,4 +359,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Load paper embeddings and metadata into Zilliz.")
+    parser.add_argument(
+        "--keep-existing",
+        action="store_true",
+        help="Do not drop/recreate collections; only allowed for empty existing collections.",
+    )
+    parser.add_argument(
+        "--check-duplicate-ids",
+        action="store_true",
+        help="Track IDs in memory: warn and skip rows when the same ID appears more than once in the JSON.",
+    )
+    args = parser.parse_args()
+    main(keep_existing=args.keep_existing, check_duplicate_ids=args.check_duplicate_ids)
