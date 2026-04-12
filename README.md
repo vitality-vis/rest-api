@@ -129,6 +129,7 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 | `/getPapers` | POST | Get papers by IDs or full payload (with filters) |
 | `/getSimilarPapers` | POST | Similar papers from a list of papers (by embedding) |
 | `/getSimilarPapersByAbstract` | POST | Similar papers from abstract (and optional title) text |
+| `/searchPapers` | POST | BM25 keyword search across Title, Abstract, Keywords, Authors with optional filters |
 | `/getUmapPoints` | GET | 2D UMAP coordinates for visualization |
 | `/getMetaData` | GET | Metadata for UI filters |
 
