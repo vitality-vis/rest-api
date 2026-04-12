@@ -59,13 +59,12 @@ app.config['CORS_HEADERS'] = 'Content-Type'
 # Enable Gzip compression for all responses (reduces JSON payload by ~80%)
 Compress(app)
 
-socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins (for tunnel access)
-# Original config (restore after testing):
-# socketio = SocketIO(app, cors_allowed_origins=[
-#     'http://localhost:8080',  # User study dev server
-#     'http://localhost:8081', # standalone
-#     'https://vitality.mathcs.emory.edu'  # Production  server
-# ])
+# socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins (for tunnel access)
+socketio = SocketIO(app, cors_allowed_origins=[
+    'http://localhost:8080',  # User study dev server
+    'http://localhost:8081', # standalone
+    'https://vitality.mathcs.emory.edu'  # Production  server
+])
 
 # Configure Flask's logger to work with our custom logger
 app.logger.handlers = logger.handlers
