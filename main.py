@@ -722,6 +722,53 @@ def get_paper_by_title():
     return jsonify(papers)
 
 
+@app.route("/searchPapers", methods=["POST"])
+@cross_origin()
+def search_papers():
+    """
+    BM25 keyword search across Title, Abstract, Keywords, Authors.
+    Supports the same column filters as getPapers for cross-filtering.
+    Body: {
+      "query": "...", "limit": 20, "embedding": "specter",
+      "source": [...], "min_year": 2018, "max_year": 2023,
+      "author": [...], "keyword": [...],
+      "min_citation_counts": 0, "max_citation_counts": 1000
+    }
+    Returns papers sorted by BM25 relevance with a bm25_score field.
+    """
+    data = request.json or {}
+    query = data.get("query", "").strip()
+    if not query:
+        return jsonify({"message": "No query provided"}), 400
+    limit = int(data.get("limit", 20))
+    embedding = data.get("embedding", "specter")
+
+    # Build optional column filters (same fields as getPapers)
+    filters = QuerySchema(
+        source=data.get("source"),
+        author=data.get("author"),
+        keyword=data.get("keyword"),
+        min_year=data.get("min_year"),
+        max_year=data.get("max_year"),
+        min_citation_counts=data.get("min_citation_counts"),
+        max_citation_counts=data.get("max_citation_counts"),
+        id_list=data.get("id_list"),
+    )
+    # Only pass filters if at least one is set
+    has_filters = any([
+        filters.source, filters.author, filters.keyword,
+        filters.min_year, filters.max_year,
+        filters.min_citation_counts, filters.max_citation_counts,
+        filters.id_list,
+    ])
+
+    papers = zilliz.search_papers_bm25(
+        query, limit=limit, embedding_type=embedding,
+        filters=filters if has_filters else None
+    )
+    return jsonify(papers)
+
+
 from service.agent_runner import reset_all_sessions
 
 # On startup
@@ -740,7 +787,8 @@ def reset_memory():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
-cached_data.init()
+# Will be initialized in __main__ with command line args
+# cached_data.init() is now called in __main__ section
 
 
 # === Start the Flask-SocketIO server ===
@@ -749,13 +797,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Start Flask-SocketIO server')
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable debug mode (default: False)')
+    parser.add_argument('--use-local-cache', action='store_true', default=False,
+                        help='Load papers from local cache instead of downloading from Zilliz (faster startup)')
     args = parser.parse_args()
 
     port = int(os.environ.get("PORT", 3000))
-    #cached_data.init()
+
+    # Initialize cached data with the --use-local-cache flag
+    cached_data.init(use_local_cache=args.use_local_cache)
 
     debug_mode = args.debug
     print(f"Starting Flask-SocketIO server on http://localhost:{port}")
     print(f"Debug mode: {debug_mode}")
+    print(f"Using local cache: {args.use_local_cache}")
 
     socketio.run(app, host="0.0.0.0", port=port, debug=debug_mode, use_reloader=debug_mode)

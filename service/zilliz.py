@@ -144,19 +144,27 @@ def _entity_to_meta(entity) -> Optional[Dict[str, Any]]:
 _QUERY_BATCH_SIZE = 2000
 _ID_BATCH_SIZE = 5000
 
-def _query_all_batched(coll, output_fields: List[str]):
+def _query_all_batched(coll, output_fields: List[str], progress_callback=None):
     """
     Fetch all rows in batches to avoid gRPC 'message larger than max' (4MB).
     Phase 1: collect all IDs (ID only, small response). Phase 2: for each chunk
     of IDs query full rows with 'ID in [chunk]' (small request/response).
-    """
-    return _query_by_expr_batched(coll, 'ID != ""', output_fields)
 
-def _query_by_expr_batched(coll, base_expr: str, output_fields: List[str]):
+    Args:
+        progress_callback: Optional callable(phase, fetched, total).
+                           phase is "ids" or "rows". total is None during "ids" phase.
+    """
+    return _query_by_expr_batched(coll, 'ID != ""', output_fields, progress_callback)
+
+def _query_by_expr_batched(coll, base_expr: str, output_fields: List[str], progress_callback=None):
     """
     Fetch all rows matching base_expr in batches to stay under gRPC 4MB.
     Phase 1: collect IDs matching base_expr (ID only, batched with ID not in seen).
     Phase 2: fetch full rows by ID chunks.
+
+    Args:
+        progress_callback: Optional callable(phase, fetched, total).
+                           phase is "ids" or "rows". total is None during "ids" phase.
     """
     all_ids = []
     seen_ids = []
@@ -175,12 +183,15 @@ def _query_by_expr_batched(coll, base_expr: str, output_fields: List[str]):
         ids_batch = [r["ID"] for r in res if r.get("ID")]
         all_ids.extend(ids_batch)
         seen_ids.extend(ids_batch)
+        if progress_callback:
+            progress_callback("ids", len(all_ids), None)
         if len(res) < _ID_BATCH_SIZE:
             break
     if not all_ids:
         return []
+    total = len(all_ids)
     all_rows = []
-    for i in range(0, len(all_ids), _QUERY_BATCH_SIZE):
+    for i in range(0, total, _QUERY_BATCH_SIZE):
         chunk = all_ids[i : i + _QUERY_BATCH_SIZE]
         expr = _ids_to_expr(chunk)
         try:
@@ -188,6 +199,8 @@ def _query_by_expr_batched(coll, base_expr: str, output_fields: List[str]):
             all_rows.extend(res or [])
         except Exception as e:
             logging.warning(f"Batch row fetch failed: {e}")
+        if progress_callback:
+            progress_callback("rows", len(all_rows), total)
     return all_rows
 
 def _escape_like(s: str) -> str:
@@ -229,17 +242,27 @@ def _zilliz_where_to_expr(where: dict) -> str:
 # --- Cache ---
 _all_papers_cache = {}
 
-def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER):
+def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER, progress_callback=None):
     global _all_papers_cache
     collection_name = COLLECTION_MAPPING.get(embedding_type)
     if not collection_name:
         return
+
+    # Check if we have papers from local cache (via cached_data)
+    from extension.ext_zilliz import cached_data
+    local_papers = cached_data.get_all_papers()
+    if local_papers:
+        logging.info(f"✅ Using {len(local_papers)} papers from local cache (no Zilliz download)")
+        _all_papers_cache[collection_name] = local_papers
+        return
+
+    # Otherwise, load from Zilliz as before
     coll = _get_collection(collection_name)
     if not coll:
         return
     try:
-        logging.info(f"Loading all papers from {collection_name} into memory cache (batched)...")
-        res = _query_all_batched(coll, _SCALAR_FIELDS)
+        logging.info(f"📡 Loading all papers from {collection_name} into memory cache (batched)...")
+        res = _query_all_batched(coll, _SCALAR_FIELDS, progress_callback)
         cached_papers = []
         for r in (res or []):
             cached_papers.append(format_doc_for_frontend(_row_to_meta(r)))
@@ -435,6 +458,83 @@ def query_doc_by_title(title: str, embedding_type: str = EMBED.SPECTER) -> list:
             pass
     return matches
 
+# BM25 index cache: collection_name -> (BM25Okapi instance, tokenized_corpus, papers)
+_bm25_cache: Dict[str, Any] = {}
+
+def _tokenize(text: str) -> List[str]:
+    """Simple whitespace + punctuation tokenizer, lowercased."""
+    import re
+    return re.findall(r'\w+', text.lower())
+
+def _build_bm25_index(papers: list, collection_name: str):
+    """Build and cache a BM25 index over Title + Abstract + Keywords + Authors."""
+    from rank_bm25 import BM25Okapi
+    corpus = []
+    for doc in papers:
+        title = str(doc.get("Title") or "")
+        abstract = str(doc.get("Abstract") or "")
+        keywords = " ".join(doc.get("Keywords") or [])
+        authors = " ".join(doc.get("Authors") or [])
+        # Weight title more by repeating it
+        combined = f"{title} {title} {title} {keywords} {authors} {abstract}"
+        corpus.append(_tokenize(combined))
+    bm25 = BM25Okapi(corpus)
+    _bm25_cache[collection_name] = (bm25, corpus, papers)
+    logging.info(f"BM25 index built for {collection_name} ({len(papers)} docs)")
+    return bm25, corpus, papers
+
+def search_papers_bm25(query: str, limit: int = 20, embedding_type: str = EMBED.SPECTER, filters: QuerySchema = None) -> dict:
+    """
+    Google-style fuzzy keyword search using BM25 over Title, Abstract, Keywords, Authors.
+    Optionally applies column filters (year, source, author, keyword, etc.) as post-filter.
+    Fetches limit * 5 BM25 candidates to ensure enough results survive filtering.
+    Returns dict with top `limit` papers sorted by BM25 relevance score and total_matches count.
+    """
+    collection_name = COLLECTION_MAPPING.get(embedding_type, "paper_specter")
+    all_papers = get_cached_papers(embedding_type)
+    if not all_papers:
+        return {"papers": [], "total_matches": 0}
+
+    # Build or reuse BM25 index
+    if collection_name not in _bm25_cache:
+        bm25, corpus, papers = _build_bm25_index(all_papers, collection_name)
+    else:
+        bm25, corpus, papers = _bm25_cache[collection_name]
+
+    tokenized_query = _tokenize(query)
+    if not tokenized_query:
+        return {"papers": [], "total_matches": 0}
+
+    scores = bm25.get_scores(tokenized_query)
+
+    # Fetch more candidates than needed so post-filtering still yields `limit` results
+    candidates_limit = limit * 5
+    scored = [(score, doc) for score, doc in zip(scores, papers) if score > 0]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_candidates = scored[:candidates_limit]
+
+    results = []
+    for score, doc in top_candidates:
+        # Apply column filters if provided
+        if filters and not match_doc(doc, filters):
+            continue
+        result = dict(doc)
+        result["bm25_score"] = float(score)
+        result["score"] = float(score)
+        results.append(result)
+        if len(results) >= limit:
+            break
+    return {"papers": results, "total_matches": len(scored)}
+
+def invalidate_bm25_cache(embedding_type: str = None):
+    """Invalidate BM25 cache (call after data reload)."""
+    global _bm25_cache
+    if embedding_type:
+        collection_name = COLLECTION_MAPPING.get(embedding_type)
+        _bm25_cache.pop(collection_name, None)
+    else:
+        _bm25_cache.clear()
+
 def query_doc_by_ids(ids: List[str], embedding_type: str = EMBED.SPECTER) -> List[dict]:
     if not ids:
         return []
@@ -619,13 +719,13 @@ def query_similar_doc_by_embedding_2d(
 def query_similar_doc_by_paper(paper: dict, embedding_type: str, limit: int = 25, lang_filter: Dict = None):
     return query_similar_doc_by_embedding_full([paper], embedding_type, limit, lang_filter)
 
-def get_all_umap_points(embedding_type: str = EMBED.SPECTER):
+def get_all_umap_points(embedding_type: str = EMBED.SPECTER, progress_callback=None):
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
     if not coll:
         return []
     umap_fields = ["ID", "Title", "Year", "Source", "ada_umap", "glove_umap", "specter_umap"]
     try:
-        res = _query_all_batched(coll, umap_fields)
+        res = _query_all_batched(coll, umap_fields, progress_callback)
         points = []
         for r in (res or []):
             def parse_coords(val):

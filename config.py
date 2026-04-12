@@ -7,6 +7,12 @@ PROJ_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 meta_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/meta_data.json')
 umap_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/umap_data.json')
 
+# Local cache files (for faster startup, avoid downloading from Zilliz)
+local_cache_dir = os.path.join(PROJ_ROOT_DIR, 'data/local_cache')
+all_papers_cache_path = os.path.join(local_cache_dir, 'all_papers_cache.json')
+umap_points_cache_path = os.path.join(local_cache_dir, 'umap_points_cache.json')
+aggregated_metadata_cache_path = os.path.join(local_cache_dir, 'aggregated_metadata_cache.json')
+
 # Raw JSON data file (with embeddings). Use the file you want to load into Zilliz.
 raw_json_datafile = os.path.join(PROJ_ROOT_DIR, 'data/VitaLITy-2.0.0.json')
 

@@ -84,14 +84,29 @@ python script/export_zilliz_static_data.py
 
 ---
 
+### 6. (Optional) Download local cache for faster startup
+
+```bash
+python script/download_to_local_cache.py
+```
+
+This saves all papers, UMAP points, and metadata to `data/local_cache/` (~162 MB) so subsequent startups skip the Zilliz download.
+
+---
+
 ## Run
 
 **Development:**
 
 ```bash
 python main.py
-# With auto-reload:
-python main.py --debug
+```
+
+**Optional flags:**
+
+```bash
+python main.py --debug             # Auto-reload on code changes
+python main.py --use-local-cache   # Skip Zilliz download, use local cache from step 6
 ```
 
 Server runs at **http://localhost:3000** (or the port in `PORT`).
