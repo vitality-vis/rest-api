@@ -461,79 +461,8 @@ def query_doc_by_title(title: str, embedding_type: str = EMBED.SPECTER) -> list:
 # BM25 index cache: collection_name -> (BM25Okapi instance, tokenized_corpus, papers)
 _bm25_cache: Dict[str, Any] = {}
 
-def _tokenize(text: str) -> List[str]:
-    """Simple whitespace + punctuation tokenizer, lowercased."""
-    import re
-    return re.findall(r'\w+', text.lower())
-
-def _build_bm25_index(papers: list, collection_name: str):
-    """Build and cache a BM25 index over Title + Abstract + Keywords + Authors."""
-    from rank_bm25 import BM25Okapi
-    corpus = []
-    for doc in papers:
-        title = str(doc.get("Title") or "")
-        abstract = str(doc.get("Abstract") or "")
-        keywords = " ".join(doc.get("Keywords") or [])
-        authors = " ".join(doc.get("Authors") or [])
-        # Weight title more by repeating it
-        combined = f"{title} {title} {title} {keywords} {authors} {abstract}"
-        corpus.append(_tokenize(combined))
-    bm25 = BM25Okapi(corpus)
-    _bm25_cache[collection_name] = (bm25, corpus, papers)
-    logging.info(f"BM25 index built for {collection_name} ({len(papers)} docs)")
-    return bm25, corpus, papers
-
-def search_papers_bm25(query: str, limit: int = 20, embedding_type: str = EMBED.SPECTER, filters: QuerySchema = None) -> dict:
-    """
-    Google-style fuzzy keyword search using BM25 over Title, Abstract, Keywords, Authors.
-    Optionally applies column filters (year, source, author, keyword, etc.) as post-filter.
-    Fetches limit * 5 BM25 candidates to ensure enough results survive filtering.
-    Returns dict with top `limit` papers sorted by BM25 relevance score and total_matches count.
-    """
-    collection_name = COLLECTION_MAPPING.get(embedding_type, "paper_specter")
-    all_papers = get_cached_papers(embedding_type)
-    if not all_papers:
-        return {"papers": [], "total_matches": 0}
-
-    # Build or reuse BM25 index
-    if collection_name not in _bm25_cache:
-        bm25, corpus, papers = _build_bm25_index(all_papers, collection_name)
-    else:
-        bm25, corpus, papers = _bm25_cache[collection_name]
-
-    tokenized_query = _tokenize(query)
-    if not tokenized_query:
-        return {"papers": [], "total_matches": 0}
-
-    scores = bm25.get_scores(tokenized_query)
-
-    # Fetch more candidates than needed so post-filtering still yields `limit` results
-    candidates_limit = limit * 5
-    scored = [(score, doc) for score, doc in zip(scores, papers) if score > 0]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top_candidates = scored[:candidates_limit]
-
-    results = []
-    for score, doc in top_candidates:
-        # Apply column filters if provided
-        if filters and not match_doc(doc, filters):
-            continue
-        result = dict(doc)
-        result["bm25_score"] = float(score)
-        result["score"] = float(score)
-        results.append(result)
-        if len(results) >= limit:
-            break
-    return {"papers": results, "total_matches": len(scored)}
-
-def invalidate_bm25_cache(embedding_type: str = None):
-    """Invalidate BM25 cache (call after data reload)."""
-    global _bm25_cache
-    if embedding_type:
-        collection_name = COLLECTION_MAPPING.get(embedding_type)
-        _bm25_cache.pop(collection_name, None)
-    else:
-        _bm25_cache.clear()
+# BM25 search has been moved to service/search.py
+from service.search import search_papers_bm25, invalidate_bm25_cache
 
 def query_doc_by_ids(ids: List[str], embedding_type: str = EMBED.SPECTER) -> List[dict]:
     if not ids:
