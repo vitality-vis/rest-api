@@ -141,3 +141,199 @@ def invalidate_bm25_cache(embedding_type: str = None):
         _bm25_cache.pop(collection_name, None)
     else:
         _bm25_cache.clear()
+
+
+def evaluate_boolean_condition(condition, all_papers):
+    """
+    Evaluate a single boolean condition and return matching paper IDs.
+
+    Searches across title, abstract, and keywords (combined content).
+
+    Condition format:
+    {
+        "operator": "AND" | "OR",  # optional, default "OR"
+        "keywords": ["keyword1", "keyword2", ...]
+    }
+    """
+    operator = condition.get("operator", "OR").upper()
+    keywords = condition.get("keywords", [])
+
+    if not keywords:
+        return set()
+
+    matching_ids = set()
+
+    for paper in all_papers:
+        paper_id = str(paper.get("ID", ""))
+        if not paper_id:
+            continue
+
+        # Combine title, abstract, and keywords into one searchable content
+        title = str(paper.get("Title", "")).lower()
+        abstract = str(paper.get("Abstract", "")).lower()
+        kws = paper.get("Keywords", [])
+        if isinstance(kws, list):
+            keywords_str = " ".join(str(k).lower() for k in kws)
+        else:
+            keywords_str = str(kws).lower()
+
+        # Combined content: title + abstract + keywords
+        content = f"{title} {abstract} {keywords_str}"
+
+        # Check if keywords match in the combined content
+        keyword_matches = [kw.lower() in content for kw in keywords]
+
+        if operator == "AND":
+            if all(keyword_matches):
+                matching_ids.add(paper_id)
+        else:  # OR
+            if any(keyword_matches):
+                matching_ids.add(paper_id)
+
+    return matching_ids
+
+
+def evaluate_boolean_query(query_tree, all_papers):
+    """
+    Recursively evaluate a boolean query tree and return matching paper IDs.
+
+    Searches across title, abstract, and keywords fields combined.
+
+    Query tree format:
+    {
+        "operator": "AND" | "OR" | "NOT",
+        "conditions": [
+            {
+                "operator": "OR",
+                "keywords": ["transformer", "attention"]
+            },
+            {
+                "operator": "AND",
+                "keywords": ["vision", "image"]
+            },
+            {
+                "operator": "NOT",
+                "keywords": ["survey", "review"]
+            }
+        ]
+    }
+    """
+    operator = query_tree.get("operator", "AND").upper()
+    conditions = query_tree.get("conditions", [])
+
+    if not conditions:
+        return set()
+
+    # Special handling for NOT operator
+    if operator == "NOT":
+        # NOT operator: start with all papers and exclude matching ones
+        all_paper_ids = {str(p.get("ID", "")) for p in all_papers if p.get("ID")}
+
+        # Evaluate all conditions and combine with OR (exclude any paper matching any condition)
+        excluded_ids = set()
+        for condition in conditions:
+            if "conditions" in condition and isinstance(condition.get("conditions"), list):
+                result_set = evaluate_boolean_query(condition, all_papers)
+            else:
+                result_set = evaluate_boolean_condition(condition, all_papers)
+            excluded_ids = excluded_ids.union(result_set)
+
+        return all_paper_ids - excluded_ids
+
+    # Evaluate each condition
+    result_sets = []
+    for condition in conditions:
+        # Check if this is a nested query (has "operator" and "conditions")
+        if "conditions" in condition and isinstance(condition.get("conditions"), list):
+            # Recursive case: nested query
+            result_set = evaluate_boolean_query(condition, all_papers)
+        else:
+            # Base case: single condition
+            result_set = evaluate_boolean_condition(condition, all_papers)
+        result_sets.append(result_set)
+
+    # Combine results based on operator
+    if operator == "AND":
+        return set.intersection(*result_sets) if result_sets else set()
+    else:  # OR
+        return set.union(*result_sets) if result_sets else set()
+
+
+def search_papers_boolean(query_tree: dict, limit: int = 100, offset: int = 0, embedding_type: str = EMBED.SPECTER, metadata_filters: Optional[dict] = None) -> dict:
+    """
+    Boolean query search with structured query format.
+    Supports complex AND/OR/NOT logic across title, abstract, and keywords.
+
+    Args:
+        query_tree: Query structure with operator and conditions
+        limit: Maximum number of results to return (-1 for all)
+        offset: Number of results to skip
+        embedding_type: Embedding type to use for paper retrieval
+        metadata_filters: Optional metadata filters (year, source, citations, etc.)
+
+    Query tree format:
+    {
+        "operator": "AND" | "OR" | "NOT",
+        "conditions": [
+            {
+                "operator": "OR",
+                "keywords": ["machine learning", "deep learning"]
+            },
+            {
+                "operator": "NOT",
+                "keywords": ["survey", "review"]
+            }
+        ]
+    }
+
+    Metadata filters format:
+    {
+        "min_year": 2020,
+        "max_year": 2024,
+        "sources": ["Nature", "Science"],
+        "authors": ["Smith"],
+        "keywords": ["neural networks"],
+        "min_citations": 10,
+        "max_citations": 1000
+    }
+
+    Returns: {"papers": [...], "total": count}
+    """
+    from service.zilliz import get_cached_papers, match_doc
+
+    # Get all papers from cache
+    all_papers = get_cached_papers(embedding_type)
+    if not all_papers:
+        return {"papers": [], "total": 0}
+
+    # Evaluate boolean query
+    matching_ids = evaluate_boolean_query(query_tree, all_papers)
+
+    # Filter papers by matching IDs
+    matched_papers = [p for p in all_papers if str(p.get("ID", "")) in matching_ids]
+
+    # Apply metadata filters if provided
+    if metadata_filters:
+        # Convert metadata_filters dict to QuerySchema for compatibility with match_doc
+        filters = QuerySchema(
+            source=metadata_filters.get("sources"),
+            author=metadata_filters.get("authors"),
+            keyword=metadata_filters.get("keywords"),
+            min_year=metadata_filters.get("min_year"),
+            max_year=metadata_filters.get("max_year"),
+            min_citation_counts=metadata_filters.get("min_citations"),
+            max_citation_counts=metadata_filters.get("max_citations"),
+        )
+        matched_papers = [p for p in matched_papers if match_doc(p, filters)]
+
+    total_count = len(matched_papers)
+
+    # Apply pagination
+    if limit == -1:
+        paginated_papers = matched_papers[offset:]
+    else:
+        paginated_papers = matched_papers[offset:offset + limit]
+
+    logging.info(f"[filter_papers] Query returned {total_count} papers, returning {len(paginated_papers)}")
+
+    return {"papers": paginated_papers, "total": total_count}

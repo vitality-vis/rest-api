@@ -22,6 +22,7 @@ from model.const import EMBED
 from model.query import QuerySchema
 from service import zilliz
 from service.zilliz import query_doc_by_ids, query_docs, normalize_results
+from service import search as search_service
 import config
 # from service.agent_runner import build_agent, run_two_stage_hybrid_rag  # include new two-stage RAG
 # from service.agent_runner import build_agent, run_two_stage_rag
@@ -722,9 +723,9 @@ def get_paper_by_title():
     return jsonify(papers)
 
 
-@app.route("/searchPapers", methods=["POST"])
+@app.route("/searchPapers/bm25", methods=["POST"])
 @cross_origin()
-def search_papers():
+def search_papers_bm25():
     """
     BM25 keyword search across Title, Abstract, Keywords, Authors.
     Supports the same column filters as getPapers for cross-filtering.
@@ -767,6 +768,77 @@ def search_papers():
         filters=filters if has_filters else None
     )
     return jsonify(papers)
+
+
+@app.route("/searchPapers/boolean", methods=["POST"])
+@cross_origin()
+def search_papers_boolean():
+    """
+    Boolean query search for PRISMA literature review workflows.
+    Supports complex nested boolean logic (AND/OR/NOT) and metadata filters.
+
+    Searches across: title + abstract + keywords (combined)
+
+    Body: {
+      "query": {
+        "operator": "AND" | "OR" | "NOT",
+        "conditions": [
+          {
+            "operator": "OR",
+            "keywords": ["machine learning", "deep learning"]
+          },
+          {
+            "operator": "AND",
+            "conditions": [
+              {"operator": "OR", "keywords": ["classification", "detection"]},
+              {"operator": "OR", "keywords": ["medical", "clinical"]}
+            ]
+          },
+          {
+            "operator": "NOT",
+            "keywords": ["survey", "review", "meta-analysis"]
+          }
+        ]
+      },
+      "metadata_filters": {
+        "min_year": 2020,
+        "max_year": 2024,
+        "sources": ["Nature", "Science", "Cell"],
+        "authors": ["Smith"],
+        "keywords": ["machine learning"],
+        "min_citations": 10,
+        "max_citations": 1000
+      },
+      "limit": 100,
+      "offset": 0
+    }
+
+    Returns: {"papers": [...], "total": count}
+    """
+    try:
+        data = request.json or {}
+        query_tree = data.get("query")
+
+        if not query_tree:
+            return jsonify({"message": "No query provided"}), 400
+
+        limit = int(data.get("limit", 100))
+        offset = int(data.get("offset", 0))
+        metadata_filters = data.get("metadata_filters")
+
+        # Call service function
+        result = search_service.search_papers_boolean(
+            query_tree,
+            limit,
+            offset,
+            metadata_filters=metadata_filters
+        )
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error in search_papers_boolean: {e}", exc_info=True)
+        return jsonify({"message": f"Internal server error: {str(e)}"}), 500
 
 
 from service.agent_runner import reset_all_sessions
