@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "jsx": "react",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "typeRoots": [
+      "../frontend_clean/node_modules/@types"
+    ],
+    "lib": ["es5", "es6", "dom"]
+  },
+  "include": ["*.tsx", "*.ts"]
+}

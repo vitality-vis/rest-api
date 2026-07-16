@@ -1,0 +1,51 @@
+# === Core dependencies ===
+numpy<2
+pandas<3
+scikit-learn
+umap-learn
+
+# === Web server ===
+Flask
+Flask-Cors
+Flask-SocketIO
+Flask-Compress
+gunicorn
+python-socketio            
+
+# === Data validation ===
+pydantic>=2,<3
+typing-extensions
+
+# === HTTP + env ===
+requests
+python-dotenv
+packaging
+
+# === Embedding + local LLM ===
+sentence-transformers>=3,<4
+transformers>=4.45,<5
+torch>=2.4,<3
+accelerate>=0.34,<1
+safetensors
+huggingface-hub<1
+rank_bm25
+
+# === Vector DB (Zilliz Cloud / Milvus) ===
+pymilvus
+
+# === LangChain ecosystem ===
+langchain==0.3.25
+langchain-core==0.3.59
+langchain-community==0.3.24
+langchain-openai==0.2.14
+
+# === Optional utilities ===
+tqdm
+colorama
+PyMuPDF
+
+# === Logging ===
+google-cloud-logging
+
+
+langgraph
