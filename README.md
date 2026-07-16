@@ -71,7 +71,7 @@ Get Zilliz credentials from [Zilliz Cloud](https://cloud.zilliz.com).
 ### 4. Load data into Zilliz
 
 ```bash
-python load_to_zilliz.py
+python scripts/load_to_zilliz.py
 ```
 
 This creates/updates Zilliz collections from your JSON file. Ensure `ZILLIZ_URI` and `ZILLIZ_TOKEN` are set.
@@ -79,7 +79,7 @@ This creates/updates Zilliz collections from your JSON file. Ensure `ZILLIZ_URI`
 ### 5. Export cached metadata and UMAP data
 
 ```bash
-python script/export_zilliz_static_data.py
+python scripts/export_zilliz_static_data.py
 ```
 
 ---
@@ -172,31 +172,42 @@ POST /chat
 ## Project structure
 
 ```
-├── main.py              # Flask app and routes
-├── config.py            # Paths, Zilliz and search settings
-├── logger_config.py     # Logging (including optional Google Cloud)
-├── prompt.py            # LLM prompts
-├── load_to_zilliz.py    # Load JSON into Zilliz collections
+├── main.py                  # Flask app and routes
+├── config.py                # Paths, Zilliz and search settings
+├── logger_config.py         # Logging (including optional Google Cloud)
+├── prompt.py                # LLM prompts
 ├── requirements.txt
-├── environment.yml      # Optional Conda env
+├── environment.yml          # Optional Conda env
 ├── data/
-│   └── VitaLITy-2.0.0.json   # Paper dataset (path configurable in config.py)
-├── service/              # Core logic
-│   ├── zilliz.py        # Zilliz queries, similarity, UMAP
-│   ├── embed.py         # Specter, Glove, Azure Ada embeddings
-│   ├── rag_core.py      # RAG retrieval, rerank, formatting
-│   ├── agent_runner.py  # LangChain agent and tools
-│   ├── agent_tools.py   # RAG/semantic search tools
-│   ├── intent_classifier.py
-│   ├── query_rewriter.py
+│   └── VitaLITy-2.0.0.json  # Paper dataset (path configurable in config.py)
+├── docs/
+│   └── ZILLIZ_TUNING.md     # Search/index tuning notes
+├── frontend/
+│   ├── build/               # Static files served by Flask
+│   └── Dialog.tsx           # Frontend dialog source snapshot
+├── scripts/
+│   ├── load_to_zilliz.py            # Load JSON into Zilliz collections
+│   ├── export_zilliz_static_data.py # Export metadata + UMAP JSON
+│   ├── load_json_to_chroma.py       # Legacy Chroma loader
+│   ├── data_valid_check.py          # Validate embedding fields in source data
+│   └── check_semantic_scholar_api.py # Manual Semantic Scholar API check
+├── tests/
+│   └── test_logging.py      # Manual logging smoke test
+├── service/                 # Core logic
+│   ├── zilliz.py            # Zilliz queries, similarity, UMAP
+│   ├── embed.py             # Specter, Glove, Azure Ada embeddings
+│   ├── rag_core.py          # RAG retrieval, rerank, formatting
+│   ├── agent_runner.py      # LangChain agent and tools
+│   ├── agent_tools.py       # RAG/semantic search tools
 │   ├── memory_manager.py
+│   ├── pipeline/            # Routing, classification, approval, rewriting
 │   ├── session_state.py
 │   └── grounded_writer.py
 ├── model/
-│   ├── const.py         # e.g. EMBED (specter, glove, ada)
-│   └── query.py         # Query schemas
+│   ├── const.py             # e.g. EMBED (specter, glove, ada)
+│   └── query.py             # Query schemas
 └── extension/
-    └── ext_zilliz.py    # Caching / Zilliz helpers
+    └── ext_zilliz.py        # Caching / Zilliz helpers
 ```
 
 ---

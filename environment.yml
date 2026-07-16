@@ -39,4 +39,5 @@ dependencies:
       - langchain-core
       - langchain-community
       - langchain-openai
+      - PyMuPDF
       - google-cloud-logging

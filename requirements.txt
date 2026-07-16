@@ -42,6 +42,10 @@ langchain-openai==0.2.14
 # === Optional utilities ===
 tqdm
 colorama
+PyMuPDF
 
 # === Logging ===
 google-cloud-logging
+
+
+langgraph

@@ -39,3 +39,12 @@ ZILLIZ_INDEX_NLIST = int(os.environ.get("ZILLIZ_INDEX_NLIST", "2048"))
 ZILLIZ_INDEX_TYPE = os.environ.get("ZILLIZ_INDEX_TYPE", "HNSW")
 # For HNSW index only: search param "ef" (higher = better recall, slower). Use 128–256 for high precision.
 ZILLIZ_SEARCH_EF = int(os.environ.get("ZILLIZ_SEARCH_EF", "128"))
+
+# === Zotero integration ===
+ZOTERO_API_BASE_URL = os.environ.get("ZOTERO_API_BASE_URL", "https://api.zotero.org")
+ZOTERO_API_VERSION = os.environ.get("ZOTERO_API_VERSION", "3")
+ZOTERO_CONNECT_TTL_SECONDS = int(os.environ.get("ZOTERO_CONNECT_TTL_SECONDS", "43200"))
+ZOTERO_CHUNK_COLLECTION = os.environ.get("ZOTERO_CHUNK_COLLECTION", "zotero_chunks_glove")
+ZOTERO_IMPORT_EMBEDDING = os.environ.get("ZOTERO_IMPORT_EMBEDDING", "glove")
+ZOTERO_CHUNK_SIZE = int(os.environ.get("ZOTERO_CHUNK_SIZE", "1800"))
+ZOTERO_CHUNK_OVERLAP = int(os.environ.get("ZOTERO_CHUNK_OVERLAP", "250"))

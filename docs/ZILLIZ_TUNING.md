@@ -10,7 +10,7 @@ These settings control how fast and how accurate vector search is. Set them in `
 | **ZILLIZ_SEARCH_CANDIDATES_MULTIPLIER** | 1.5 | Request `limit × multiplier` candidates from search, then trim. Slightly > 1 improves precision when excluding some IDs. |
 | **ZILLIZ_SEARCH_EF** | 128 | (HNSW index only) Search range. **Higher** → better recall, slower. Use **128–256** for high precision. |
 
-## Index parameters (used when loading data with `load_to_zilliz.py`)
+## Index parameters (used when loading data with `scripts/load_to_zilliz.py`)
 
 | Variable | Default | Effect |
 |----------|---------|--------|
@@ -21,7 +21,7 @@ These settings control how fast and how accurate vector search is. Set them in `
 
 - **Faster, less precise**: lower `ZILLIZ_SEARCH_NPROBE` (e.g. 32), or use HNSW with lower `ZILLIZ_SEARCH_EF`.
 - **High precision (no loss)**: HNSW with **ZILLIZ_SEARCH_EF=128** (default) or 256.
-- After changing index settings, re-run `python load_to_zilliz.py` to rebuild the index.
+- After changing index settings, re-run `python scripts/load_to_zilliz.py` to rebuild the index.
 
 ## Region, CPU, and async (response speed)
 

@@ -1,7 +1,7 @@
 import json
 import config
 from logger_config import get_logger
-from service.metadata_normalizer import normalize_aggregated_metadata
+from service.utils.metadata_normalizer import normalize_aggregated_metadata
 
 # Use centralized logger
 logging = get_logger()
