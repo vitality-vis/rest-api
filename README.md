@@ -68,15 +68,7 @@ PORT=3000
 
 Get Zilliz credentials from [Zilliz Cloud](https://cloud.zilliz.com).
 
-### 4. Load data into Zilliz
-
-```bash
-python load_to_zilliz.py
-```
-
-This creates/updates Zilliz collections from your JSON file. Ensure `ZILLIZ_URI` and `ZILLIZ_TOKEN` are set.
-
-### 5. Export cached metadata and UMAP data
+### 4. Export cached metadata and UMAP data
 
 ```bash
 python script/export_zilliz_static_data.py
