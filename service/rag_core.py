@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
 from model.query import QuerySchema
 from service.zilliz import query_docs
-from service.embed import LocalSentenceTransformerEmbedding, specter_model_instance
+from service.embed import specter_model_instance
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
@@ -74,14 +74,8 @@ def clear_session_docs(chat_id: str) -> None:
 # Embedding + Zilliz setup
 # =====================================================
 CROSS_ENCODER_MODEL = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-COLLECTION_MAPPING = {
-    "specter": "paper_specter",
-    "ada": "paper_ada_localized",
-}
-
 EMBEDDING_MODELS = {
     "specter": specter_model_instance,
-    "ada": LocalSentenceTransformerEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2"),
 }
 
 def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, include_score: bool = True) -> str:
