@@ -23,8 +23,6 @@ from model.query import QuerySchema
 from service import zilliz
 from service.zilliz import query_doc_by_ids, query_docs, normalize_results
 import config
-# from service.agent_runner import build_agent, run_two_stage_hybrid_rag  # include new two-stage RAG
-# from service.agent_runner import build_agent, run_two_stage_rag
 from langchain_openai import AzureChatOpenAI
 from prompt import SUMMARIZE_PROMPT, LITERATURE_REVIEW_PROMPT
 from service import rag_core
@@ -32,18 +30,6 @@ from service.grounded_writer import (
     format_papers_with_segments,
     extract_citations_metadata_from_content
 )
-
-class NoStopAzureChatOpenAI(AzureChatOpenAI):
-    """AzureChatOpenAI wrapper that removes 'stop' for GPT-5 / Azure models."""
-    def _generate(self, messages, stop=None, **kwargs):
-        # Azure GPT-5 doesn’t allow 'stop' — remove it
-        return super()._generate(messages, stop=None, **kwargs)
-
-    def generate(self, messages, stop=None, **kwargs):
-        return super().generate(messages, stop=None, **kwargs)
-
-    def generate_prompt(self, prompts, stop=None, **kwargs):
-        return super().generate_prompt(prompts, stop=None, **kwargs)
 
 # === Initialize RAG Agent ===
 _rag_agent = None
@@ -128,32 +114,6 @@ def handle_log_event(data, callback=None):
         if callback:
             callback({"status": "error", "message": str(e)})
 
-
-
-
-# # Initialize Flask app and enable CORS
-# app = Flask(__name__, static_folder='./build', static_url_path='/')
-# cors = CORS(app, resources={r"/*": {"origins": "*"}})
-# app.config['CORS_HEADERS'] = 'Content-Type'
-
-# === Utility function to fetch similar papers using embedding and dimension (2D or nD) ===
-def get_similarities_v2(paper_ids, embedding, dimensions, limit):
-    if embedding not in EMBED.ALL:
-        raise ValueError('Embedding must be one of {}'.format(EMBED.ALL))
-
-    papers = zilliz.query_doc_by_ids(paper_ids)
-    if not papers:
-        return []
-
-    if dimensions == "nD":
-        return zilliz.query_similar_doc_by_embedding_full(papers, embedding, limit)
-    elif dimensions == '2D':
-        return zilliz.query_similar_doc_by_embedding_2d(papers, embedding, limit)
-
-# === Fallback embedding-based similarity query using paper abstract only ===
-def get_similarities_by_abstract_v2(input_data, embedding, limit):
-    return zilliz.query_similar_doc_by_paper(input_data, embedding, limit)
-
 # === Route: Retrieve papers based on filters (title, author, year, etc.) ===
 @app.route('/getPapers', methods=['GET', 'POST'])
 @cross_origin()
@@ -220,7 +180,6 @@ def get_papers_limited():
     return jsonify(results)
 
 # === Route: Get similar papers based on abstract input and embedding model ===
-# @app.route('/getSimilarPapersByAbstract', methods=['POST'])
 @app.route('/getSimilarPapersByAbstract', methods=['POST'])
 @cross_origin()
 def get_similar_papers_by_abstract():
@@ -316,7 +275,7 @@ def get_similar_papers():
         embedding_type = input_payload.get("embedding", EMBED.SPECTER)
         limit = int(input_payload.get("limit", 25))
         query_lang = input_payload.get("lang", "all")
-        dimensions = input_payload.get("dimensions", "nD")  
+        dimensions = input_payload.get("dimensions", "nD")
 
         if papers_data and isinstance(papers_data[0], str):
             # It's a list of IDs, so fetch the full paper objects from the database
@@ -338,7 +297,7 @@ def get_similar_papers():
                 lang_filter=language_filter
             )
             results = normalize_results(raw_results, mode="2D")
-        else:  
+        else:
             raw_results = zilliz.query_similar_doc_by_embedding_full(
                 papers=papers,
                 embedding_type=embedding_type,

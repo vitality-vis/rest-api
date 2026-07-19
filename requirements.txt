@@ -45,3 +45,7 @@ colorama
 
 # === Logging ===
 google-cloud-logging
+
+# === Dev test ===
+pytest
+pytest-mock
