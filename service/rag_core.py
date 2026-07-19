@@ -77,13 +77,11 @@ CROSS_ENCODER_MODEL = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 COLLECTION_MAPPING = {
     "specter": "paper_specter",
     "ada": "paper_ada_localized",
-    "glove": "paper_glove_localized",
 }
 
 EMBEDDING_MODELS = {
     "specter": specter_model_instance,
     "ada": LocalSentenceTransformerEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2"),
-    "glove": LocalSentenceTransformerEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
 }
 
 def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, include_score: bool = True) -> str:

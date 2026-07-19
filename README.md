@@ -121,7 +121,7 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 
 ### Embedding types
 
-Supported for similarity search: **`specter`** (default), **`glove`**, **`ada`**. If Ada is requested but the Azure embed deployment is missing, the API falls back to Specter.
+Supported for similarity search: **`specter`** (default) and **`ada`**. If Ada is requested but the Azure embed deployment is missing, the API falls back to Specter.
 
 ### Example requests
 
@@ -177,7 +177,7 @@ POST /chat
 │   └── VitaLITy-2.0.0.json   # Paper dataset (path configurable in config.py)
 ├── service/              # Core logic
 │   ├── zilliz.py        # Zilliz queries, similarity, UMAP
-│   ├── embed.py         # Specter, Glove, Azure Ada embeddings
+│   ├── embed.py         # Specter and Azure Ada embeddings
 │   ├── rag_core.py      # RAG retrieval, rerank, formatting
 │   ├── agent_runner.py  # LangChain agent and tools
 │   ├── agent_tools.py   # RAG/semantic search tools
@@ -188,7 +188,7 @@ POST /chat
 │   ├── grounded_writer.py
 │   └── static_cache.py  # meta/umap local snapshot + fingerprint refresh
 ├── model/
-│   ├── const.py         # e.g. EMBED (specter, glove, ada)
+│   ├── const.py         # e.g. EMBED (specter, ada)
 │   └── query.py         # Query schemas
 ```
 

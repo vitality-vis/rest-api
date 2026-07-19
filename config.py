@@ -37,7 +37,6 @@ ZILLIZ_TOKEN = os.environ.get("ZILLIZ_TOKEN", "")
 ZILLIZ_EMBED_DIM = {
     "paper_specter": 768,
     "paper_ada_localized": 1536,
-    "paper_glove_localized": 768,
 }
 
 # === Zilliz search & index tuning (speed vs precision) ===

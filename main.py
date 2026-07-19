@@ -192,6 +192,10 @@ def get_similar_papers_by_abstract():
 
     if not abstract_text:
         return jsonify({"message": "Abstract text is required"}), 400
+    if embedding_type not in EMBED.ALL:
+        return jsonify({
+            "message": f"Unsupported embedding type: {embedding_type}. Supported types: specter, ada."
+        }), 400
 
     try:
         from service import embed as embed_service
@@ -199,8 +203,6 @@ def get_similar_papers_by_abstract():
         def get_embedding(etype):
             if etype == EMBED.ADA:
                 return embed_service.ada_embedding(abstract_text)
-            if etype == EMBED.GLOVE:
-                return embed_service.glove_embedding(abstract_text)
             if etype == EMBED.SPECTER:
                 return embed_service.specter_embedding({"Title": title_text, "Abstract": abstract_text})
             return []
@@ -231,7 +233,7 @@ def get_similar_papers_by_abstract():
         if not query_embedding or not isinstance(query_embedding, (list, np.ndarray)):
             logger.error("Invalid or empty embedding after fallback: %s", type(query_embedding))
             return jsonify({
-                "message": "Could not generate an embedding. If you selected Ada, the deployment may be missing; try Specter or Glove.",
+                "message": "Could not generate an embedding. If you selected Ada, the deployment may be missing; try Specter.",
                 "results": [],
             }), 200
 
@@ -274,6 +276,11 @@ def get_similar_papers():
         limit = int(input_payload.get("limit", 25))
         query_lang = input_payload.get("lang", "all")
         dimensions = input_payload.get("dimensions", "nD")
+
+        if embedding_type not in EMBED.ALL:
+            return jsonify({
+                "message": f"Unsupported embedding type: {embedding_type}. Supported types: specter, ada."
+            }), 400
 
         if papers_data and isinstance(papers_data[0], str):
             # It's a list of IDs, so fetch the full paper objects from the database

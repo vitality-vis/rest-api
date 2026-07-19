@@ -94,7 +94,6 @@ class LocalSpecterEmbedding(Embeddings):
 # ==========================================
 # Model Instantiation
 # ==========================================
-glove_model_instance = LocalSentenceTransformerEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 specter_model_instance = LocalSpecterEmbedding(model_name="allenai/specter")
 
 
@@ -119,24 +118,6 @@ def ada_embedding(text_to_embed: Union[str, Dict]) -> List[float]:
         return embedding
     except Exception as e:
         logging.error(f"Error generating Azure OpenAI Ada embedding: {e}")
-        return []
-
-
-def glove_embedding(text_to_embed: Union[str, Dict]) -> List[float]:
-    if isinstance(text_to_embed, dict):
-        extracted_text = text_to_embed.get('abstract') or text_to_embed.get('text') or text_to_embed.get('Title')
-        if not extracted_text:
-             extracted_text = text_to_embed.get('title', '')
-        text_to_embed = extracted_text
-
-    if not text_to_embed or not isinstance(text_to_embed, str) or not text_to_embed.strip():
-        logging.warning("[Glove] No valid text found to embed. Returning empty list.")
-        return []
-
-    try:
-        return glove_model_instance.embed_query(text_to_embed)
-    except Exception as e:
-        logging.error(f"[Glove] Error during embedding generation: {e}")
         return []
 
 

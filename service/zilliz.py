@@ -20,11 +20,9 @@ logging = get_logger()
 # Collection name mapping; include string keys for agent_tools
 COLLECTION_MAPPING = {
     EMBED.ADA: "paper_ada_localized",
-    EMBED.GLOVE: "paper_glove_localized",
     EMBED.SPECTER: "paper_specter",
     "specter": "paper_specter",
     "ada": "paper_ada_localized",
-    "glove": "paper_glove_localized",
 }
 
 # Lazy pymilvus imports and connection
@@ -120,7 +118,7 @@ def _ids_to_expr(ids: List[str]) -> str:
     escaped = [f'"{str(i).replace(chr(34), "")}"' for i in ids]
     return "ID in [" + ", ".join(escaped) + "]"
 
-_SCALAR_FIELDS = ["ID", "Title", "Abstract", "Authors", "Keywords", "Source", "Year", "CitationCounts", "Lang", "ada_umap", "glove_umap", "specter_umap"]
+_SCALAR_FIELDS = ["ID", "Title", "Abstract", "Authors", "Keywords", "Source", "Year", "CitationCounts", "Lang", "ada_umap", "specter_umap"]
 
 
 def _entity_to_meta(entity) -> Optional[Dict[str, Any]]:
@@ -589,7 +587,7 @@ def query_similar_doc_by_embedding_full(papers: List[dict], embedding_type: str,
 def query_similar_doc_by_embedding_2d(
     papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None
 ):
-    umap_field = {EMBED.ADA: "ada_umap", EMBED.GLOVE: "glove_umap", EMBED.SPECTER: "specter_umap"}.get(embedding_type)
+    umap_field = {EMBED.ADA: "ada_umap", EMBED.SPECTER: "specter_umap"}.get(embedding_type)
     if not umap_field:
         return []
     query_points = []
@@ -637,7 +635,6 @@ def query_similar_doc_by_embedding_2d(
                     "Source": doc.get("Source", ""),
                     "Year": doc.get("Year"),
                     "ada_umap": doc.get("ada_umap"),
-                    "glove_umap": doc.get("glove_umap"),
                     "specter_umap": doc.get("specter_umap"),
                     "distance": dist,
                     "score": score,
@@ -657,7 +654,6 @@ _UMAP_FIELDS = [
     "Year",
     "Source",
     "ada_umap",
-    "glove_umap",
     "specter_umap",
 ]
 _METADATA_FIELDS = [
@@ -689,7 +685,6 @@ def format_umap_points(rows: List[dict]) -> List[dict]:
             "Year": row.get("Year"),
             "Source": row.get("Source", ""),
             "ada_umap": parse_coords(row.get("ada_umap")),
-            "glove_umap": parse_coords(row.get("glove_umap")),
             "specter_umap": parse_coords(row.get("specter_umap")),
         }
         for row in rows
@@ -857,7 +852,6 @@ def format_doc_for_frontend(doc: dict, score_key: str = "_score") -> dict:
         "Sim": final_sim_value,
         "score": final_sim_value,
         "ada_umap": parse_coords(doc.get("ada_umap")),
-        "glove_umap": parse_coords(doc.get("glove_umap")),
         "specter_umap": parse_coords(doc.get("specter_umap")),
     }
 
