@@ -17,6 +17,7 @@ from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO, emit
 from flask_compress import Compress
 from service.static_cache import cached_data
+from app.api.bootstrap import bootstrap_bp
 from model.const import EMBED
 from model.query import QuerySchema
 from service import zilliz
@@ -37,6 +38,7 @@ def get_rag_agent():
 
 # ===== Flask + SocketIO Init =====
 app = Flask(__name__, static_folder='./build', static_url_path='/')
+app.register_blueprint(bootstrap_bp)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type'
 
@@ -446,31 +448,6 @@ def chat_stream_simple():
 
     return Response(sync_stream(), mimetype="text/plain", status=200)
 
-
-# === Route: Retrieve all UMAP projection points for visualization ===
-@app.route('/getUmapPoints', methods=['GET'])
-@cross_origin()
-def get_umap_points():
-    return jsonify(cached_data.get_umap_points())
-
-# === Route: Get metadata aggregates for filters ===
-@app.route('/getMetaData', methods=['GET'])
-@cross_origin()
-def get_metas():
-    # Use cached metadata instead of computing it every time
-    cached_metadata = cached_data.get_aggregated_metadata()
-    if cached_metadata:
-        return jsonify(cached_metadata)
-
-    # Fallback to real-time computation if cache is not available
-    logger.warning("⚠️ Metadata cache not available, computing in real-time (slow)")
-    return jsonify({
-        'authors_summary': zilliz.get_distinct_authors_with_counts(),
-        'sources_summary': zilliz.get_distinct_sources_with_counts(),
-        'keywords_summary': zilliz.get_distinct_keywords_with_counts(),
-        'years_summary': zilliz.get_distinct_years_with_counts(),
-        'citation_counts': zilliz.get_distinct_citation_counts()
-    })
 
 llm = AzureChatOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
