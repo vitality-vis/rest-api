@@ -68,11 +68,13 @@ PORT=3000
 
 Get Zilliz credentials from [Zilliz Cloud](https://cloud.zilliz.com).
 
-### 4. Export cached metadata and UMAP data
+### 4. (Optional) Pre-warm the local cache
 
 ```bash
 python script/export_zilliz_static_data.py
 ```
+
+This is optional: if the cache is missing or outdated, the API downloads fresh data from Zilliz on startup. Run this command only to pre-warm the local metadata, UMAP, and fingerprint files.
 
 ---
 
@@ -183,12 +185,11 @@ POST /chat
 │   ├── query_rewriter.py
 │   ├── memory_manager.py
 │   ├── session_state.py
-│   └── grounded_writer.py
+│   ├── grounded_writer.py
+│   └── static_cache.py  # meta/umap local snapshot + fingerprint refresh
 ├── model/
 │   ├── const.py         # e.g. EMBED (specter, glove, ada)
 │   └── query.py         # Query schemas
-└── extension/
-    └── ext_zilliz.py    # Caching / Zilliz helpers
 ```
 
 ---

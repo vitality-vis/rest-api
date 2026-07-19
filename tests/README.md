@@ -1,0 +1,22 @@
+# rest-api tests
+
+Run these commands from `rest-api/` using the same Python environment as the API:
+
+```bash
+make test       # Local tests: no credentials or external services
+make test-live  # Read-only checks against real external services
+make test-all   # Both; live checks skip when credentials are unavailable
+```
+
+To run one test file:
+
+```bash
+make test TESTS=tests/test_static_cache.py
+```
+
+`make test-live` currently checks Zilliz. It needs `ZILLIZ_URI` and
+`ZILLIZ_TOKEN` (for example in `.env`) and never refreshes local data files.
+
+Full data export and startup-refresh checks are deliberately outside the test
+suite; use `python script/export_zilliz_static_data.py` or `python main.py`
+when you explicitly need them.

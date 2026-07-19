@@ -1,11 +1,23 @@
 
 import os
+from dotenv import load_dotenv
 
 PROJ_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+
+
+def load_project_environment():
+    """Load this project's optional .env without overriding real environment values."""
+    return load_dotenv(os.path.join(PROJ_ROOT_DIR, ".env"), override=False)
+
+
+# Configuration values below are intentionally captured only after the project
+# environment has been loaded. This makes API, scripts, and pytest consistent.
+load_project_environment()
 
 # === File path settings ===
 meta_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/meta_data.json')
 umap_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/umap_data.json')
+cache_fingerprint_file_path = os.path.join(PROJ_ROOT_DIR, 'data/cache_fingerprint.json')
 
 # Raw JSON data file (with embeddings). Use the file you want to load into Zilliz.
 raw_json_datafile = os.path.join(PROJ_ROOT_DIR, 'data/VitaLITy-2.0.0.json')

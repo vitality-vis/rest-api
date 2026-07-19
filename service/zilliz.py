@@ -3,8 +3,11 @@ Zilliz Cloud (Milvus-compatible) vector database service.
 """
 import json
 import math
+import sys
 import numpy as np
 from typing import List, Dict, Any, Optional
+
+from tqdm import tqdm
 
 import config
 from model.const import EMBED
@@ -144,50 +147,79 @@ def _entity_to_meta(entity) -> Optional[Dict[str, Any]]:
 _QUERY_BATCH_SIZE = 2000
 _ID_BATCH_SIZE = 5000
 
-def _query_all_batched(coll, output_fields: List[str]):
+def _query_all_batched(coll, output_fields: List[str], *, desc: Optional[str] = None):
     """
     Fetch all rows in batches to avoid gRPC 'message larger than max' (4MB).
     Phase 1: collect all IDs (ID only, small response). Phase 2: for each chunk
     of IDs query full rows with 'ID in [chunk]' (small request/response).
     """
-    return _query_by_expr_batched(coll, 'ID != ""', output_fields)
+    return _query_by_expr_batched(coll, 'ID != ""', output_fields, desc=desc)
 
-def _query_by_expr_batched(coll, base_expr: str, output_fields: List[str]):
+def _query_by_expr_batched(
+    coll,
+    base_expr: str,
+    output_fields: List[str],
+    *,
+    desc: Optional[str] = None,
+):
     """
     Fetch all rows matching base_expr in batches to stay under gRPC 4MB.
     Phase 1: collect IDs matching base_expr (ID only, batched with ID not in seen).
     Phase 2: fetch full rows by ID chunks.
     """
+    label = desc or "Zilliz"
     all_ids = []
     seen_ids = []
-    while True:
-        if seen_ids:
-            expr = f"({base_expr}) and {_zilliz_where_to_expr({'ID': {'$nin': seen_ids}})}"
-        else:
-            expr = base_expr
-        try:
-            res = coll.query(expr=expr, output_fields=["ID"], limit=_ID_BATCH_SIZE)
-        except Exception as e:
-            logging.warning(f"Batch ID fetch failed: {e}. Collected {len(all_ids)} IDs.")
-            break
-        if not res:
-            break
-        ids_batch = [r["ID"] for r in res if r.get("ID")]
-        all_ids.extend(ids_batch)
-        seen_ids.extend(ids_batch)
-        if len(res) < _ID_BATCH_SIZE:
-            break
+    # disable=False: Cursor / piped terminals often report not-a-TTY and hide bars.
+    with tqdm(
+        desc=f"{label}: IDs",
+        unit="id",
+        leave=True,
+        disable=False,
+        file=sys.stderr,
+        mininterval=0.3,
+    ) as pbar:
+        while True:
+            if seen_ids:
+                expr = f"({base_expr}) and {_zilliz_where_to_expr({'ID': {'$nin': seen_ids}})}"
+            else:
+                expr = base_expr
+            try:
+                res = coll.query(expr=expr, output_fields=["ID"], limit=_ID_BATCH_SIZE)
+            except Exception as e:
+                logging.warning(f"Batch ID fetch failed: {e}. Collected {len(all_ids)} IDs.")
+                break
+            if not res:
+                break
+            ids_batch = [r["ID"] for r in res if r.get("ID")]
+            all_ids.extend(ids_batch)
+            seen_ids.extend(ids_batch)
+            pbar.update(len(ids_batch))
+            if len(res) < _ID_BATCH_SIZE:
+                break
     if not all_ids:
         return []
     all_rows = []
-    for i in range(0, len(all_ids), _QUERY_BATCH_SIZE):
-        chunk = all_ids[i : i + _QUERY_BATCH_SIZE]
-        expr = _ids_to_expr(chunk)
-        try:
-            res = coll.query(expr=expr, output_fields=output_fields, limit=len(chunk) + 10)
-            all_rows.extend(res or [])
-        except Exception as e:
-            logging.warning(f"Batch row fetch failed: {e}")
+    with tqdm(
+        total=len(all_ids),
+        desc=f"{label}: rows",
+        unit="row",
+        leave=True,
+        disable=False,
+        file=sys.stderr,
+        mininterval=0.3,
+    ) as pbar:
+        for i in range(0, len(all_ids), _QUERY_BATCH_SIZE):
+            chunk = all_ids[i : i + _QUERY_BATCH_SIZE]
+            expr = _ids_to_expr(chunk)
+            try:
+                res = coll.query(expr=expr, output_fields=output_fields, limit=len(chunk) + 10)
+                rows = res or []
+                all_rows.extend(rows)
+                pbar.update(len(rows))
+            except Exception as e:
+                logging.warning(f"Batch row fetch failed: {e}")
+                pbar.update(len(chunk))
     return all_rows
 
 def _escape_like(s: str) -> str:
@@ -239,7 +271,7 @@ def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER):
         return
     try:
         logging.info(f"Loading all papers from {collection_name} into memory cache (batched)...")
-        res = _query_all_batched(coll, _SCALAR_FIELDS)
+        res = _query_all_batched(coll, _SCALAR_FIELDS, desc=f"cache {collection_name}")
         cached_papers = []
         for r in (res or []):
             cached_papers.append(format_doc_for_frontend(_row_to_meta(r)))
@@ -619,43 +651,95 @@ def query_similar_doc_by_embedding_2d(
 def query_similar_doc_by_paper(paper: dict, embedding_type: str, limit: int = 25, lang_filter: Dict = None):
     return query_similar_doc_by_embedding_full([paper], embedding_type, limit, lang_filter)
 
+_UMAP_FIELDS = [
+    "ID",
+    "Title",
+    "Year",
+    "Source",
+    "ada_umap",
+    "glove_umap",
+    "specter_umap",
+]
+_METADATA_FIELDS = [
+    "ID",
+    "Title",
+    "Authors",
+    "Keywords",
+    "Source",
+    "Year",
+    "CitationCounts",
+]
+_STATIC_CACHE_FIELDS = list(dict.fromkeys(_METADATA_FIELDS + _UMAP_FIELDS))
+
+
+def format_umap_points(rows: List[dict]) -> List[dict]:
+    """Convert Zilliz rows into the UMAP snapshot format."""
+    def parse_coords(val):
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return None
+        return val
+
+    return [
+        {
+            "ID": str(row.get("ID")) if row.get("ID") else None,
+            "Title": row.get("Title", ""),
+            "Year": row.get("Year"),
+            "Source": row.get("Source", ""),
+            "ada_umap": parse_coords(row.get("ada_umap")),
+            "glove_umap": parse_coords(row.get("glove_umap")),
+            "specter_umap": parse_coords(row.get("specter_umap")),
+        }
+        for row in rows
+    ]
+
+
 def get_all_umap_points(embedding_type: str = EMBED.SPECTER):
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
     if not coll:
         return []
-    umap_fields = ["ID", "Title", "Year", "Source", "ada_umap", "glove_umap", "specter_umap"]
     try:
-        res = _query_all_batched(coll, umap_fields)
-        points = []
-        for r in (res or []):
-            def parse_coords(val):
-                if isinstance(val, str):
-                    try:
-                        return json.loads(val)
-                    except Exception:
-                        return None
-                return val
-            points.append({
-                "ID": str(r.get("ID")) if r.get("ID") else None,
-                "Title": r.get("Title", ""),
-                "Year": r.get("Year"),
-                "Source": r.get("Source", ""),
-                "ada_umap": parse_coords(r.get("ada_umap")),
-                "glove_umap": parse_coords(r.get("glove_umap")),
-                "specter_umap": parse_coords(r.get("specter_umap")),
-            })
-        return points
+        rows = _query_all_batched(coll, _UMAP_FIELDS, desc="UMAP")
+        return format_umap_points(rows or [])
     except Exception as e:
         logging.error(f"Failed to load UMAP points from Zilliz: {e}", exc_info=True)
         return []
 
-def get_all_metadatas(embedding_type: str = EMBED.SPECTER) -> List[dict]:
-    """Return all metadata from Zilliz for the given embedding type (batched, no embedding vector)."""
+
+def get_all_static_cache_rows(embedding_type: str = EMBED.SPECTER) -> List[dict]:
+    """Fetch all fields needed for metadata and UMAP cache snapshots in one pass."""
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
     if not coll:
         return []
     try:
-        res = _query_all_batched(coll, _SCALAR_FIELDS)
+        return list(
+            _query_all_batched(coll, _STATIC_CACHE_FIELDS, desc="static cache") or []
+        )
+    except Exception as e:
+        logging.error(f"Failed to fetch static cache rows from Zilliz: {e}")
+        return []
+
+
+def get_all_metadatas(
+    embedding_type: str = EMBED.SPECTER,
+    limit: Optional[int] = None,
+) -> List[dict]:
+    """Return metadata rows from Zilliz (batched). Optional limit samples for cheap calls."""
+    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+    if not coll:
+        return []
+    try:
+        if limit is not None:
+            safe_limit = max(1, int(limit))
+            res = coll.query(
+                expr='ID != ""',
+                output_fields=_METADATA_FIELDS,
+                limit=safe_limit,
+            )
+        else:
+            res = _query_all_batched(coll, _METADATA_FIELDS, desc="metadata")
         return list(res or [])
     except Exception as e:
         logging.error(f"Failed to fetch metadatas from Zilliz: {e}")
@@ -668,11 +752,10 @@ def _aggregate_count(field: str, embedding_type: str = EMBED.SPECTER) -> List[Di
         values = doc.get(field)
         if values is None:
             continue
-        if not isinstance(values, list):
-            if field in ("Authors", "Keywords") and isinstance(values, str):
-                values = [v.strip() for v in values.split(",") if v.strip()]
-            else:
-                values = [values]
+        if field in ("Authors", "Keywords"):
+            values = _parse_string_list(values)
+        elif not isinstance(values, list):
+            values = [values]
         for v in values:
             if v:
                 key_str = str(v).strip()

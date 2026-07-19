@@ -1,8 +1,7 @@
-from dotenv import load_dotenv
-load_dotenv()
 import json
 import os
 import re
+import config  # Loads the project .env before the LLM is configured.
 from langchain_openai import AzureChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate

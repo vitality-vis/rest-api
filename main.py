@@ -1,28 +1,26 @@
 import os
-from dotenv import load_dotenv
-# Load environment variables from .env
-load_dotenv()
 import json
 import numpy as np
 from datetime import datetime
 import argparse
-from logger_config import setup_logger
 
-# Initialize centralized logger (with Google Cloud Logging)
-# Note: Import as custom_logger to avoid shadowing the logging module
-from logger_config import get_logger
+# Load .env before Google Cloud Logging (needs GOOGLE_APPLICATION_CREDENTIALS).
+import config
+config.load_project_environment()
+
+# Initialize PyMilvus before attaching the Google Cloud logging handler.
+from service.bootstrap import initialize_runtime
 import logging as logging_module
-logger = get_logger()
+logger = initialize_runtime()
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO, emit
 from flask_compress import Compress
-from extension.ext_zilliz import cached_data
+from service.static_cache import cached_data
 from model.const import EMBED
 from model.query import QuerySchema
 from service import zilliz
 from service.zilliz import query_doc_by_ids, query_docs, normalize_results
-import config
 from langchain_openai import AzureChatOpenAI
 from prompt import SUMMARIZE_PROMPT, LITERATURE_REVIEW_PROMPT
 from service import rag_core
@@ -464,7 +462,6 @@ def get_metas():
         'sources_summary': zilliz.get_distinct_sources_with_counts(),
         'keywords_summary': zilliz.get_distinct_keywords_with_counts(),
         'years_summary': zilliz.get_distinct_years_with_counts(),
-        'titles': zilliz.get_distinct_titles(),
         'citation_counts': zilliz.get_distinct_citation_counts()
     })
 

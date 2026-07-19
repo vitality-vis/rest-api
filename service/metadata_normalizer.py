@@ -85,6 +85,9 @@ def normalize_aggregated_metadata(data: Any) -> Dict[str, Any]:
         return {}
 
     normalized = dict(data)
+    # ``titles`` was a legacy autocomplete payload. Paper titles are supplied
+    # with the UMAP records, so never expose or retain the duplicate metadata.
+    normalized.pop("titles", None)
     for field in ("authors_summary", "keywords_summary"):
         normalized[field] = normalize_summary_entries(normalized.get(field, []))
     return normalized

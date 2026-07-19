@@ -98,7 +98,11 @@ def get_logger() -> logging.Logger:
     """
     global _logger
     if _logger is None:
-        return setup_logger()
+        # Services may be imported outside an application entry point. Keep
+        # that fallback local-only so third-party import-time logging cannot
+        # affect a CloudLoggingHandler; production entry points use
+        # service.bootstrap.initialize_runtime instead.
+        return setup_logger(enable_gcp=False)
     return _logger
 
 

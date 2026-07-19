@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
 from model.query import QuerySchema
 from service.zilliz import query_docs
-from service.embed import LocalSpecterEmbedding, LocalSentenceTransformerEmbedding
+from service.embed import LocalSentenceTransformerEmbedding, specter_model_instance
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
@@ -81,7 +81,7 @@ COLLECTION_MAPPING = {
 }
 
 EMBEDDING_MODELS = {
-    "specter": LocalSpecterEmbedding(model_name="allenai/specter"),
+    "specter": specter_model_instance,
     "ada": LocalSentenceTransformerEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2"),
     "glove": LocalSentenceTransformerEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
 }
