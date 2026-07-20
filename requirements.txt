@@ -31,7 +31,7 @@ huggingface-hub<1
 rank_bm25
 
 # === Vector DB (Zilliz Cloud / Milvus) ===
-pymilvus
+pymilvus==3.0.0
 
 # === LangChain ecosystem ===
 langchain==0.3.25

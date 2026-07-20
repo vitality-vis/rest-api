@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 
 from model.query import QuerySchema
-from service.zilliz import query_docs
+from repositories.zilliz.paper_repository import search_papers
 
 
 MAX_PAPERS_PAGE_SIZE = 100
@@ -43,4 +43,4 @@ def get_papers():
             maximum=MAX_PAPERS_PAGE_SIZE,
         ),
     )
-    return jsonify(query_docs(query))
+    return jsonify(search_papers(query))

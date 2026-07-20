@@ -13,6 +13,25 @@ import config
 from model.const import EMBED
 from model.query import QuerySchema
 from logger_config import get_logger
+from repositories.zilliz.connection import (
+    ensure_collection_loaded,
+    get_client as _get_milvus_client,
+)
+from repositories.zilliz.query_expressions import (
+    build_paper_query_expr as _build_paper_query_expr,
+    escape_like as _escape_like,
+    ids_to_expr as _ids_to_expr,
+    query_has_filters as _query_has_filters,
+    where_to_expr as _zilliz_where_to_expr,
+)
+from repositories.zilliz.mappers import (
+    SCALAR_FIELDS as _SCALAR_FIELDS,
+    entity_to_metadata as _entity_to_meta,
+    paper_to_api_response as format_doc_for_frontend,
+    row_to_metadata as _row_to_meta,
+    rows_to_umap_points as format_umap_points,
+    search_hit_to_id_and_distance,
+)
 from service.metadata_normalizer import parse_string_list
 
 logging = get_logger()
@@ -25,62 +44,61 @@ COLLECTION_MAPPING = {
     "ada": "paper_ada_localized",
 }
 
-# Lazy pymilvus imports and connection
-_pymilvus = None
-_connected = False
-_collection_cache = {}  # name -> Collection
 
-def _get_pymilvus():
-    global _pymilvus
-    if _pymilvus is None:
-        try:
-            from pymilvus import connections, Collection, utility
-            _pymilvus = (connections, Collection, utility)
-        except ImportError as e:
-            logging.error(f"pymilvus not installed: {e}")
-    return _pymilvus
+class _MilvusCollectionCompat:
+    """Temporary adapter for legacy code while repository methods migrate."""
 
-def _ensure_connection():
-    global _connected
-    if _connected:
-        return True
-    if not config.ZILLIZ_URI or not config.ZILLIZ_TOKEN:
-        logging.error("ZILLIZ_URI and ZILLIZ_TOKEN must be set (e.g. in .env)")
-        return False
-    pym = _get_pymilvus()
-    if not pym:
-        return False
-    connections, _, _ = pym
-    try:
-        connections.connect(uri=config.ZILLIZ_URI, token=config.ZILLIZ_TOKEN)
-        _connected = True
-        logging.info("Zilliz Cloud connection established")
-        return True
-    except Exception as e:
-        logging.error(f"Failed to connect to Zilliz: {e}", exc_info=True)
-        return False
+    def __init__(self, collection_name: str):
+        self._collection_name = collection_name
+
+    def query(self, *, expr, output_fields, limit=None, offset=None):
+        client = _get_milvus_client()
+        if not client:
+            return []
+        pagination = {}
+        if limit is not None:
+            pagination["limit"] = limit
+        if offset is not None:
+            pagination["offset"] = offset
+        return client.query(
+            collection_name=self._collection_name,
+            filter=expr,
+            output_fields=output_fields,
+            **pagination,
+        )
+
+    def search(self, *, data, anns_field, param, limit, output_fields):
+        client = _get_milvus_client()
+        if not client:
+            return []
+        return client.search(
+            collection_name=self._collection_name,
+            data=data,
+            anns_field=anns_field,
+            search_params=param,
+            limit=limit,
+            output_fields=output_fields,
+        )
+
+    @property
+    def num_entities(self):
+        client = _get_milvus_client()
+        if not client:
+            return 0
+        stats = client.get_collection_stats(self._collection_name) or {}
+        return int(stats.get("row_count", 0))
+
+
+_collection_adapters = {}
+
 
 def _get_collection(collection_name: str):
-    """Get and load collection; cache the instance."""
-    if not _ensure_connection():
+    """Temporary legacy name backed by MilvusClient, not ORM Collection."""
+    if not ensure_collection_loaded(collection_name):
         return None
-    if collection_name in _collection_cache:
-        return _collection_cache[collection_name]
-    pym = _get_pymilvus()
-    if not pym:
-        return None
-    _, Collection, utility = pym
-    try:
-        if not utility.has_collection(collection_name):
-            logging.error(f"Collection '{collection_name}' does not exist. Run load_to_zilliz.py first.")
-            return None
-        coll = Collection(collection_name)
-        coll.load()
-        _collection_cache[collection_name] = coll
-        return coll
-    except Exception as e:
-        logging.error(f"Failed to get collection '{collection_name}': {e}", exc_info=True)
-        return None
+    if collection_name not in _collection_adapters:
+        _collection_adapters[collection_name] = _MilvusCollectionCompat(collection_name)
+    return _collection_adapters[collection_name]
 
 # Expose for agent_tools
 def get_client():
@@ -111,36 +129,6 @@ class _ZillizCollectionCompat:
             return {"metadatas": [], "documents": []}
         metadatas = [r for r in res] if res else []
         return {"metadatas": metadatas, "documents": []}
-
-def _ids_to_expr(ids: List[str]) -> str:
-    if not ids:
-        return 'ID != ""'
-    escaped = [f'"{str(i).replace(chr(34), "")}"' for i in ids]
-    return "ID in [" + ", ".join(escaped) + "]"
-
-_SCALAR_FIELDS = ["ID", "Title", "Abstract", "Authors", "Keywords", "Source", "Year", "CitationCounts", "Lang", "ada_umap", "specter_umap"]
-
-
-def _entity_to_meta(entity) -> Optional[Dict[str, Any]]:
-    """Convert pymilvus hit.entity to a plain dict with scalar fields (Title, Abstract, etc.)."""
-    if entity is None:
-        return None
-    meta = {}
-    if isinstance(entity, dict):
-        for k, v in entity.items():
-            if k in _SCALAR_FIELDS or k == "_score":
-                meta[k] = v
-            elif k.lower() in [f.lower() for f in _SCALAR_FIELDS]:
-                meta[next(f for f in _SCALAR_FIELDS if f.lower() == k.lower())] = v
-    else:
-        for key in _SCALAR_FIELDS:
-            if hasattr(entity, "get") and callable(entity.get):
-                meta[key] = entity.get(key) or entity.get(key.lower())
-            else:
-                meta[key] = getattr(entity, key, None) or getattr(entity, key.lower(), None)
-    if meta.get("id") is not None and meta.get("ID") is None:
-        meta["ID"] = meta["id"]
-    return meta if meta.get("ID") is not None else None
 
 _QUERY_BATCH_SIZE = 2000
 _ID_BATCH_SIZE = 5000
@@ -220,42 +208,6 @@ def _query_by_expr_batched(
                 pbar.update(len(chunk))
     return all_rows
 
-def _escape_like(s: str) -> str:
-    """Escape % and _ for Milvus LIKE pattern."""
-    s = str(s).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return s.replace('"', '\\"')
-
-def _zilliz_where_to_expr(where: dict) -> str:
-    if not where:
-        return 'ID != ""'
-    parts = []
-    for k, v in where.items():
-        if isinstance(v, dict):
-            if "$eq" in v:
-                parts.append(f'{k} == "{str(v["$eq"]).replace(chr(34), "")}"')
-            elif "$in" in v:
-                in_list = v["$in"]
-                escaped = [f'"{str(i).replace(chr(34), "")}"' for i in in_list]
-                parts.append(f"{k} in [{', '.join(escaped)}]")
-            elif "$nin" in v:
-                nin_list = v["$nin"]
-                escaped = [f'"{str(i).replace(chr(34), "")}"' for i in nin_list]
-                parts.append(f"{k} not in [{', '.join(escaped)}]")
-            elif "$gte" in v:
-                parts.append(f"{k} >= {int(v['$gte'])}")
-            elif "$lte" in v:
-                parts.append(f"{k} <= {int(v['$lte'])}")
-            elif "$contains" in v:
-                esc = _escape_like(v["$contains"])
-                parts.append(f'{k} like "%{esc}%"')
-            elif "$contains_all" in v:
-                for val in v["$contains_all"]:
-                    esc = _escape_like(val)
-                    parts.append(f'{k} like "%{esc}%"')
-        else:
-            parts.append(f'{k} == "{str(v).replace(chr(34), "")}"')
-    return " and ".join(parts) if parts else 'ID != ""'
-
 # --- Cache ---
 _all_papers_cache = {}
 
@@ -278,10 +230,6 @@ def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER):
     except Exception as e:
         logging.error(f"Failed to load papers to cache: {e}", exc_info=True)
         _all_papers_cache[collection_name] = []
-
-def _row_to_meta(row: dict) -> dict:
-    """Convert Milvus row (field names as returned) to metadata dict."""
-    return row
 
 def get_cached_papers(embedding_type: str = EMBED.SPECTER):
     collection_name = COLLECTION_MAPPING.get(embedding_type)
@@ -307,90 +255,6 @@ def _normalized_list(values) -> List[str]:
         if norm:
             normalized.append(norm)
     return normalized
-
-
-def _build_paper_query_expr(query: QuerySchema) -> str:
-    """Translate supported paper filters into a Milvus scalar expression.
-
-    Keeping filtering in Zilliz is essential here: /getPapers must not first
-    materialise the collection in Python just to filter a single page.
-
-    TODO: Zilliz ``like`` / array filters are case-sensitive, unlike the
-    previous Python ``match_doc`` implementation. Define and implement a
-    case-insensitive search strategy without reintroducing a full collection
-    scan (for example normalized searchable fields at ingestion time).
-    """
-    parts = []
-
-    def like_all(field: str, value: Optional[str]):
-        if not value:
-            return
-        for term in (item.strip() for item in value.split(",")):
-            if term:
-                parts.append(f'{field} like "%{_escape_like(term)}%"')
-
-    def like_any(field: str, values):
-        if not values:
-            return
-        if isinstance(values, str):
-            values = [values]
-        matches = [
-            f'{field} like "%{_escape_like(value)}%"'
-            for value in values
-            if str(value).strip()
-        ]
-        if matches:
-            parts.append("(" + " or ".join(matches) + ")")
-
-    def array_contains_any(field: str, values):
-        if not values:
-            return
-        if isinstance(values, str):
-            values = [values]
-        matches = [
-            f'array_contains({field}, "{_escape_like(value)}")'
-            for value in values
-            if str(value).strip()
-        ]
-        if matches:
-            parts.append("(" + " or ".join(matches) + ")")
-
-    like_all("Title", query.title)
-    like_all("Abstract", query.abstract)
-    like_any("Source", query.source)
-    array_contains_any("Authors", query.author)
-    array_contains_any("Keywords", query.keyword)
-
-    if query.min_year is not None:
-        parts.append(f"Year >= {int(query.min_year)}")
-    if query.max_year is not None:
-        parts.append(f"Year <= {int(query.max_year)}")
-    if getattr(query, "min_citation_counts", None) is not None:
-        parts.append(f"CitationCounts >= {float(query.min_citation_counts)}")
-    if getattr(query, "max_citation_counts", None) is not None:
-        parts.append(f"CitationCounts <= {float(query.max_citation_counts)}")
-    if query.id_list:
-        parts.append(_ids_to_expr([str(paper_id) for paper_id in query.id_list]))
-
-    return " and ".join(parts) if parts else 'ID != ""'
-
-
-def _query_has_filters(query: QuerySchema) -> bool:
-    return any(
-        value is not None and value != [] and value != ""
-        for value in (
-            query.title,
-            query.abstract,
-            query.author,
-            query.source,
-            query.keyword,
-            query.min_year,
-            query.max_year,
-            getattr(query, "min_citation_counts", None),
-            getattr(query, "max_citation_counts", None),
-            query.id_list,
-        )
-    )
 
 
 def _count_matching_entities(coll, expr: str) -> Optional[int]:
@@ -645,18 +509,11 @@ def query_doc_by_embedding(
     id_to_distance = {}
     order_ids = []
     for hit in hits:
-        entity = getattr(hit, "entity", hit)
-        doc_id = None
-        if hasattr(entity, "get") and entity.get("ID"):
-            doc_id = str(entity.get("ID"))
-        elif getattr(entity, "ID", None) is not None:
-            doc_id = str(entity.ID)
-        elif isinstance(entity, dict) and entity.get("id"):
-            doc_id = str(entity.get("id"))
+        doc_id, distance = search_hit_to_id_and_distance(hit)
         if not doc_id or (paper_ids and doc_id in [str(p) for p in paper_ids]):
             continue
         if doc_id not in id_to_distance:
-            id_to_distance[doc_id] = getattr(hit, "distance", None)
+            id_to_distance[doc_id] = distance
             order_ids.append(doc_id)
         if len(order_ids) >= limit:
             break
@@ -787,29 +644,6 @@ _METADATA_FIELDS = [
 _STATIC_CACHE_FIELDS = list(dict.fromkeys(_METADATA_FIELDS + _UMAP_FIELDS))
 
 
-def format_umap_points(rows: List[dict]) -> List[dict]:
-    """Convert Zilliz rows into the UMAP snapshot format."""
-    def parse_coords(val):
-        if isinstance(val, str):
-            try:
-                return json.loads(val)
-            except Exception:
-                return None
-        return val
-
-    return [
-        {
-            "ID": str(row.get("ID")) if row.get("ID") else None,
-            "Title": row.get("Title", ""),
-            "Year": row.get("Year"),
-            "Source": row.get("Source", ""),
-            "ada_umap": parse_coords(row.get("ada_umap")),
-            "specter_umap": parse_coords(row.get("specter_umap")),
-        }
-        for row in rows
-    ]
-
-
 def get_all_umap_points(embedding_type: str = EMBED.SPECTER):
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
     if not coll:
@@ -936,43 +770,6 @@ def get_distinct_titles(embedding_type: str = EMBED.SPECTER) -> List[str]:
 def get_distinct_citation_counts(embedding_type: str = EMBED.SPECTER) -> List[int]:
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("CitationCounts") for doc in docs if doc.get("CitationCounts") is not None))
-
-def format_doc_for_frontend(doc: dict, score_key: str = "_score") -> dict:
-    distance = doc.get(score_key)
-    final_sim_value = 0.0
-    try:
-        float_distance = float(distance) if distance is not None else float("nan")
-        if not math.isnan(float_distance):
-            final_sim_value = 1.0 / (1.0 + float_distance)
-    except Exception:
-        pass
-    # Support both "Title" and "title" (some backends return lowercase)
-    def _get(k):
-        return doc.get(k) or doc.get(k.lower()) or ""
-    authors = _parse_string_list(doc.get("Authors") or doc.get("authors") or "")
-    keywords = _parse_string_list(doc.get("Keywords") or doc.get("keywords") or "")
-    def parse_coords(val):
-        if isinstance(val, str):
-            try:
-                return json.loads(val)
-            except Exception:
-                return None
-        return val
-    return {
-        "ID": doc.get("ID") or doc.get("id"),
-        "Title": _get("Title"),
-        "Abstract": _get("Abstract"),
-        "Authors": authors,
-        "Keywords": keywords,
-        "Source": _get("Source"),
-        "Year": doc.get("Year") if doc.get("Year") is not None else doc.get("year"),
-        "CitationCounts": doc.get("CitationCounts") if doc.get("CitationCounts") is not None else doc.get("citationcounts"),
-        "_Sim": final_sim_value,
-        "Sim": final_sim_value,
-        "score": final_sim_value,
-        "ada_umap": parse_coords(doc.get("ada_umap")),
-        "specter_umap": parse_coords(doc.get("specter_umap")),
-    }
 
 # For agent_tools
 _zilliz_client = get_client()

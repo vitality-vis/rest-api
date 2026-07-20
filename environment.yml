@@ -34,7 +34,7 @@ dependencies:
       - safetensors
       - huggingface-hub
       - rank_bm25
-      - pymilvus
+      - pymilvus==3.0.0
       - langchain
       - langchain-core
       - langchain-community
