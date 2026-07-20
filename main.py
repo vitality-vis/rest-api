@@ -18,10 +18,10 @@ from flask_socketio import SocketIO, emit
 from flask_compress import Compress
 from service.static_cache import cached_data
 from app.api.bootstrap import bootstrap_bp
+from app.api.papers import papers_bp
 from model.const import EMBED
-from model.query import QuerySchema
 from service import zilliz
-from service.zilliz import query_doc_by_ids, query_docs, normalize_results
+from service.zilliz import query_doc_by_ids, normalize_results
 from langchain_openai import AzureChatOpenAI
 from prompt import SUMMARIZE_PROMPT, LITERATURE_REVIEW_PROMPT
 from service import rag_core
@@ -39,6 +39,7 @@ def get_rag_agent():
 # ===== Flask + SocketIO Init =====
 app = Flask(__name__, static_folder='./build', static_url_path='/')
 app.register_blueprint(bootstrap_bp)
+app.register_blueprint(papers_bp)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type'
 
@@ -113,28 +114,6 @@ def handle_log_event(data, callback=None):
         # Send error acknowledgment
         if callback:
             callback({"status": "error", "message": str(e)})
-
-# === Route: Retrieve papers based on filters (title, author, year, etc.) ===
-@app.route('/getPapers', methods=['GET', 'POST'])
-@cross_origin()
-def get_papers():
-    input_payload = request.args if request.method == 'GET' else request.json or {}
-
-    query = QuerySchema(
-        title=input_payload.get('title'),
-        abstract=input_payload.get('abstract'),
-        author=input_payload.get('author'),
-        source=input_payload.get('source'),
-        keyword=input_payload.get('keyword'),
-        min_year=input_payload.get('min_year'),
-        max_year=input_payload.get('max_year'),
-        min_citation_counts=input_payload.get('min_citation_counts'),
-        max_citation_counts=input_payload.get('max_citation_counts'),
-        id_list=input_payload.get('id_list'),
-        offset=int(input_payload.get('offset', 0)),
-        limit=int(input_payload.get('limit', 1000))
-    )
-    return jsonify(query_docs(query))
 
 @app.route('/getPapersLimited', methods=['POST'])
 @cross_origin()

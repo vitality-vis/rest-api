@@ -309,6 +309,90 @@ def _normalized_list(values) -> List[str]:
     return normalized
 
 
+def _build_paper_query_expr(query: QuerySchema) -> str:
+    """Translate supported paper filters into a Milvus scalar expression.
+
+    Keeping filtering in Zilliz is essential here: /getPapers must not first
+    materialise the collection in Python just to filter a single page.
+
+    TODO: Zilliz ``like`` / array filters are case-sensitive, unlike the
+    previous Python ``match_doc`` implementation. Define and implement a
+    case-insensitive search strategy without reintroducing a full collection
+    scan (for example normalized searchable fields at ingestion time).
+    """
+    parts = []
+
+    def like_all(field: str, value: Optional[str]):
+        if not value:
+            return
+        for term in (item.strip() for item in value.split(",")):
+            if term:
+                parts.append(f'{field} like "%{_escape_like(term)}%"')
+
+    def like_any(field: str, values):
+        if not values:
+            return
+        if isinstance(values, str):
+            values = [values]
+        matches = [
+            f'{field} like "%{_escape_like(value)}%"'
+            for value in values
+            if str(value).strip()
+        ]
+        if matches:
+            parts.append("(" + " or ".join(matches) + ")")
+
+    def array_contains_any(field: str, values):
+        if not values:
+            return
+        if isinstance(values, str):
+            values = [values]
+        matches = [
+            f'array_contains({field}, "{_escape_like(value)}")'
+            for value in values
+            if str(value).strip()
+        ]
+        if matches:
+            parts.append("(" + " or ".join(matches) + ")")
+
+    like_all("Title", query.title)
+    like_all("Abstract", query.abstract)
+    like_any("Source", query.source)
+    array_contains_any("Authors", query.author)
+    array_contains_any("Keywords", query.keyword)
+
+    if query.min_year is not None:
+        parts.append(f"Year >= {int(query.min_year)}")
+    if query.max_year is not None:
+        parts.append(f"Year <= {int(query.max_year)}")
+    if getattr(query, "min_citation_counts", None) is not None:
+        parts.append(f"CitationCounts >= {float(query.min_citation_counts)}")
+    if getattr(query, "max_citation_counts", None) is not None:
+        parts.append(f"CitationCounts <= {float(query.max_citation_counts)}")
+    if query.id_list:
+        parts.append(_ids_to_expr([str(paper_id) for paper_id in query.id_list]))
+
+    return " and ".join(parts) if parts else 'ID != ""'
+
+
+def _query_has_filters(query: QuerySchema) -> bool:
+    return any(
+        value is not None and value != [] and value != ""
+        for value in (
+            query.title,
+            query.abstract,
+            query.author,
+            query.source,
+            query.keyword,
+            query.min_year,
+            query.max_year,
+            getattr(query, "min_citation_counts", None),
+            getattr(query, "max_citation_counts", None),
+            query.id_list,
+        )
+    )
+
+
 def _contains_token_phrase(container: str, needle: str) -> bool:
     if not container or not needle:
         return False
@@ -397,19 +481,36 @@ def match_doc(doc, query: QuerySchema):
     return True
 
 def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
+    """Return one Zilliz-backed page of papers without a process-wide cache."""
     try:
-        all_papers = get_cached_papers(embedding_type)
-        if not all_papers:
+        coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+        if not coll:
             return {"papers": [], "total": 0}
-        docs = [p for p in all_papers if match_doc(p, query)]
-        total_count = len(docs)
-        offset = int(query.offset or 0)
-        limit = int(query.limit or 100)
-        if limit == -1:
-            paginated_docs = docs[offset:]
+
+        # Keep this guard in the service as well as the HTTP route: agent code
+        # also calls query_docs() directly.
+        limit = min(max(int(query.limit or 100), 1), 100)
+        offset = max(int(query.offset or 0), 0)
+        rows = coll.query(
+            expr=_build_paper_query_expr(query),
+            output_fields=_SCALAR_FIELDS,
+            limit=limit + 1,
+            offset=offset,
+        ) or []
+        has_more = len(rows) > limit
+        papers = [format_doc_for_frontend(row) for row in rows[:limit] if row]
+
+        if not _query_has_filters(query):
+            try:
+                total_count = int(coll.num_entities)
+            except Exception:
+                total_count = offset + len(papers) + int(has_more)
         else:
-            paginated_docs = docs[offset : offset + limit]
-        return {"papers": paginated_docs, "total": total_count}
+            # Counting a filtered result set would require another unbounded
+            # scan. The client currently only needs a numeric display value.
+            total_count = offset + len(papers) + int(has_more)
+
+        return {"papers": papers, "total": total_count, "has_more": has_more}
     except Exception as e:
         logging.error(f"Error in query_docs(): {e}", exc_info=True)
         return {"papers": [], "total": 0}

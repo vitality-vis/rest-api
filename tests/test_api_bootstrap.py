@@ -35,6 +35,17 @@ def _get_json(api_base_url: str, path: str):
     return response.json()
 
 
+def _post_json(api_base_url: str, path: str, payload: dict):
+    try:
+        response = requests.post(f"{api_base_url}{path}", json=payload, timeout=30)
+    except requests.RequestException as error:
+        pytest.fail(f"Could not reach API_BASE_URL at {path}: {error}")
+
+    assert response.status_code == 200, response.text
+    assert response.headers.get("Content-Type", "").startswith("application/json")
+    return response.json()
+
+
 def test_get_umap_points(api_base_url):
     """The running API serves the unchanged UMAP endpoint as a JSON array."""
     assert isinstance(_get_json(api_base_url, "/getUmapPoints"), list)
@@ -52,3 +63,14 @@ def test_get_metadata(api_base_url):
         "years_summary",
         "citation_counts",
     } <= data.keys()
+
+
+def test_get_papers_initial_load(api_base_url):
+    """The frontend bootstrap can load its first page of 100 papers."""
+    data = _post_json(api_base_url, "/getPapers", {"offset": 0, "limit": 100})
+
+    assert isinstance(data, dict)
+    assert isinstance(data.get("papers"), list)
+    assert len(data["papers"]) == 100
+    assert isinstance(data.get("total"), int)
+    assert data["total"] >= len(data["papers"])
