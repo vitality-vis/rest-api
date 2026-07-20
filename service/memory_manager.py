@@ -12,6 +12,8 @@ class MemoryManager:
     turns: List[Turn] = field(default_factory=list)
     doc_cache: List[Dict[str, Any]] = field(default_factory=list)
 
+    # TODO: Replace the fixed sliding window with recent turns plus a compact
+    # conversation summary and on-demand retrieval of relevant older history.
     MAX_TURNS: int = 6     # sliding window size (keep last 6 user+assistant pairs)
     MAX_DOCS: int = 20     # store up to 20 retrieved docs
 
@@ -30,6 +32,16 @@ class MemoryManager:
             f"{t.role.upper()}: {t.content}"
             for t in self.turns
         )
+
+    def restore_history(self, history: List[Dict[str, str]]) -> None:
+        """Replace in-memory conversation state with validated client history."""
+        self.turns = []
+        self.doc_cache = []
+        for turn in history:
+            role = turn.get("role")
+            content = turn.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str) and content:
+                self.add_turn(role, content)
 
     # ---------------------------
     # Retrieved Docs

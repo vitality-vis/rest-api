@@ -581,7 +581,7 @@ Here are the relevant papers:
 ====================================================
 """,
     ),
-    # ("placeholder", "{chat_history}"),
+    ("placeholder", "{chat_history}"),
     ("human", "{input}"),
     ("placeholder", "{agent_scratchpad}")
 ])
@@ -687,14 +687,14 @@ def convert_history_text_to_messages(history_text: str):
 
 
 async def _fallback_direct_answer(
-    llm, user_input: str, mem: MemoryManager = None, session: dict = None
+    llm, user_input: str, mem: MemoryManager = None, session: dict = None, chat_history=None
 ):
     """
     When any step or tool fails, stream a direct LLM answer to the user's question.
     Yields content chunks; optionally updates memory if mem provided.
     """
     try:
-        messages = [HumanMessage(content=user_input)]
+        messages = [*(chat_history or []), HumanMessage(content=user_input)]
         full = []
         if hasattr(llm, "astream") and callable(getattr(llm, "astream")):
             async for chunk in llm.astream(messages):
@@ -718,6 +718,7 @@ async def run_two_stage_rag_stream(
     chat_id: str = "default",
     selected_paper_ids: list = None,
     selected_paper_titles: list = None,
+    history=None,
 ):
     session = None
     try:
@@ -733,6 +734,12 @@ async def run_two_stage_rag_stream(
     mem: MemoryManager = session["mem"]
     llm = session["llm"]
     session["_turn_docs"] = []
+    if history is not None:
+        mem.restore_history(history)
+    chat_history = [
+        HumanMessage(content=turn.content) if turn.role == "user" else AIMessage(content=turn.content)
+        for turn in mem.turns
+    ]
     mem.add_turn("user", user_input)
 
     # ── Selected papers: resolve from cache or force metadata_search (no rewrite) ──
@@ -788,13 +795,15 @@ async def run_two_stage_rag_stream(
 
         if intent and intent.intent == Intent.SMALL_TALK:
             try:
-                response = llm.invoke([HumanMessage(content=clean_input)]).content
+                response = llm.invoke([*chat_history, HumanMessage(content=clean_input)]).content
                 yield response
                 mem.add_turn("assistant", response)
                 return
             except Exception as e:
                 logging.warning("[run_two_stage_rag_stream] SMALL_TALK LLM failed: %s", e)
-                async for chunk in _fallback_direct_answer(llm, clean_input, mem=mem, session=session):
+                async for chunk in _fallback_direct_answer(
+                    llm, clean_input, mem=mem, session=session, chat_history=chat_history
+                ):
                     yield chunk
                 return
 
@@ -815,7 +824,7 @@ async def run_two_stage_rag_stream(
 
     # ── Agent execution + streaming ──
     final_answer = ""
-    agent_input = {"input": agent_input_text}
+    agent_input = {"input": agent_input_text, "chat_history": chat_history}
 
     try:
         async for event in agent.astream_events(agent_input, version="v1"):
@@ -849,7 +858,9 @@ async def run_two_stage_rag_stream(
         asyncio.create_task(async_update_memory(session, final_answer))
     except Exception as e:
         logging.warning("[run_two_stage_rag_stream] agent/tool failed: %s", e)
-        async for chunk in _fallback_direct_answer(llm, user_input, mem=mem, session=session):
+        async for chunk in _fallback_direct_answer(
+            llm, user_input, mem=mem, session=session, chat_history=chat_history
+        ):
             yield chunk
 
 async def async_update_memory(session, final_text: str):

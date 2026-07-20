@@ -12,6 +12,40 @@ from service.agent_runner import run_two_stage_rag_stream
 
 chat_bp = Blueprint("chat", __name__)
 
+# TODO: Replace these fixed client-history limits with recent turns plus a
+# compact summary and on-demand retrieval of relevant older history.
+MAX_HISTORY_MESSAGES = 12
+MAX_HISTORY_MESSAGE_CHARS = 4_000
+MAX_HISTORY_TOTAL_CHARS = 24_000
+
+
+def _normalise_history(value: object) -> list[dict[str, str]]:
+    """Return bounded, user/assistant text turns from an untrusted request body."""
+    if not isinstance(value, list):
+        return []
+
+    turns: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if content:
+            turns.append({"role": role, "content": content[:MAX_HISTORY_MESSAGE_CHARS]})
+
+    bounded: list[dict[str, str]] = []
+    remaining = MAX_HISTORY_TOTAL_CHARS
+    for turn in reversed(turns[-MAX_HISTORY_MESSAGES:]):
+        if remaining <= 0:
+            break
+        content = turn["content"][:remaining]
+        bounded.append({"role": turn["role"], "content": content})
+        remaining -= len(content)
+    return list(reversed(bounded))
+
 
 @chat_bp.route("/chat", methods=["POST"])
 @cross_origin()
@@ -20,6 +54,7 @@ def chat():
     data = request.get_json(force=True) or {}
     text = data.get("text", "").strip()
     chat_id = data.get("chat_id", "default")
+    history = _normalise_history(data.get("history"))
 
     if not text:
         return Response("Please Input Your Text", status=400)
@@ -28,7 +63,7 @@ def chat():
     logger = current_app.logger
 
     async def agen():
-        async for chunk in run_two_stage_rag_stream(text, chat_id):
+        async for chunk in run_two_stage_rag_stream(text, chat_id, history=history):
             yield chunk
 
     def stream_sync():
