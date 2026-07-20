@@ -18,6 +18,7 @@ from flask_socketio import SocketIO, emit
 from flask_compress import Compress
 from service.static_cache import cached_data
 from app.api.bootstrap import bootstrap_bp
+from app.api.chat import chat_bp
 from app.api.papers import papers_bp
 from model.const import EMBED
 from service import zilliz
@@ -39,6 +40,7 @@ def get_rag_agent():
 # ===== Flask + SocketIO Init =====
 app = Flask(__name__, static_folder='./build', static_url_path='/')
 app.register_blueprint(bootstrap_bp)
+app.register_blueprint(chat_bp)
 app.register_blueprint(papers_bp)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type'
@@ -323,69 +325,6 @@ def checkout_papers():
     response_text = '\n'.join([lib.bib_template(paper) for paper in papers])
     return Response(response_text, mimetype="text/plain", headers={"Content-Disposition": "attachment;" + filename})
 
-
-from service.agent_runner import run_two_stage_rag_stream
-import asyncio
-from flask import Response, request
-from flask_cors import cross_origin
-
-
-@app.route('/chat', methods=['POST'])
-@cross_origin()
-def chat():
-    """
-    Stable streaming endpoint
-    --------------------------------
-    ✔ No event-loop destruction
-    ✔ No 'Task was destroyed but it is pending!'
-    ✔ No 'coroutine was never awaited'
-    ✔ Works with async run_two_stage_rag_stream()
-    """
-
-    data = request.get_json(force=True) or {}
-    text = data.get('text', '').strip()
-    chat_id = data.get('chat_id', 'default')
-
-    if not text:
-        return Response("Please Input Your Text", status=400)
-
-    # ---- Create ONE event loop for this request ----
-    loop = asyncio.new_event_loop()
-
-    # Run async generator inside this loop
-    async def agen():
-        async for chunk in run_two_stage_rag_stream(text, chat_id):
-            yield chunk
-
-    # Sync wrapper: on any exception, yield fallback so client gets 200 + content
-    def stream_sync():
-        try:
-            agen_obj = agen().__aiter__()
-            while True:
-                chunk = loop.run_until_complete(agen_obj.__anext__())
-                yield chunk
-        except StopAsyncIteration:
-            pass
-        except Exception as e:
-            logger.warning("Chat stream error: %s", e)
-            yield "I'm sorry, something went wrong on our side. Please try again."
-        finally:
-            # Don't close the loop too early!
-            # Let background tasks finish
-            pending = asyncio.all_tasks(loop=loop)
-            for task in pending:
-                task.cancel()
-            try:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except:
-                pass
-            loop.close()
-
-    return Response(
-        stream_sync(),
-        status=200,
-        mimetype="text/plain"
-    )
 
 from flask import Response, request
 from flask_cors import cross_origin
