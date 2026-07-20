@@ -393,6 +393,22 @@ def _query_has_filters(query: QuerySchema) -> bool:
     )
 
 
+def _count_matching_entities(coll, expr: str) -> Optional[int]:
+    """Return the exact number of entities matching a Milvus scalar expression."""
+    try:
+        rows = coll.query(expr=expr, output_fields=["count(*)"]) or []
+        if not rows:
+            return 0
+        row = rows[0]
+        for key in ("count(*)", "count()"):
+            if key in row:
+                return int(row[key])
+        return int(next(iter(row.values())))
+    except Exception as e:
+        logging.warning(f"Zilliz count(*) failed for expr={expr!r}: {e}")
+        return None
+
+
 def _contains_token_phrase(container: str, needle: str) -> bool:
     if not container or not needle:
         return False
@@ -491,8 +507,9 @@ def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
         # also calls query_docs() directly.
         limit = min(max(int(query.limit or 100), 1), 100)
         offset = max(int(query.offset or 0), 0)
+        expr = _build_paper_query_expr(query)
         rows = coll.query(
-            expr=_build_paper_query_expr(query),
+            expr=expr,
             output_fields=_SCALAR_FIELDS,
             limit=limit + 1,
             offset=offset,
@@ -501,14 +518,15 @@ def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
         papers = [format_doc_for_frontend(row) for row in rows[:limit] if row]
 
         if not _query_has_filters(query):
+            # num_entities: total rows in the Zilliz collection (full corpus size).
             try:
                 total_count = int(coll.num_entities)
             except Exception:
                 total_count = offset + len(papers) + int(has_more)
         else:
-            # Counting a filtered result set would require another unbounded
-            # scan. The client currently only needs a numeric display value.
-            total_count = offset + len(papers) + int(has_more)
+            total_count = _count_matching_entities(coll, expr)
+            if total_count is None:
+                total_count = offset + len(papers) + int(has_more)
 
         return {"papers": papers, "total": total_count, "has_more": has_more}
     except Exception as e:

@@ -17,6 +17,7 @@ Start the API normally, then test your local server:
 
 ```bash
 make test-live TESTS=tests/test_api_bootstrap.py
+make test-live TESTS=tests/test_api_getpapers.py
 ```
 
 When an explicitly selected test matches `tests/test_api_*.py`, Make defaults
