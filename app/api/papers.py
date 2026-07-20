@@ -25,6 +25,7 @@ def get_papers():
     """Fetch at most one bounded page of papers directly from Zilliz."""
     input_payload = request.args if request.method == "GET" else request.json or {}
     query = QuerySchema(
+        search_query=input_payload.get("search_query"),
         title=input_payload.get("title"),
         abstract=input_payload.get("abstract"),
         author=input_payload.get("author"),

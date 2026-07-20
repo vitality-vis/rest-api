@@ -93,3 +93,23 @@ def test_get_papers_chi_source_total(api_base_url, capsys):
     else:
         assert data["has_more"] is False
         assert len(data["papers"]) == data["total"]
+
+
+def test_get_papers_cross_field_search_query(api_base_url):
+    """Comma-separated search_query terms should match across paper metadata."""
+    payload = {
+        "offset": 0,
+        "limit": 100,
+        "search_query": "visualization, LLM",
+    }
+    data = _assert_papers_payload(_post_json(api_base_url, "/getPapers", payload))
+
+    print(
+        f"\n[getPapers] search_query={payload['search_query']!r} "
+        f"total={data['total']:,} "
+        f"(returned {len(data['papers'])} papers, has_more={data['has_more']})"
+    )
+    for paper in data["papers"][:5]:
+        print(f"  sample title: {paper.get('Title', '')!r}")
+
+    assert data["total"] > 0

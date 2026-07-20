@@ -50,12 +50,23 @@ def where_to_expr(where: dict) -> str:
     return " and ".join(parts) if parts else 'ID != ""'
 
 
+def split_query_terms(value: Optional[str]) -> List[str]:
+    """Parse terms for the comma-separated cross-field ``search_query``."""
+    if not value:
+        return []
+    return [term.strip() for term in value.split(",") if term.strip()]
+
+
 def build_paper_query_expr(query: QuerySchema) -> str:
     """Translate supported paper filters into a Milvus scalar expression.
 
     Filtering stays in Zilliz so a page request never materialises the complete
-    collection in Python. Milvus ``like`` and array filters are case-sensitive;
-    case-insensitive search needs normalised fields at ingestion time.
+    collection in Python. Milvus ``like`` and array filters are case-sensitive.
+
+    TODO: At ingestion, add a lowercase ``search_text`` field that concatenates
+    title, abstract, authors, keywords, and source. Querying that field will
+    make cross-field search case-insensitive and avoid the current mix of
+    substring matching for text fields and exact matching for array fields.
     """
     parts = []
 
@@ -92,6 +103,21 @@ def build_paper_query_expr(query: QuerySchema) -> str:
         if matches:
             parts.append("(" + " or ".join(matches) + ")")
 
+    # Each comma-separated search_query term must match, but can match a
+    # different field.
+    # Text fields use substring matching; Authors and Keywords are arrays and
+    # therefore use exact element matching in this first implementation.
+    for term in split_query_terms(query.search_query):
+        escaped = escape_like(term)
+        matches = [
+            f'Title like "%{escaped}%"',
+            f'Abstract like "%{escaped}%"',
+            f'Source like "%{escaped}%"',
+            f'array_contains(Authors, "{escaped}")',
+            f'array_contains(Keywords, "{escaped}")',
+        ]
+        parts.append("(" + " or ".join(matches) + ")")
+
     like_all("Title", query.title)
     like_all("Abstract", query.abstract)
     like_any("Source", query.source)
@@ -118,6 +144,7 @@ def query_has_filters(query: QuerySchema) -> bool:
         value is not None and value != [] and value != ""
         for value in (
             query.title,
+            split_query_terms(query.search_query),
             query.abstract,
             query.author,
             query.source,

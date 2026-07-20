@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 
 class QuerySchema(BaseModel):
+    search_query: Optional[str] = None
     title: Optional[str] = None
     abstract: Optional[str] = None
     author: Optional[List[str]] = None
