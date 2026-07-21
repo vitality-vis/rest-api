@@ -43,7 +43,7 @@ app.register_blueprint(bootstrap_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(papers_bp)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
-app.config['CORS_HEADERS'] = 'Content-Type'
+app.config['CORS_HEADERS'] = 'Content-Type, Authorization'
 
 # Enable Gzip compression for all responses (reduces JSON payload by ~80%)
 Compress(app)

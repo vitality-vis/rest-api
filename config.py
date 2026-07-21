@@ -14,6 +14,11 @@ def load_project_environment():
 # environment has been loaded. This makes API, scripts, and pytest consistent.
 load_project_environment()
 
+# === Supabase (authenticated chat persistence) ===
+# SUPABASE_SERVICE_ROLE_KEY is server-only and must never be exposed to clients.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+
 # === File path settings ===
 meta_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/meta_data.json')
 umap_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/umap_data.json')

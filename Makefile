@@ -21,6 +21,7 @@ test:
 test-live:
 	$(PYTEST) $(TESTS) -m live -s $(PYTEST_ARGS)
 
-# Run both groups. Live checks skip themselves when credentials are unavailable.
+# Run unit checks and live checks against the already-running local API by default.
+# Pass API_BASE_URL to target a different server.
 test-all:
-	$(PYTEST) $(TESTS) $(PYTEST_ARGS)
+	API_BASE_URL="$(if $(API_BASE_URL),$(API_BASE_URL),http://127.0.0.1:3000)" $(PYTEST) $(TESTS) $(PYTEST_ARGS)

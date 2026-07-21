@@ -9,6 +9,7 @@ Backend API for **VitaLITy**, built with **Flask**, **Zilliz Cloud** (vector DB)
 - **Python 3.9+**
 - **Azure OpenAI** (LLM and optional Ada embeddings)
 - **Zilliz Cloud** (vector database)
+- **Supabase** (authenticated chat persistence)
 
 ---
 
@@ -61,6 +62,11 @@ AZURE_OPENAI_EMBED_API_VERSION=2024-02-01
 ZILLIZ_URI=https://your-cluster.api.region.zillizcloud.com
 ZILLIZ_TOKEN=your-zilliz-api-key
 
+# Supabase (required for authenticated chat persistence)
+# Use the project root URL, without /rest/v1. This is a server-only secret.
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-or-secret-key
+
 # Optional
 SEMANTIC_SCHOLAR_API_KEY=your-key
 PORT=3000
@@ -68,7 +74,20 @@ PORT=3000
 
 Get Zilliz credentials from [Zilliz Cloud](https://cloud.zilliz.com).
 
-### 4. (Optional) Pre-warm the local cache
+`SUPABASE_SERVICE_ROLE_KEY` has administrator access and must remain in the backend `.env` or your deployment platform's secret store. Never add it to a Vite `VITE_*` variable, send it to the browser, or commit it. The frontend uses the separate public Supabase URL and anon/publishable key.
+
+### 4. Supabase database migrations
+
+Authenticated chat tables and RLS policies are versioned in `supabase/migrations/`. After authenticating the Supabase CLI, link this backend to the intended Supabase project and apply outstanding migrations:
+
+```bash
+npx supabase link --project-ref <your-project-ref>
+npx supabase db push
+```
+
+The migration creates `chat_conversations` and `chat_messages`, enables Row Level Security (RLS), and limits table access to the owning authenticated user. Do not use `db push` against production until the migration has been reviewed.
+
+### 5. (Optional) Pre-warm the local cache
 
 ```bash
 python script/export_zilliz_static_data.py
@@ -173,6 +192,8 @@ POST /chat
 ├── load_to_zilliz.py    # Load JSON into Zilliz collections
 ├── requirements.txt
 ├── environment.yml      # Optional Conda env
+├── supabase/
+│   └── migrations/       # Versioned Supabase database schema and RLS policies
 ├── data/
 │   └── VitaLITy-2.0.0.json   # Paper dataset (path configurable in config.py)
 ├── service/              # Core logic
