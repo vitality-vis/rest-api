@@ -35,6 +35,11 @@ def escape_like(value: str) -> str:
     return escaped.replace('"', '\\"')
 
 
+def escape_text_match(value: str) -> str:
+    """Escape a query term embedded in a Milvus ``TEXT_MATCH`` string literal."""
+    return str(value).lower().replace("\\", "\\\\").replace('"', '\\"')
+
+
 def where_to_expr(where: dict) -> str:
     """Convert the legacy agent-tools where syntax into a Milvus expression."""
     if not where:
@@ -77,12 +82,9 @@ def build_paper_query_expr(query: GetPapersRequest) -> str:
     """Translate supported paper filters into a Milvus scalar expression.
 
     Filtering stays in Zilliz so a page request never materialises the complete
-    collection in Python. Milvus ``like`` and array filters are case-sensitive.
-
-    TODO: At ingestion, add a lowercase ``search_text`` field that concatenates
-    title, abstract, authors, keywords, and source. Querying that field will
-    make cross-field search case-insensitive and avoid the current mix of
-    substring matching for text fields and exact matching for array fields.
+    collection in Python. ``search_query`` uses the analyzed, lower-case
+    ``search_text`` field; the remaining field-specific filters retain their
+    current Milvus ``like`` / array semantics.
     """
     parts = []
 
@@ -119,20 +121,12 @@ def build_paper_query_expr(query: GetPapersRequest) -> str:
         if matches:
             parts.append("(" + " or ".join(matches) + ")")
 
-    # Each comma-separated search_query term must match, but can match a
-    # different field.
-    # Text fields use substring matching; Authors and Keywords are arrays and
-    # therefore use exact element matching in this first implementation.
+    # Each comma-separated search_query term must match the analyzed search_text
+    # field. Ingestion lower-cases that field and combines title, abstract,
+    # authors, keywords, and source, so this is a case-insensitive cross-field
+    # keyword search without pulling the collection into Python.
     for term in split_query_terms(query.search_query):
-        escaped = escape_like(term)
-        matches = [
-            f'title like "%{escaped}%"',
-            f'abstract like "%{escaped}%"',
-            f'source like "%{escaped}%"',
-            f'array_contains(authors, "{escaped}")',
-            f'array_contains(keywords, "{escaped}")',
-        ]
-        parts.append("(" + " or ".join(matches) + ")")
+        parts.append(f'TEXT_MATCH(search_text, "{escape_text_match(term)}")')
 
     like_all("title", query.title)
     like_all("abstract", query.abstract)
