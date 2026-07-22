@@ -59,7 +59,7 @@ def get_user_paper(*, user_id: str, paper_id: str) -> dict[str, object] | None:
 
 
 def save_user_paper(
-    *, user_id: str, paper_id: str, metadata_snapshot: dict[str, object]
+    *, user_id: str, paper_id: str, metadata_snapshot: dict[str, object] | None
 ) -> tuple[dict[str, object], bool]:
     """Upsert one paper and set is_saved = true; report whether the row was new."""
     response = _request(
@@ -85,7 +85,7 @@ def save_user_paper(
 
 
 def import_user_papers(
-    *, user_id: str, papers: list[tuple[str, dict[str, object]]]
+    *, user_id: str, papers: list[tuple[str, dict[str, object] | None]]
 ) -> list[dict[str, object]]:
     """Idempotently upsert a batch of papers as saved for one user."""
     response = _request(
@@ -159,7 +159,7 @@ def upsert_user_paper_file(
     *,
     user_id: str,
     paper_id: str,
-    metadata_snapshot: dict[str, object],
+    metadata_snapshot: dict[str, object] | None,
     azure_file_id: str,
     uploaded_filename: str,
     uploaded_bytes: int,

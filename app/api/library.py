@@ -39,7 +39,8 @@ from repositories.supabase.user_papers_repository import (
 
 library_bp = Blueprint("library", __name__)
 
-MAX_PAPER_ID_LENGTH = 200
+MAX_PAPER_ID_LENGTH = 1024
+MAX_DOI_LENGTH = 512
 MAX_TITLE_LENGTH = 2_000
 MAX_ABSTRACT_LENGTH = 100_000
 MAX_SOURCE_LENGTH = 2_000
@@ -127,13 +128,30 @@ def _nullable_coordinate(value: object, field_name: str) -> list[float] | None:
     return coordinates
 
 
-def _validate_metadata_snapshot(value: object, paper_id: str) -> dict[str, object]:
+def _has_valid_doi(value: dict[str, object]) -> bool:
+    """Whether this paper can be rehydrated from the canonical catalog by DOI."""
+    doi = value.get("doi")
+    if doi is None:
+        return False
+    if not isinstance(doi, str) or len(doi) > MAX_DOI_LENGTH:
+        raise ValueError("doi is invalid")
+    return bool(doi.strip())
+
+
+def _validate_metadata_snapshot(value: object, paper_id: str) -> dict[str, object] | None:
+    """Return a fallback snapshot only for papers that do not have a DOI."""
     if not isinstance(value, dict):
         raise ValueError("Paper metadata must be an object")
 
     # Ignore response-only fields such as Sim / score from paper_to_api_response.
     if _metadata_paper_id(value.get("ID")) != paper_id:
         raise ValueError("Paper metadata ID must match paper_id")
+
+    # DOI-backed papers are resolved from the current catalog when a library is
+    # loaded, so avoid persisting duplicate metadata. Papers without a DOI keep
+    # this snapshot as their display fallback.
+    if _has_valid_doi(value):
+        return None
 
     return {
         "ID": paper_id,
@@ -144,8 +162,7 @@ def _validate_metadata_snapshot(value: object, paper_id: str) -> dict[str, objec
         "Source": _bounded_text(value.get("Source"), "Source", MAX_SOURCE_LENGTH),
         "Year": _nullable_integer(value.get("Year"), "Year"),
         "CitationCounts": _nullable_integer(value.get("CitationCounts"), "CitationCounts"),
-        "ada_umap": _nullable_coordinate(value.get("ada_umap"), "ada_umap"),
-        "specter_umap": _nullable_coordinate(value.get("specter_umap"), "specter_umap"),
+        "umap": _nullable_coordinate(value.get("umap"), "umap"),
     }
 
 
@@ -189,7 +206,7 @@ def _validate_import_papers(value: object) -> list[tuple[str, dict[str, object]]
     if not papers or len(papers) > MAX_IMPORT_PAPERS:
         raise ValueError(f"papers must contain between 1 and {MAX_IMPORT_PAPERS} items")
 
-    validated: list[tuple[str, dict[str, object]]] = []
+    validated: list[tuple[str, dict[str, object] | None]] = []
     paper_ids: set[str] = set()
     for paper in papers:
         if not isinstance(paper, dict):
@@ -298,7 +315,7 @@ def import_library_papers():
     return jsonify({"papers": [_save_response(paper) for paper in imported_papers]})
 
 
-@library_bp.route("/library/papers/<paper_id>/saved", methods=["PUT"])
+@library_bp.route("/library/papers/<path:paper_id>/saved", methods=["PUT"])
 @cross_origin()
 def put_library_paper_saved(paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
@@ -320,7 +337,7 @@ def put_library_paper_saved(paper_id: str):
     return jsonify(_save_response(paper)), 201 if was_created else 200
 
 
-@library_bp.route("/library/papers/<paper_id>/saved", methods=["DELETE"])
+@library_bp.route("/library/papers/<path:paper_id>/saved", methods=["DELETE"])
 @cross_origin()
 def delete_library_paper_saved(paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
@@ -341,7 +358,7 @@ def delete_library_paper_saved(paper_id: str):
     return Response(status=204)
 
 
-@library_bp.route("/library/papers/<paper_id>/file", methods=["PUT"])
+@library_bp.route("/library/papers/<path:paper_id>/file", methods=["PUT"])
 @cross_origin()
 def put_library_paper_file(paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
@@ -454,7 +471,7 @@ def put_library_paper_file(paper_id: str):
     return jsonify(_file_response(paper))
 
 
-@library_bp.route("/library/papers/<paper_id>/file", methods=["DELETE"])
+@library_bp.route("/library/papers/<path:paper_id>/file", methods=["DELETE"])
 @cross_origin()
 def delete_library_paper_file(paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
