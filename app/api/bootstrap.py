@@ -3,11 +3,19 @@
 from flask import Blueprint, current_app, jsonify
 from flask_cors import cross_origin
 
+import config
 from service import zilliz
 from service.static_cache import cached_data
 
 
 bootstrap_bp = Blueprint("bootstrap", __name__)
+
+
+@bootstrap_bp.route("/getPublicConfig", methods=["GET"])
+@cross_origin()
+def get_public_config():
+    """Return non-sensitive runtime settings needed by the browser."""
+    return jsonify({"libraryPdfMaxBytes": config.LIBRARY_PDF_MAX_BYTES})
 
 
 @bootstrap_bp.route("/getUmapPoints", methods=["GET"])

@@ -14,10 +14,31 @@ def load_project_environment():
 # environment has been loaded. This makes API, scripts, and pytest consistent.
 load_project_environment()
 
+
+def _positive_int_environment_value(name: str, default: int) -> int:
+    """Read a positive integer setting, failing fast for invalid configuration."""
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a positive integer") from error
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
 # === Supabase (authenticated chat persistence) ===
 # SUPABASE_SERVICE_ROLE_KEY is server-only and must never be exposed to clients.
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+
+# === Library PDF uploads ===
+# This is safe to expose through the public bootstrap config: it is a UI limit,
+# not an Azure credential or endpoint. 100 MiB is the default when unset.
+LIBRARY_PDF_MAX_BYTES = _positive_int_environment_value(
+    "LIBRARY_PDF_MAX_BYTES", 100 * 1024 * 1024
+)
 
 # === File path settings ===
 meta_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/meta_data.json')

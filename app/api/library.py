@@ -1,12 +1,24 @@
-"""Authenticated API endpoints for a user's saved-paper library."""
+"""Authenticated API endpoints for a user's personal paper library."""
 
 from __future__ import annotations
 
+import json
 import math
+import tempfile
+from typing import BinaryIO
 
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask_cors import cross_origin
+from werkzeug.datastructures import FileStorage
 
+import config
+from repositories.azure_openai.files import (
+    AzureFilesConfigurationError,
+    AzureFilesError,
+    AzureFilesTransientError,
+    delete_file as delete_azure_file,
+    upload_pdf_file,
+)
 from repositories.supabase.auth import (
     SupabaseAuthenticationError,
     SupabaseConfigurationError,
@@ -15,10 +27,13 @@ from repositories.supabase.auth import (
 from repositories.supabase.user_papers_repository import (
     UserPaperNotFoundError,
     UserPapersPersistenceError,
-    delete_user_paper,
+    clear_user_paper_file,
+    get_user_paper,
     import_user_papers,
     list_user_papers,
     save_user_paper,
+    unsave_user_paper,
+    upsert_user_paper_file,
 )
 
 
@@ -31,6 +46,13 @@ MAX_SOURCE_LENGTH = 2_000
 MAX_LIST_ITEMS = 500
 MAX_LIST_ITEM_LENGTH = 2_000
 MAX_IMPORT_PAPERS = 100
+PDF_MAGIC = b"%PDF-"
+READ_CHUNK_BYTES = 64 * 1024
+SPOOLED_PDF_MEMORY_BYTES = 8 * 1024 * 1024
+
+
+def _pdf_max_bytes() -> int:
+    return config.LIBRARY_PDF_MAX_BYTES
 
 
 def _get_authenticated_user_id() -> str:
@@ -138,14 +160,25 @@ def _require_authenticated_user_id() -> tuple[str | None, Response | None]:
 
 
 def _save_response(paper: dict[str, object]) -> dict[str, object]:
-    """Return the compact representation defined by the PUT contract."""
+    """Return the compact representation defined by the PUT /saved contract."""
     snapshot = paper.get("metadata_snapshot")
     title = snapshot.get("Title") if isinstance(snapshot, dict) else None
     return {
         "id": paper.get("id"),
         "paper_id": paper.get("paper_id"),
         "title": title,
+        "is_saved": bool(paper.get("is_saved")),
         "azure_file_id": paper.get("azure_file_id"),
+    }
+
+
+def _file_response(paper: dict[str, object]) -> dict[str, object]:
+    return {
+        "paper_id": paper.get("paper_id"),
+        "azure_file_id": paper.get("azure_file_id"),
+        "filename": paper.get("uploaded_filename"),
+        "bytes": paper.get("uploaded_bytes"),
+        "uploaded_at": paper.get("uploaded_at"),
     }
 
 
@@ -169,6 +202,66 @@ def _validate_import_papers(value: object) -> list[tuple[str, dict[str, object]]
     return validated
 
 
+def _parse_saved_only_query() -> bool:
+    raw = request.args.get("saved")
+    if raw is None:
+        return False
+    if raw.lower() in {"1", "true", "yes"}:
+        return True
+    if raw.lower() in {"0", "false", "no"}:
+        return False
+    raise ValueError("saved must be a boolean")
+
+
+def _read_and_validate_pdf(upload: FileStorage, maximum_bytes: int) -> tuple[tempfile.SpooledTemporaryFile, int, str]:
+    """Stream the upload into a spooled file while checking PDF magic and size."""
+    content_type = (upload.mimetype or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in {"application/pdf", "application/x-pdf", "application/octet-stream"}:
+        raise UnsupportedMediaType("Only PDF uploads are supported")
+
+    filename = upload.filename or "upload.pdf"
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+
+    spooled: tempfile.SpooledTemporaryFile = tempfile.SpooledTemporaryFile(
+        max_size=SPOOLED_PDF_MEMORY_BYTES
+    )
+    total = 0
+    header = b""
+
+    stream: BinaryIO = upload.stream
+    while True:
+        chunk = stream.read(READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        if len(header) < len(PDF_MAGIC):
+            needed = len(PDF_MAGIC) - len(header)
+            header += chunk[:needed]
+            if len(header) >= len(PDF_MAGIC) and not header.startswith(PDF_MAGIC):
+                spooled.close()
+                raise UnsupportedMediaType("Only PDF uploads are supported")
+        total += len(chunk)
+        if total > maximum_bytes:
+            spooled.close()
+            raise PayloadTooLarge("PDF exceeds the configured size limit")
+        spooled.write(chunk)
+
+    if total == 0 or not header.startswith(PDF_MAGIC):
+        spooled.close()
+        raise UnsupportedMediaType("Only PDF uploads are supported")
+
+    spooled.seek(0)
+    return spooled, total, filename
+
+
+class UnsupportedMediaType(ValueError):
+    """Raised when the upload is not a PDF."""
+
+
+class PayloadTooLarge(ValueError):
+    """Raised when the upload exceeds the configured limit."""
+
+
 @library_bp.route("/library/papers", methods=["GET"])
 @cross_origin()
 def get_library_papers():
@@ -176,7 +269,11 @@ def get_library_papers():
     if error_response is not None:
         return error_response
     try:
-        return jsonify({"papers": list_user_papers(user_id=user_id)})
+        saved_only = _parse_saved_only_query()
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    try:
+        return jsonify({"papers": list_user_papers(user_id=user_id, saved_only=saved_only)})
     except UserPapersPersistenceError as error:
         current_app.logger.error("Could not load library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
@@ -201,9 +298,9 @@ def import_library_papers():
     return jsonify({"papers": [_save_response(paper) for paper in imported_papers]})
 
 
-@library_bp.route("/library/papers/<paper_id>", methods=["PUT"])
+@library_bp.route("/library/papers/<paper_id>/saved", methods=["PUT"])
 @cross_origin()
-def put_library_paper(paper_id: str):
+def put_library_paper_saved(paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
@@ -223,9 +320,9 @@ def put_library_paper(paper_id: str):
     return jsonify(_save_response(paper)), 201 if was_created else 200
 
 
-@library_bp.route("/library/papers/<paper_id>", methods=["DELETE"])
+@library_bp.route("/library/papers/<paper_id>/saved", methods=["DELETE"])
 @cross_origin()
-def remove_library_paper(paper_id: str):
+def delete_library_paper_saved(paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
@@ -235,12 +332,190 @@ def remove_library_paper(paper_id: str):
         return jsonify({"error": str(error)}), 400
 
     try:
-        delete_user_paper(user_id=user_id, paper_id=paper_id)
+        unsave_user_paper(user_id=user_id, paper_id=paper_id)
     except UserPaperNotFoundError:
         return Response("Not found", status=404, mimetype="text/plain")
     except UserPapersPersistenceError as error:
-        current_app.logger.error("Could not delete library paper: %s", error)
+        current_app.logger.error("Could not unsave library paper: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
+    return Response(status=204)
+
+
+@library_bp.route("/library/papers/<paper_id>/file", methods=["PUT"])
+@cross_origin()
+def put_library_paper_file(paper_id: str):
+    user_id, error_response = _require_authenticated_user_id()
+    if error_response is not None:
+        return error_response
+    try:
+        paper_id = _validate_paper_id(paper_id)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify({"error": "file is required"}), 400
+
+    metadata_raw = request.form.get("metadata")
+    if not metadata_raw:
+        return jsonify({"error": "metadata is required"}), 400
+    try:
+        metadata_payload = json.loads(metadata_raw)
+        metadata_snapshot = _validate_metadata_snapshot(metadata_payload, paper_id)
+    except (json.JSONDecodeError, ValueError) as error:
+        return jsonify({"error": str(error)}), 400
+
+    maximum_bytes = _pdf_max_bytes()
+    try:
+        existing = get_user_paper(user_id=user_id, paper_id=paper_id)
+    except UserPapersPersistenceError as error:
+        current_app.logger.error("Could not load library paper before upload: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+
+    old_file_id = existing.get("azure_file_id") if existing else None
+    if old_file_id is not None and not isinstance(old_file_id, str):
+        old_file_id = None
+
+    spooled = None
+    uploaded_azure_id: str | None = None
+    try:
+        spooled, size, filename = _read_and_validate_pdf(upload, maximum_bytes)
+        azure_file = upload_pdf_file(filename=filename, file_obj=spooled)
+        uploaded_azure_id = azure_file.id
+        persisted_bytes = azure_file.bytes or size
+        paper = upsert_user_paper_file(
+            user_id=user_id,
+            paper_id=paper_id,
+            metadata_snapshot=metadata_snapshot,
+            azure_file_id=azure_file.id,
+            uploaded_filename=azure_file.filename or filename,
+            uploaded_bytes=persisted_bytes,
+            create_if_missing=True,
+        )
+    except UnsupportedMediaType as error:
+        return Response(str(error), status=415, mimetype="text/plain")
+    except PayloadTooLarge as error:
+        return Response(str(error), status=413, mimetype="text/plain")
+    except AzureFilesConfigurationError:
+        current_app.logger.error("Azure OpenAI files are not configured for the library")
+        return Response("Library file upload is unavailable", status=503, mimetype="text/plain")
+    except AzureFilesTransientError as error:
+        current_app.logger.warning(
+            "Transient Azure Files failure user_id=%s paper_id=%s error=%s",
+            user_id,
+            paper_id,
+            error,
+        )
+        return Response("File storage is temporarily unavailable", status=503, mimetype="text/plain")
+    except AzureFilesError as error:
+        current_app.logger.error(
+            "Azure Files upload failed user_id=%s paper_id=%s error=%s",
+            user_id,
+            paper_id,
+            error,
+        )
+        return Response("File upload failed", status=502, mimetype="text/plain")
+    except UserPapersPersistenceError as error:
+        current_app.logger.error(
+            "Could not persist library file metadata user_id=%s paper_id=%s azure_file_id=%s error=%s",
+            user_id,
+            paper_id,
+            uploaded_azure_id,
+            error,
+        )
+        if uploaded_azure_id:
+            try:
+                delete_azure_file(file_id=uploaded_azure_id)
+            except AzureFilesError as cleanup_error:
+                current_app.logger.error(
+                    "Orphan Azure file after DB failure file_id=%s user_id=%s paper_id=%s error=%s",
+                    uploaded_azure_id,
+                    user_id,
+                    paper_id,
+                    cleanup_error,
+                )
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+    finally:
+        if spooled is not None:
+            spooled.close()
+
+    if old_file_id and old_file_id != paper.get("azure_file_id"):
+        try:
+            delete_azure_file(file_id=old_file_id)
+        except AzureFilesError as cleanup_error:
+            current_app.logger.warning(
+                "Could not delete replaced Azure file file_id=%s user_id=%s paper_id=%s error=%s",
+                old_file_id,
+                user_id,
+                paper_id,
+                cleanup_error,
+            )
+
+    return jsonify(_file_response(paper))
+
+
+@library_bp.route("/library/papers/<paper_id>/file", methods=["DELETE"])
+@cross_origin()
+def delete_library_paper_file(paper_id: str):
+    user_id, error_response = _require_authenticated_user_id()
+    if error_response is not None:
+        return error_response
+    try:
+        paper_id = _validate_paper_id(paper_id)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    try:
+        paper = get_user_paper(user_id=user_id, paper_id=paper_id)
+    except UserPapersPersistenceError as error:
+        current_app.logger.error("Could not load library paper before file delete: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+
+    if paper is None or not paper.get("azure_file_id"):
+        return Response("Not found", status=404, mimetype="text/plain")
+
+    azure_file_id = paper["azure_file_id"]
+    if not isinstance(azure_file_id, str):
+        return Response("Not found", status=404, mimetype="text/plain")
+
+    try:
+        delete_azure_file(file_id=azure_file_id)
+    except AzureFilesConfigurationError:
+        current_app.logger.error("Azure OpenAI files are not configured for the library")
+        return Response("Library file delete is unavailable", status=503, mimetype="text/plain")
+    except AzureFilesTransientError as error:
+        current_app.logger.warning(
+            "Transient Azure Files delete failure user_id=%s paper_id=%s file_id=%s error=%s",
+            user_id,
+            paper_id,
+            azure_file_id,
+            error,
+        )
+        return Response("File storage is temporarily unavailable", status=503, mimetype="text/plain")
+    except AzureFilesError as error:
+        current_app.logger.error(
+            "Azure Files delete failed user_id=%s paper_id=%s file_id=%s error=%s",
+            user_id,
+            paper_id,
+            azure_file_id,
+            error,
+        )
+        return Response("File delete failed", status=502, mimetype="text/plain")
+
+    try:
+        clear_user_paper_file(user_id=user_id, paper_id=paper_id)
+    except UserPaperNotFoundError:
+        return Response("Not found", status=404, mimetype="text/plain")
+    except UserPapersPersistenceError as error:
+        current_app.logger.error(
+            "Cleared Azure file but could not update DB file_id=%s user_id=%s paper_id=%s error=%s",
+            azure_file_id,
+            user_id,
+            paper_id,
+            error,
+        )
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+
     return Response(status=204)
 
 
