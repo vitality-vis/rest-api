@@ -3,15 +3,30 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from model.query import QuerySchema
+from model.paper import GetPapersRequest
+
+
+# TODO: Migrate agent tools from legacy ``where`` dictionaries to
+# GetPapersRequest/repository methods, then remove this compatibility alias map.
+# Normal route filters are compiled from GetPapersRequest below.
+_LEGACY_WHERE_FIELD_ALIASES = {
+    "ID": "paper_uid",
+    "Title": "title",
+    "Abstract": "abstract",
+    "Authors": "authors",
+    "Keywords": "keywords",
+    "Source": "source",
+    "Year": "year",
+    "CitationCounts": "citation_count",
+}
 
 
 def ids_to_expr(ids: List[str]) -> str:
     """Build an ID membership expression, or an expression matching all rows."""
     if not ids:
-        return 'ID != ""'
+        return 'paper_uid != ""'
     escaped = [f'"{str(identifier).replace(chr(34), "")}"' for identifier in ids]
-    return "ID in [" + ", ".join(escaped) + "]"
+    return "paper_uid in [" + ", ".join(escaped) + "]"
 
 
 def escape_like(value: str) -> str:
@@ -23,10 +38,11 @@ def escape_like(value: str) -> str:
 def where_to_expr(where: dict) -> str:
     """Convert the legacy agent-tools where syntax into a Milvus expression."""
     if not where:
-        return 'ID != ""'
+        return 'paper_uid != ""'
 
     parts = []
-    for field, value in where.items():
+    for raw_field, value in where.items():
+        field = _LEGACY_WHERE_FIELD_ALIASES.get(raw_field, raw_field)
         if isinstance(value, dict):
             if "$eq" in value:
                 parts.append(f'{field} == "{str(value["$eq"]).replace(chr(34), "")}"')
@@ -47,7 +63,7 @@ def where_to_expr(where: dict) -> str:
                     parts.append(f'{field} like "%{escape_like(item)}%"')
         else:
             parts.append(f'{field} == "{str(value).replace(chr(34), "")}"')
-    return " and ".join(parts) if parts else 'ID != ""'
+    return " and ".join(parts) if parts else 'paper_uid != ""'
 
 
 def split_query_terms(value: Optional[str]) -> List[str]:
@@ -57,7 +73,7 @@ def split_query_terms(value: Optional[str]) -> List[str]:
     return [term.strip() for term in value.split(",") if term.strip()]
 
 
-def build_paper_query_expr(query: QuerySchema) -> str:
+def build_paper_query_expr(query: GetPapersRequest) -> str:
     """Translate supported paper filters into a Milvus scalar expression.
 
     Filtering stays in Zilliz so a page request never materialises the complete
@@ -110,35 +126,35 @@ def build_paper_query_expr(query: QuerySchema) -> str:
     for term in split_query_terms(query.search_query):
         escaped = escape_like(term)
         matches = [
-            f'Title like "%{escaped}%"',
-            f'Abstract like "%{escaped}%"',
-            f'Source like "%{escaped}%"',
-            f'array_contains(Authors, "{escaped}")',
-            f'array_contains(Keywords, "{escaped}")',
+            f'title like "%{escaped}%"',
+            f'abstract like "%{escaped}%"',
+            f'source like "%{escaped}%"',
+            f'array_contains(authors, "{escaped}")',
+            f'array_contains(keywords, "{escaped}")',
         ]
         parts.append("(" + " or ".join(matches) + ")")
 
-    like_all("Title", query.title)
-    like_all("Abstract", query.abstract)
-    like_any("Source", query.source)
-    array_contains_any("Authors", query.author)
-    array_contains_any("Keywords", query.keyword)
+    like_all("title", query.title)
+    like_all("abstract", query.abstract)
+    like_any("source", query.source)
+    array_contains_any("authors", query.author)
+    array_contains_any("keywords", query.keyword)
 
     if query.min_year is not None:
-        parts.append(f"Year >= {int(query.min_year)}")
+        parts.append(f"year >= {int(query.min_year)}")
     if query.max_year is not None:
-        parts.append(f"Year <= {int(query.max_year)}")
+        parts.append(f"year <= {int(query.max_year)}")
     if query.min_citation_counts is not None:
-        parts.append(f"CitationCounts >= {float(query.min_citation_counts)}")
+        parts.append(f"citation_count >= {int(query.min_citation_counts)}")
     if query.max_citation_counts is not None:
-        parts.append(f"CitationCounts <= {float(query.max_citation_counts)}")
+        parts.append(f"citation_count <= {int(query.max_citation_counts)}")
     if query.id_list:
         parts.append(ids_to_expr([str(paper_id) for paper_id in query.id_list]))
 
-    return " and ".join(parts) if parts else 'ID != ""'
+    return " and ".join(parts) if parts else 'paper_uid != ""'
 
 
-def query_has_filters(query: QuerySchema) -> bool:
+def query_has_filters(query: GetPapersRequest) -> bool:
     """Whether a query uses any field that changes the collection-wide total."""
     return any(
         value is not None and value != [] and value != ""

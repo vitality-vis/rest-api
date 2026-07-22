@@ -5,21 +5,24 @@ import json
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+from model.paper import PaperResponse
 from service.metadata_normalizer import parse_string_list
 
 
 SCALAR_FIELDS = [
-    "ID",
-    "Title",
-    "Abstract",
-    "Authors",
-    "Keywords",
-    "Source",
-    "Year",
-    "CitationCounts",
-    "Lang",
-    "ada_umap",
-    "specter_umap",
+    "paper_uid",
+    "dblp_key",
+    "doi",
+    "umap",
+    "title",
+    "abstract",
+    "authors",
+    "keywords",
+    "source",
+    "dblp_source",
+    "year",
+    "citation_count",
+    "full_paper",
 ]
 
 
@@ -42,9 +45,9 @@ def entity_to_metadata(entity: Any) -> Optional[Dict[str, Any]]:
                 metadata[key] = entity.get(key) or entity.get(key.lower())
             else:
                 metadata[key] = getattr(entity, key, None) or getattr(entity, key.lower(), None)
-    if metadata.get("id") is not None and metadata.get("ID") is None:
-        metadata["ID"] = metadata["id"]
-    return metadata if metadata.get("ID") is not None else None
+    if metadata.get("id") is not None and metadata.get("paper_uid") is None:
+        metadata["paper_uid"] = metadata["id"]
+    return metadata if metadata.get("paper_uid") is not None else None
 
 
 def row_to_metadata(row: dict) -> dict:
@@ -56,14 +59,14 @@ def search_hit_to_id_and_distance(hit: Any) -> Tuple[Optional[str], Optional[flo
     """Extract the ID and distance from either MilvusClient or legacy ORM hits."""
     if isinstance(hit, dict):
         entity = hit.get("entity") or hit
-        document_id = entity.get("ID") or entity.get("id") or hit.get("id")
+        document_id = entity.get("paper_uid") or entity.get("id") or hit.get("id")
         distance = hit.get("distance")
     else:
         entity = getattr(hit, "entity", hit)
         if hasattr(entity, "get"):
-            document_id = entity.get("ID") or entity.get("id")
+            document_id = entity.get("paper_uid") or entity.get("id")
         else:
-            document_id = getattr(entity, "ID", None) or getattr(entity, "id", None)
+            document_id = getattr(entity, "paper_uid", None) or getattr(entity, "id", None)
         distance = getattr(hit, "distance", None)
 
     if document_id is None:
@@ -115,25 +118,24 @@ def paper_to_api_response(doc: dict, score_key: str = "_score") -> dict:
     except Exception:
         pass
 
-    def value_for(key: str):
-        return doc.get(key) or doc.get(key.lower()) or ""
-
-    return {
-        "ID": doc.get("ID") or doc.get("id"),
-        "Title": value_for("Title"),
-        "Abstract": value_for("Abstract"),
-        "Authors": parse_string_list(doc.get("Authors") or doc.get("authors") or ""),
-        "Keywords": parse_string_list(doc.get("Keywords") or doc.get("keywords") or ""),
-        "Source": value_for("Source"),
-        "Year": doc.get("Year") if doc.get("Year") is not None else doc.get("year"),
-        "CitationCounts": (
-            doc.get("CitationCounts")
-            if doc.get("CitationCounts") is not None
-            else doc.get("citationcounts")
-        ),
-        "_Sim": similarity,
-        "Sim": similarity,
-        "score": similarity,
-        "ada_umap": parse_coordinates(doc.get("ada_umap")),
-        "specter_umap": parse_coordinates(doc.get("specter_umap")),
-    }
+    paper = PaperResponse(
+        ID=doc.get("paper_uid") or doc.get("id"),
+        Title=doc.get("title") or "",
+        Abstract=doc.get("abstract") or "",
+        Authors=parse_string_list(doc.get("authors") or ""),
+        Keywords=parse_string_list(doc.get("keywords") or ""),
+        Source=doc.get("source") or "",
+        Year=doc.get("year"),
+        CitationCounts=doc.get("citation_count"),
+        doi=doc.get("doi"),
+        dblp_key=doc.get("dblp_key"),
+        dblp_source=doc.get("dblp_source"),
+        full_paper=doc.get("full_paper"),
+        umap=parse_coordinates(doc.get("umap")),
+        _Sim=similarity,
+        Sim=similarity,
+        score=similarity,
+    )
+    if hasattr(paper, "model_dump"):
+        return paper.model_dump(by_alias=True)
+    return paper.dict(by_alias=True)

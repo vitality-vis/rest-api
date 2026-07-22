@@ -22,6 +22,7 @@ from app.api.chat import chat_bp
 from app.api.papers import papers_bp
 from app.api.library import library_bp
 from model.const import EMBED
+from model.retrieval import get_retrieval_profile
 from service import zilliz
 from service.zilliz import query_doc_by_ids, normalize_results
 from langchain_openai import AzureChatOpenAI
@@ -132,16 +133,16 @@ def get_papers_limited():
 
     from service import embed as embed_service
 
-    # Always use specter embedding
-    query_embedding = embed_service.specter_embedding({
+    profile = get_retrieval_profile()
+    query_embedding = embed_service.embed_paper_query({
         "Title": topic,
         "Abstract": ""
-    })
+    }, profile)
 
     results = zilliz.query_doc_by_embedding(
         paper_ids=[],
         embedding=query_embedding,
-        embedding_type="specter",
+        embedding_type=profile.name,
         limit=limit * 5   # Fetch extra results to ensure enough candidates
     )
 
@@ -171,29 +172,24 @@ def get_similar_papers_by_abstract():
     abstract_text = input_payload.get("input_data", "")
     title_text = input_payload.get("title", "")
 
-    embedding_type = input_payload.get("embedding", EMBED.SPECTER)
+    embedding_type = input_payload.get("embedding", EMBED.DEFAULT)
     limit = int(input_payload.get("limit", 25))
     query_lang = input_payload.get("lang", "all") 
 
     if not abstract_text:
         return jsonify({"message": "Abstract text is required"}), 400
-    if embedding_type not in EMBED.ALL:
+    profile = get_retrieval_profile(embedding_type)
+    if not profile:
         return jsonify({
-            "message": f"Unsupported embedding type: {embedding_type}. Supported types: specter, ada."
+            "message": f"Unsupported embedding type: {embedding_type}. Supported types: {', '.join(sorted(EMBED.ALL))}."
         }), 400
 
     try:
         from service import embed as embed_service
 
-        def get_embedding(etype):
-            if etype == EMBED.ADA:
-                return embed_service.ada_embedding(abstract_text)
-            if etype == EMBED.SPECTER:
-                return embed_service.specter_embedding({"Title": title_text, "Abstract": abstract_text})
-            return []
-
-        query_embedding = get_embedding(embedding_type)
-        embedding_type_used = embedding_type
+        query_embedding = embed_service.embed_paper_query(
+            {"Title": title_text, "Abstract": abstract_text}, profile
+        )
 
         # Handle nested embeddings safely
         if isinstance(query_embedding, (list, np.ndarray)) and len(query_embedding) > 0:
@@ -201,24 +197,10 @@ def get_similar_papers_by_abstract():
             if isinstance(first, (list, np.ndarray)) and not isinstance(first, str):
                 query_embedding = first
 
-        # Fallback to Specter if requested embedding failed (e.g. Azure Ada deployment not found)
         if not query_embedding or not isinstance(query_embedding, (list, np.ndarray)):
-            if embedding_type != EMBED.SPECTER:
-                logger.warning(
-                    "Embedding type %s failed or returned empty; falling back to Specter",
-                    embedding_type,
-                )
-                query_embedding = get_embedding(EMBED.SPECTER)
-                embedding_type_used = EMBED.SPECTER
-            if isinstance(query_embedding, (list, np.ndarray)) and len(query_embedding) > 0:
-                first = query_embedding[0]
-                if isinstance(first, (list, np.ndarray)) and not isinstance(first, str):
-                    query_embedding = first
-
-        if not query_embedding or not isinstance(query_embedding, (list, np.ndarray)):
-            logger.error("Invalid or empty embedding after fallback: %s", type(query_embedding))
+            logger.error("Invalid or empty embedding for profile %s: %s", profile.name, type(query_embedding))
             return jsonify({
-                "message": "Could not generate an embedding. If you selected Ada, the deployment may be missing; try Specter.",
+                "message": f"Could not generate an embedding for {profile.name}.",
                 "results": [],
             }), 200
 
@@ -232,12 +214,10 @@ def get_similar_papers_by_abstract():
         results = zilliz.query_doc_by_embedding(
             paper_ids=[],
             embedding=query_embedding,
-            embedding_type=embedding_type_used,
+            embedding_type=profile.name,
             limit=limit,
             lang_filter=language_filter,
         )
-        if isinstance(results, dict) and embedding_type_used != embedding_type:
-            results["embedding_fallback_used"] = embedding_type_used
         return jsonify(results)
 
     except Exception as e:
@@ -257,14 +237,15 @@ def get_similar_papers():
                 return jsonify({"message": "Request body is a string but not valid JSON."}), 400
 
         papers_data = input_payload.get("input_data", [])
-        embedding_type = input_payload.get("embedding", EMBED.SPECTER)
+        embedding_type = input_payload.get("embedding", EMBED.DEFAULT)
         limit = int(input_payload.get("limit", 25))
         query_lang = input_payload.get("lang", "all")
         dimensions = input_payload.get("dimensions", "nD")
 
-        if embedding_type not in EMBED.ALL:
+        profile = get_retrieval_profile(embedding_type)
+        if not profile:
             return jsonify({
-                "message": f"Unsupported embedding type: {embedding_type}. Supported types: specter, ada."
+                "message": f"Unsupported embedding type: {embedding_type}. Supported types: {', '.join(sorted(EMBED.ALL))}."
             }), 400
 
         if papers_data and isinstance(papers_data[0], str):
@@ -282,7 +263,7 @@ def get_similar_papers():
         if dimensions == "2D":
             raw_results = zilliz.query_similar_doc_by_embedding_2d(
                 papers=papers,
-                embedding_type=embedding_type,
+                embedding_type=profile.name,
                 limit=limit,
                 lang_filter=language_filter
             )
@@ -290,7 +271,7 @@ def get_similar_papers():
         else:
             raw_results = zilliz.query_similar_doc_by_embedding_full(
                 papers=papers,
-                embedding_type=embedding_type,
+                embedding_type=profile.name,
                 limit=limit,
                 lang_filter=language_filter
             )

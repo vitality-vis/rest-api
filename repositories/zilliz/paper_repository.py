@@ -11,14 +11,14 @@ without changing this public API.
 """
 from typing import Dict, List, Optional
 
-from model.const import EMBED
-from model.query import QuerySchema
+from model.retrieval import DEFAULT_RETRIEVAL_PROFILE
+from model.paper import GetPapersRequest
 from service import zilliz as _legacy_zilliz
 
 
 def search_papers(
-    query: QuerySchema,
-    embedding_type: str = EMBED.SPECTER,
+    query: GetPapersRequest,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
 ) -> Dict:
     """Return one filtered, paginated page of papers."""
     return _legacy_zilliz.query_docs(query, embedding_type=embedding_type)
@@ -26,7 +26,7 @@ def search_papers(
 
 def get_paper_by_id(
     paper_id: str,
-    embedding_type: str = EMBED.SPECTER,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
 ) -> Optional[dict]:
     """Return one paper, or ``None`` when it is not present."""
     return _legacy_zilliz.query_doc_by_id(paper_id, embedding_type=embedding_type)
@@ -34,7 +34,7 @@ def get_paper_by_id(
 
 def get_papers_by_ids(
     paper_ids: List[str],
-    embedding_type: str = EMBED.SPECTER,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
 ) -> List[dict]:
     """Return the available papers whose IDs are requested."""
     return _legacy_zilliz.query_doc_by_ids(paper_ids, embedding_type=embedding_type)

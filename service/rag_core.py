@@ -6,9 +6,10 @@ import numpy as np
 from copy import deepcopy
 from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
-from model.query import QuerySchema
+from model.retrieval import DEFAULT_RETRIEVAL_PROFILE, get_retrieval_profile
+from model.paper import GetPapersRequest
 from service.zilliz import query_docs
-from service.embed import specter_model_instance
+from service.embed import embed_query
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
@@ -74,10 +75,6 @@ def clear_session_docs(chat_id: str) -> None:
 # Embedding + Zilliz setup
 # =====================================================
 CROSS_ENCODER_MODEL = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-EMBEDDING_MODELS = {
-    "specter": specter_model_instance,
-}
-
 def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, include_score: bool = True) -> str:
     """
     Format retrieved or recalled docs into Markdown for LLM context (memory-aware).
@@ -161,15 +158,20 @@ def _rows_to_documents(items: List[Dict[str, Any]]) -> List[Document]:
 # Query Functions
 # =====================================================
 
-def _query_zilliz_by_embedding(query_text: str, embedding_type: str = "specter", k: int = 5) -> List[Document]:
+def _query_zilliz_by_embedding(
+    query_text: str,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    k: int = 5,
+) -> List[Document]:
     """Embed query and perform Zilliz vector search."""
     from service import zilliz
-    embedding_type = embedding_type.lower()
-    if embedding_type not in EMBEDDING_MODELS:
-        embedding_type = "specter"
-
-    embedder = EMBEDDING_MODELS[embedding_type]
-    qvec = embedder.embed_query(query_text)
+    profile = get_retrieval_profile(embedding_type)
+    if not profile:
+        logging.error("Unsupported retrieval profile requested by RAG: %s", embedding_type)
+        return []
+    qvec = embed_query(query_text, profile)
+    if not qvec:
+        return []
     raw = zilliz.query_doc_by_embedding(
         paper_ids=None,
         embedding=qvec,
@@ -204,7 +206,7 @@ def _run_metadata_search(plan, chat_id: str) -> List[Document]:
         filters = plan
     else:
         filters = getattr(plan, "filters", {}) or {}
-    q = QuerySchema(
+    q = GetPapersRequest(
         title=filters.get("title"),
         author=filters.get("authors"),
         # keyword=filters.get("keywords"),
@@ -321,7 +323,11 @@ def _run_semantic_search(
 ) -> List[Document]:
     # --- Stage 1: Parallel Retrieval ---
     # Fetch more candidates to ensure quality after fusion
-    vector_docs = _query_zilliz_by_embedding(query_text, embedding_type="specter", k=120)
+    vector_docs = _query_zilliz_by_embedding(
+        query_text,
+        embedding_type=DEFAULT_RETRIEVAL_PROFILE,
+        k=120,
+    )
     
     keyword_docs = []
     if BM25_INDEX is not None:

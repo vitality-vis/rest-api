@@ -3,7 +3,7 @@
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 
-from model.query import QuerySchema
+from model.paper import GetPapersRequest, GetPapersResponse
 from repositories.zilliz.paper_repository import search_papers
 
 
@@ -24,7 +24,7 @@ def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
 def get_papers():
     """Fetch at most one bounded page of papers directly from Zilliz."""
     input_payload = request.args if request.method == "GET" else request.json or {}
-    query = QuerySchema(
+    query = GetPapersRequest(
         search_query=input_payload.get("search_query"),
         title=input_payload.get("title"),
         abstract=input_payload.get("abstract"),
@@ -44,4 +44,12 @@ def get_papers():
             maximum=MAX_PAPERS_PAGE_SIZE,
         ),
     )
-    return jsonify(search_papers(query))
+    result = search_papers(query)
+    response = GetPapersResponse(
+        papers=result.get("papers", []),
+        total=result.get("total", 0),
+        has_more=result.get("has_more", False),
+    )
+    if hasattr(response, "model_dump"):
+        return jsonify(response.model_dump(by_alias=True))
+    return jsonify(response.dict(by_alias=True))

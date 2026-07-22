@@ -11,7 +11,12 @@ from tqdm import tqdm
 
 import config
 from model.const import EMBED
-from model.query import QuerySchema
+from model.retrieval import (
+    DEFAULT_RETRIEVAL_PROFILE,
+    RETRIEVAL_PROFILES,
+    get_retrieval_profile,
+)
+from model.paper import GetPapersRequest
 from logger_config import get_logger
 from repositories.zilliz.connection import (
     ensure_collection_loaded,
@@ -38,11 +43,15 @@ logging = get_logger()
 
 # Collection name mapping; include string keys for agent_tools
 COLLECTION_MAPPING = {
-    EMBED.ADA: "paper_ada_localized",
-    EMBED.SPECTER: "paper_specter",
-    "specter": "paper_specter",
-    "ada": "paper_ada_localized",
+    name: profile.collection for name, profile in RETRIEVAL_PROFILES.items()
 }
+
+
+def _profile_or_log(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+    profile = get_retrieval_profile(embedding_type)
+    if not profile:
+        logging.error("Unsupported retrieval profile: %s", embedding_type)
+    return profile
 
 
 class _MilvusCollectionCompat:
@@ -118,7 +127,7 @@ class _ZillizCollectionCompat:
         elif ids:
             expr = _ids_to_expr(ids)
         else:
-            expr = 'ID != ""'
+            expr = 'paper_uid != ""'
         coll = _get_collection(self._name)
         if not coll:
             return {"metadatas": [], "documents": []}
@@ -139,7 +148,7 @@ def _query_all_batched(coll, output_fields: List[str], *, desc: Optional[str] = 
     Phase 1: collect all IDs (ID only, small response). Phase 2: for each chunk
     of IDs query full rows with 'ID in [chunk]' (small request/response).
     """
-    return _query_by_expr_batched(coll, 'ID != ""', output_fields, desc=desc)
+    return _query_by_expr_batched(coll, 'paper_uid != ""', output_fields, desc=desc)
 
 def _query_by_expr_batched(
     coll,
@@ -171,13 +180,13 @@ def _query_by_expr_batched(
             else:
                 expr = base_expr
             try:
-                res = coll.query(expr=expr, output_fields=["ID"], limit=_ID_BATCH_SIZE)
+                res = coll.query(expr=expr, output_fields=["paper_uid"], limit=_ID_BATCH_SIZE)
             except Exception as e:
                 logging.warning(f"Batch ID fetch failed: {e}. Collected {len(all_ids)} IDs.")
                 break
             if not res:
                 break
-            ids_batch = [r["ID"] for r in res if r.get("ID")]
+            ids_batch = [r["paper_uid"] for r in res if r.get("paper_uid")]
             all_ids.extend(ids_batch)
             seen_ids.extend(ids_batch)
             pbar.update(len(ids_batch))
@@ -211,7 +220,7 @@ def _query_by_expr_batched(
 # --- Cache ---
 _all_papers_cache = {}
 
-def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER):
+def load_all_papers_to_cache(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     global _all_papers_cache
     collection_name = COLLECTION_MAPPING.get(embedding_type)
     if not collection_name:
@@ -231,7 +240,7 @@ def load_all_papers_to_cache(embedding_type: str = EMBED.SPECTER):
         logging.error(f"Failed to load papers to cache: {e}", exc_info=True)
         _all_papers_cache[collection_name] = []
 
-def get_cached_papers(embedding_type: str = EMBED.SPECTER):
+def get_cached_papers(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     collection_name = COLLECTION_MAPPING.get(embedding_type)
     if not collection_name:
         return []
@@ -301,7 +310,7 @@ def _author_matches(candidate: str, query_author: str) -> bool:
     # Treat reordered full names as equivalent, but avoid loose substring matches
     return sorted(candidate_tokens) == sorted(query_tokens)
 
-def match_doc(doc, query: QuerySchema):
+def match_doc(doc, query: GetPapersRequest):
     doc_id_str = str(doc.get("ID")) if doc.get("ID") is not None else None
     if query.title:
         # Support comma-separated keywords with AND logic (all keywords must match)
@@ -360,10 +369,13 @@ def match_doc(doc, query: QuerySchema):
         return False
     return True
 
-def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
+def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     """Return one Zilliz-backed page of papers without a process-wide cache."""
     try:
-        coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+        profile = _profile_or_log(embedding_type)
+        if not profile:
+            return {"papers": [], "total": 0}
+        coll = _get_collection(profile.collection)
         if not coll:
             return {"papers": [], "total": 0}
 
@@ -397,7 +409,7 @@ def query_docs(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
         logging.error(f"Error in query_docs(): {e}", exc_info=True)
         return {"papers": [], "total": 0}
 
-def query_docs_with_embeddings(query: QuerySchema, embedding_type: str = EMBED.SPECTER):
+def query_docs_with_embeddings(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return query_docs(query, embedding_type=embedding_type)
 
 def normalize_results(results, mode="nD"):
@@ -415,19 +427,22 @@ def normalize_results(results, mode="nD"):
         normalized.append(doc)
     return normalized
 
-def query_doc_by_id(_id: str, embedding_type: str = EMBED.SPECTER):
-    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+def query_doc_by_id(_id: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+    profile = _profile_or_log(embedding_type)
+    if not profile:
+        return None
+    coll = _get_collection(profile.collection)
     if not coll:
         return None
     try:
-        res = coll.query(expr=f'ID == "{str(_id).replace(chr(34), "")}"', output_fields=_SCALAR_FIELDS, limit=1)
+        res = coll.query(expr=f'paper_uid == "{str(_id).replace(chr(34), "")}"', output_fields=_SCALAR_FIELDS, limit=1)
         if res and len(res) > 0:
             return format_doc_for_frontend(res[0])
     except Exception as e:
         logging.error(f"Error fetching doc ID {_id} from Zilliz: {e}", exc_info=True)
     return None
 
-def query_doc_by_title(title: str, embedding_type: str = EMBED.SPECTER) -> list:
+def query_doc_by_title(title: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> list:
     all_papers = get_cached_papers(embedding_type)
     if not all_papers:
         return []
@@ -448,10 +463,13 @@ def query_doc_by_title(title: str, embedding_type: str = EMBED.SPECTER) -> list:
             pass
     return matches
 
-def query_doc_by_ids(ids: List[str], embedding_type: str = EMBED.SPECTER) -> List[dict]:
+def query_doc_by_ids(ids: List[str], embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[dict]:
     if not ids:
         return []
-    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+    profile = _profile_or_log(embedding_type)
+    if not profile:
+        return []
+    coll = _get_collection(profile.collection)
     if not coll:
         return []
     try:
@@ -474,11 +492,16 @@ def query_doc_by_embedding(
         paper_ids = []
     if isinstance(embedding, np.ndarray):
         embedding = embedding.tolist()
-    collection_name = COLLECTION_MAPPING.get(embedding_type)
-    if not collection_name:
-        logging.error(f"No collection mapped for embedding type: {embedding_type}")
+    profile = _profile_or_log(embedding_type)
+    if not profile:
         return []
-    coll = _get_collection(collection_name)
+    if len(embedding) != profile.dimension:
+        logging.error(
+            "Query vector has %s dimensions for profile %s; expected %s",
+            len(embedding), profile.name, profile.dimension,
+        )
+        return []
+    coll = _get_collection(profile.collection)
     if not coll:
         return []
     # Request extra candidates for better precision (then trim to limit after excluding paper_ids)
@@ -487,18 +510,18 @@ def query_doc_by_embedding(
     index_type = getattr(config, "ZILLIZ_INDEX_TYPE", "IVF_FLAT")
     if index_type.upper() == "HNSW":
         ef = getattr(config, "ZILLIZ_SEARCH_EF", 64)
-        search_params = {"metric_type": "L2", "params": {"ef": ef}}
+        search_params = {"metric_type": profile.metric, "params": {"ef": ef}}
     else:
         nprobe = getattr(config, "ZILLIZ_SEARCH_NPROBE", 128)
-        search_params = {"metric_type": "L2", "params": {"nprobe": nprobe}}
+        search_params = {"metric_type": profile.metric, "params": {"nprobe": nprobe}}
     # Step 1: vector search returns only ID + distance (Zilliz often omits scalars in search results)
     try:
         res = coll.search(
             data=[embedding],
-            anns_field="embedding",
+            anns_field=profile.vector_field,
             param=search_params,
             limit=min(top_k, 16384),
-            output_fields=["ID"],
+            output_fields=["paper_uid"],
         )
     except Exception as e:
         logging.error(f"Zilliz search failed: {e}", exc_info=True)
@@ -531,7 +554,7 @@ def query_doc_by_embedding(
         if dist is not None:
             d["_score"] = float(dist)
             try:
-                d["score"] = 1.0 / (1.0 + float(dist))
+                d["score"] = float(dist)
                 d["Sim"] = d["score"]
                 d["_Sim"] = d["score"]
             except Exception:
@@ -541,18 +564,21 @@ def query_doc_by_embedding(
 
 def query_similar_doc_by_embedding_full(papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None):
     paper_ids_to_exclude = [str(p.get("ID")) for p in papers if p.get("ID")]
-    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+    profile = _profile_or_log(embedding_type)
+    if not profile:
+        return []
+    coll = _get_collection(profile.collection)
     if not coll:
         return []
     try:
         expr = _ids_to_expr(paper_ids_to_exclude)
-        res = coll.query(expr=expr, output_fields=["embedding"], limit=len(paper_ids_to_exclude) + 100)
+        res = coll.query(expr=expr, output_fields=[profile.vector_field], limit=len(paper_ids_to_exclude) + 100)
     except Exception as e:
         logging.error(f"Failed to fetch embeddings from Zilliz: {e}", exc_info=True)
         return []
     vectors_for_mean = []
     for r in (res or []):
-        emb = r.get("embedding")
+        emb = r.get(profile.vector_field)
         if isinstance(emb, (list, np.ndarray)) and (np.any(emb) if hasattr(emb, "__len__") else emb):
             vectors_for_mean.append(emb if isinstance(emb, list) else emb.tolist())
     if not vectors_for_mean:

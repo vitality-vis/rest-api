@@ -58,11 +58,10 @@ data_source = "json"  # Keep as json, indicating local JSON file is used for loa
 # Set in .env: ZILLIZ_URI (e.g. https://xxx.api.gcp-us-west1.zillizcloud.com), ZILLIZ_TOKEN (API key)
 ZILLIZ_URI = os.environ.get("ZILLIZ_URI", "")
 ZILLIZ_TOKEN = os.environ.get("ZILLIZ_TOKEN", "")
-# Embedding dimensions per collection (used as fallback; loader can infer from data)
-# paper_ada_localized: 1536 = OpenAI text-embedding-3-large/ada-002, 384 = MiniLM
+# Embedding dimensions per active retrieval collection. Future models should be
+# registered in model/retrieval.py with their own collection/vector profile.
 ZILLIZ_EMBED_DIM = {
-    "paper_specter": 768,
-    "paper_ada_localized": 1536,
+    "paper_prod": 1536,
 }
 
 # === Zilliz search & index tuning (speed vs precision) ===

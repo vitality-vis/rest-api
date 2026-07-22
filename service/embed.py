@@ -1,165 +1,85 @@
-from typing import List, Dict, Union
-import numpy as np
-import torch
-from transformers import AutoTokenizer, AutoModel
-from langchain_core.embeddings import Embeddings
-from tqdm import tqdm
-from logger_config import get_logger
+"""Query-embedding helpers for registered retrieval profiles."""
+from __future__ import annotations
 
 import os
+from typing import Dict, List, Union
+
+import numpy as np
 from openai import AzureOpenAI
 
-# Use centralized logger
+from logger_config import get_logger
+from model.retrieval import RetrievalProfile
+
+
 logging = get_logger()
 
-# === Constants ===
-MAX_BATCH_SIZE = 16
-# ==========================================
-# Azure OpenAI Configuration
-# ==========================================
 AZURE_EMBED_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_EMBED_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
 AZURE_EMBED_API_VERSION = os.getenv("AZURE_OPENAI_EMBED_API_VERSION")
 
-# Initialize Azure Client
-embed_client = AzureOpenAI(
-    api_version=AZURE_EMBED_API_VERSION,
-    azure_endpoint=AZURE_EMBED_ENDPOINT,
-    api_key=AZURE_EMBED_API_KEY
-)
 
-class LocalSpecterEmbedding(Embeddings):
-    def __init__(self, model_name="allenai/specter"):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
-        self.model.eval()
-        if torch.cuda.is_available():
-            self.model.cuda()
-            logging.info(f"Local Specter embedding model '{model_name}' moved to GPU.")
-        else:
-            logging.info(f"Loaded local Specter embedding model: {model_name} (on CPU).")
-
-    def embed_query(self, text: str) -> List[float]:
-        with torch.no_grad():
-            inputs = self.tokenizer(text, padding=True, truncation=True, return_tensors="pt", max_length=512)
-            if torch.cuda.is_available():
-                inputs = {k: v.cuda() for k, v in inputs.items()}
-
-            outputs = self.model(**inputs)
-            embedding = outputs.last_hidden_state[:, 0, :].cpu().squeeze().numpy()
-
-            norm = np.linalg.norm(embedding)
-            if norm > 0:
-                embedding = embedding / norm
-            return embedding.tolist()
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        embeddings = []
-        BATCH_SIZE = 32
-        with torch.no_grad():
-            for i in tqdm(range(0, len(texts), BATCH_SIZE), desc="Batch Specter Embedding"):
-                batch_texts = texts[i:i+BATCH_SIZE]
-                inputs = self.tokenizer(batch_texts, padding=True, truncation=True, return_tensors="pt", max_length=512)
-                if torch.cuda.is_available():
-                    inputs = {k: v.cuda() for k, v in inputs.items()}
-
-                outputs = self.model(**inputs)
-                batch_embeds = outputs.last_hidden_state[:, 0, :].cpu().detach().numpy()
-
-                norms = np.linalg.norm(batch_embeds, axis=1, keepdims=True)
-                batch_embeds = np.where(norms != 0, batch_embeds / norms, batch_embeds)
-
-                embeddings.extend(batch_embeds.tolist())
-        return embeddings
+def _azure_embed_client() -> AzureOpenAI:
+    """Create the Azure client only when an embedding is actually requested."""
+    if not AZURE_EMBED_ENDPOINT or not AZURE_EMBED_API_KEY or not AZURE_EMBED_DEPLOYMENT:
+        raise RuntimeError("Azure OpenAI embedding configuration is incomplete")
+    return AzureOpenAI(
+        api_version=AZURE_EMBED_API_VERSION,
+        azure_endpoint=AZURE_EMBED_ENDPOINT,
+        api_key=AZURE_EMBED_API_KEY,
+    )
 
 
-# ==========================================
-# Model Instantiation
-# ==========================================
-specter_model_instance = LocalSpecterEmbedding(model_name="allenai/specter")
-
-
-# ==========================================
-# Embedding Functions
-# ==========================================
-
-def ada_embedding(text_to_embed: Union[str, Dict]) -> List[float]:
-    if isinstance(text_to_embed, dict):
-        text_to_embed = text_to_embed.get('abstract', '')
-
-    if not text_to_embed or not isinstance(text_to_embed, str):
-       logging.warning("No valid text found for ADA embedding. Returning empty list.")
-       return []
+def embed_query(text: str, profile: RetrievalProfile) -> List[float]:
+    """Embed text with the query embedder registered by ``profile``."""
+    if profile.query_embedder != "azure_text_embedding_3_small":
+        raise ValueError(f"No query embedder registered for profile '{profile.name}'")
+    if not isinstance(text, str) or not text.strip():
+        return []
 
     try:
-        response = embed_client.embeddings.create(
+        response = _azure_embed_client().embeddings.create(
             model=AZURE_EMBED_DEPLOYMENT,
-            input=[text_to_embed]
+            input=[text],
         )
-        embedding = response.data[0].embedding
-        return embedding
-    except Exception as e:
-        logging.error(f"Error generating Azure OpenAI Ada embedding: {e}")
+        embedding = list(response.data[0].embedding)
+    except Exception as error:
+        logging.error("Azure embedding failed for profile %s: %s", profile.name, error)
         return []
 
-
-def specter_embedding(papers: Union[Dict, List[Dict]]) -> List[float]:
-    if isinstance(papers, dict):
-        papers = [papers]
-
-    if not papers:
-        logging.warning("No papers provided for Specter embedding.")
+    if len(embedding) != profile.dimension:
+        logging.error(
+            "Embedding deployment returned %s dimensions for profile %s; expected %s",
+            len(embedding),
+            profile.name,
+            profile.dimension,
+        )
         return []
-
-    paper = papers[0]
-    title = paper.get('Title', '')
-    abstract = paper.get('Abstract', '')
-    combined_text = f"{title} {specter_model_instance.tokenizer.sep_token} {abstract}"
-
-    if not combined_text.strip():
-        logging.warning(f"Paper {paper.get('paper_id', 'unknown')} has no title or abstract for Specter embedding. Skipping.")
-        return []
-
-    try:
-        embedding = specter_model_instance.embed_query(combined_text)
-        logging.debug(f"Generated Specter embedding (length: {len(embedding)})")
-        return embedding
-    except Exception as e:
-        logging.error(f"Error generating Specter embedding for paper: '{combined_text[:50]}...': {e}")
-        return []
+    return embedding
 
 
-# ==========================================
-# Utilities
-# ==========================================
-def chunks(lst: list, chunk_size: int = MAX_BATCH_SIZE):
-    for i in range(0, len(lst), chunk_size):
-        yield lst[i : i + chunk_size]
+def embed_paper_query(paper: Union[Dict, str], profile: RetrievalProfile) -> List[float]:
+    """Embed a title/abstract pair using the production profile's text space."""
+    if isinstance(paper, dict):
+        title = str(paper.get("Title") or paper.get("title") or "").strip()
+        abstract = str(paper.get("Abstract") or paper.get("abstract") or "").strip()
+        return embed_query("\n\n".join(part for part in (title, abstract) if part), profile)
+    return embed_query(str(paper or ""), profile)
+
 
 def mean_embedding(embeddings: List[List[float]]) -> List[float]:
-    valid_embeddings = [e for e in embeddings if e is not None and len(e) > 0]
+    valid_embeddings = [embedding for embedding in embeddings if embedding]
     if not valid_embeddings:
-        logging.warning("No valid embeddings provided for mean_embedding calculation.")
         return []
-
-    mean_vec = np.mean(np.array(valid_embeddings), axis=0)
+    mean_vec = np.mean(np.asarray(valid_embeddings), axis=0)
     norm = np.linalg.norm(mean_vec)
-    if norm > 0:
-        mean_vec = mean_vec / norm
-    else:
-        logging.warning("Mean embedding resulted in a zero vector. Normalization skipped.")
+    return (mean_vec / norm if norm else mean_vec).tolist()
 
-    logging.debug(f"Calculated mean embedding (length: {len(mean_vec)})")
-    return mean_vec.tolist()
 
 def min_max_scaler(arr: List[float]) -> List[float]:
     if not arr:
         return []
-    min_val = min(arr)
-    max_val = max(arr)
-    data_range = max_val - min_val
-    if data_range == 0:
-        logging.warning("Min-Max scaler received an array with no range. Returning zeros.")
+    min_val, max_val = min(arr), max(arr)
+    if min_val == max_val:
         return [0.0] * len(arr)
-    return [(x - min_val) / data_range for x in arr]
+    return [(value - min_val) / (max_val - min_val) for value in arr]
