@@ -118,6 +118,13 @@ def paper_to_api_response(doc: dict, score_key: str = "_score") -> dict:
     except Exception:
         pass
 
+    bm25_score = doc.get("bm25_score")
+    if bm25_score is not None:
+        try:
+            bm25_score = float(bm25_score)
+        except (TypeError, ValueError):
+            bm25_score = None
+
     paper = PaperResponse(
         ID=doc.get("paper_uid") or doc.get("id"),
         Title=doc.get("title") or "",
@@ -134,7 +141,8 @@ def paper_to_api_response(doc: dict, score_key: str = "_score") -> dict:
         umap=parse_coordinates(doc.get("umap")),
         _Sim=similarity,
         Sim=similarity,
-        score=similarity,
+        score=bm25_score if bm25_score is not None else similarity,
+        bm25_score=bm25_score,
     )
     if hasattr(paper, "model_dump"):
         return paper.model_dump(by_alias=True)

@@ -76,18 +76,25 @@ class _MilvusCollectionCompat:
             **pagination,
         )
 
-    def search(self, *, data, anns_field, param, limit, output_fields):
+    def search(
+        self, *, data, anns_field, param, limit, output_fields, filter=None, offset=None
+    ):
         client = _get_milvus_client()
         if not client:
             return []
-        return client.search(
-            collection_name=self._collection_name,
-            data=data,
-            anns_field=anns_field,
-            search_params=param,
-            limit=limit,
-            output_fields=output_fields,
-        )
+        kwargs = {
+            "collection_name": self._collection_name,
+            "data": data,
+            "anns_field": anns_field,
+            "search_params": param,
+            "limit": limit,
+            "output_fields": output_fields,
+        }
+        if filter:
+            kwargs["filter"] = filter
+        if offset:
+            kwargs["offset"] = offset
+        return client.search(**kwargs)
 
     @property
     def num_entities(self):
@@ -379,6 +386,9 @@ def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_
         if not coll:
             return {"papers": [], "total": 0}
 
+        if query.search_mode == "bm25" and str(query.search_query or "").strip():
+            return _query_docs_bm25(coll, query, embedding_type)
+
         # Keep this guard in the service as well as the HTTP route: agent code
         # also calls query_docs() directly.
         limit = min(max(int(query.limit or 100), 1), 100)
@@ -408,6 +418,50 @@ def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_
     except Exception as e:
         logging.error(f"Error in query_docs(): {e}", exc_info=True)
         return {"papers": [], "total": 0}
+
+
+def _query_docs_bm25(coll, query: GetPapersRequest, embedding_type: str) -> Dict[str, Any]:
+    """Return one relevance-ranked page from the native BM25 sparse index."""
+    limit = min(max(int(query.limit or 100), 1), 100)
+    offset = max(int(query.offset or 0), 0)
+    metadata_expr = _build_paper_query_expr(query, include_search_query=False)
+    try:
+        results = coll.search(
+            data=[str(query.search_query).strip()],
+            anns_field="search_sparse",
+            param={"metric_type": "BM25", "params": {}},
+            filter=metadata_expr,
+            offset=offset,
+            limit=limit + 1,
+            output_fields=["paper_uid"],
+        ) or []
+    except Exception as error:
+        logging.error("Zilliz BM25 search failed: %s", error, exc_info=True)
+        return {"papers": [], "has_more": False}
+
+    hits = results[0] if results else []
+    has_more = len(hits) > limit
+    ordered_ids = []
+    bm25_scores = {}
+    for hit in hits[:limit]:
+        paper_id, score = search_hit_to_id_and_distance(hit)
+        if not paper_id or paper_id in bm25_scores:
+            continue
+        ordered_ids.append(paper_id)
+        bm25_scores[paper_id] = score
+
+    documents = query_doc_by_ids(ordered_ids, embedding_type)
+    documents_by_id = {str(doc.get("ID")): doc for doc in documents if doc.get("ID")}
+    papers = []
+    for paper_id in ordered_ids:
+        document = documents_by_id.get(paper_id)
+        if not document:
+            continue
+        score = bm25_scores.get(paper_id)
+        document["bm25_score"] = score
+        document["score"] = score
+        papers.append(document)
+    return {"papers": papers, "has_more": has_more}
 
 def query_docs_with_embeddings(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return query_docs(query, embedding_type=embedding_type)

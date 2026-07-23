@@ -47,6 +47,22 @@ def _assert_papers_payload(data: dict) -> dict:
     return data
 
 
+def _assert_bm25_payload(data: dict) -> dict:
+    """Assert the intentionally different BM25 response contract."""
+    assert isinstance(data, dict)
+    assert isinstance(data.get("papers"), list)
+    assert "total" not in data
+    assert isinstance(data.get("has_more"), bool)
+
+    scores = []
+    for paper in data["papers"]:
+        score = paper.get("bm25_score")
+        assert isinstance(score, (int, float))
+        scores.append(float(score))
+    assert scores == sorted(scores, reverse=True)
+    return data
+
+
 def test_get_papers_corpus_total(api_base_url, capsys):
     """Unfiltered /getPapers should return the full corpus size via num_entities."""
     data = _assert_papers_payload(
@@ -113,3 +129,59 @@ def test_get_papers_cross_field_search_query(api_base_url):
         print(f"  sample title: {paper.get('Title', '')!r}")
 
     assert data["total"] > 0
+
+
+def test_get_papers_bm25_with_year_filter(api_base_url):
+    """Native sparse BM25 ranks a multi-word query within metadata filters."""
+    payload = {
+        "search_query": "visual analytics interactive",
+        "search_mode": "bm25",
+        "min_year": 2020,
+        "limit": 10,
+    }
+    data = _assert_bm25_payload(_post_json(api_base_url, "/getPapers", payload))
+
+    assert data["papers"], "Expected BM25 matches for the live production corpus"
+    assert all(paper.get("Year") is not None and paper["Year"] >= 2020 for paper in data["papers"])
+
+
+def test_get_papers_bm25_offset_page(api_base_url):
+    """BM25 offset supports the frontend's Load more request."""
+    payload = {
+        "search_query": "visual analytics interactive",
+        "search_mode": "bm25",
+        "limit": 2,
+    }
+    first_page = _assert_bm25_payload(
+        _post_json(api_base_url, "/getPapers", payload)
+    )
+    assert len(first_page["papers"]) == payload["limit"]
+    assert first_page["has_more"] is True
+
+    second_page = _assert_bm25_payload(
+        _post_json(
+            api_base_url,
+            "/getPapers",
+            {**payload, "offset": len(first_page["papers"])},
+        )
+    )
+    first_ids = {paper["ID"] for paper in first_page["papers"]}
+    second_ids = {paper["ID"] for paper in second_page["papers"]}
+    assert second_ids
+    assert first_ids.isdisjoint(second_ids)
+    assert first_page["papers"][-1]["bm25_score"] >= second_page["papers"][0]["bm25_score"]
+
+
+def test_get_papers_rejects_unknown_search_mode(api_base_url):
+    """Invalid modes must not silently fall back to exact search."""
+    try:
+        response = requests.post(
+            f"{api_base_url}/getPapers",
+            json={"search_query": "visual analytics", "search_mode": "unknown"},
+            timeout=60,
+        )
+    except requests.RequestException as error:
+        pytest.fail(f"Could not reach API_BASE_URL at /getPapers: {error}")
+
+    assert response.status_code == 400, response.text
+    assert response.headers.get("Content-Type", "").startswith("application/json")

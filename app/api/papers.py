@@ -2,6 +2,7 @@
 
 from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
+from pydantic import ValidationError
 
 from model.paper import GetPapersRequest, GetPapersResponse
 from repositories.zilliz.paper_repository import search_papers
@@ -24,32 +25,36 @@ def _bounded_int(value, *, default: int, minimum: int, maximum: int) -> int:
 def get_papers():
     """Fetch at most one bounded page of papers directly from Zilliz."""
     input_payload = request.args if request.method == "GET" else request.json or {}
-    query = GetPapersRequest(
-        search_query=input_payload.get("search_query"),
-        title=input_payload.get("title"),
-        abstract=input_payload.get("abstract"),
-        author=input_payload.get("author"),
-        source=input_payload.get("source"),
-        keyword=input_payload.get("keyword"),
-        min_year=input_payload.get("min_year"),
-        max_year=input_payload.get("max_year"),
-        min_citation_counts=input_payload.get("min_citation_counts"),
-        max_citation_counts=input_payload.get("max_citation_counts"),
-        id_list=input_payload.get("id_list"),
-        offset=_bounded_int(input_payload.get("offset"), default=0, minimum=0, maximum=2**31 - 1),
-        limit=_bounded_int(
-            input_payload.get("limit"),
-            default=MAX_PAPERS_PAGE_SIZE,
-            minimum=1,
-            maximum=MAX_PAPERS_PAGE_SIZE,
-        ),
-    )
+    try:
+        query = GetPapersRequest(
+            search_query=input_payload.get("search_query"),
+            search_mode=input_payload.get("search_mode", "exact"),
+            title=input_payload.get("title"),
+            abstract=input_payload.get("abstract"),
+            author=input_payload.get("author"),
+            source=input_payload.get("source"),
+            keyword=input_payload.get("keyword"),
+            min_year=input_payload.get("min_year"),
+            max_year=input_payload.get("max_year"),
+            min_citation_counts=input_payload.get("min_citation_counts"),
+            max_citation_counts=input_payload.get("max_citation_counts"),
+            id_list=input_payload.get("id_list"),
+            offset=_bounded_int(input_payload.get("offset"), default=0, minimum=0, maximum=2**31 - 1),
+            limit=_bounded_int(
+                input_payload.get("limit"),
+                default=MAX_PAPERS_PAGE_SIZE,
+                minimum=1,
+                maximum=MAX_PAPERS_PAGE_SIZE,
+            ),
+        )
+    except ValidationError as error:
+        return jsonify({"error": "Invalid getPapers request", "details": error.errors()}), 400
     result = search_papers(query)
     response = GetPapersResponse(
         papers=result.get("papers", []),
-        total=result.get("total", 0),
+        total=result.get("total"),
         has_more=result.get("has_more", False),
     )
     if hasattr(response, "model_dump"):
-        return jsonify(response.model_dump(by_alias=True))
-    return jsonify(response.dict(by_alias=True))
+        return jsonify(response.model_dump(by_alias=True, exclude_none=True))
+    return jsonify(response.dict(by_alias=True, exclude_none=True))

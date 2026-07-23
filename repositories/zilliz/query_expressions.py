@@ -78,7 +78,9 @@ def split_query_terms(value: Optional[str]) -> List[str]:
     return [term.strip() for term in value.split(",") if term.strip()]
 
 
-def build_paper_query_expr(query: GetPapersRequest) -> str:
+def build_paper_query_expr(
+    query: GetPapersRequest, *, include_search_query: bool = True
+) -> str:
     """Translate supported paper filters into a Milvus scalar expression.
 
     Filtering stays in Zilliz so a page request never materialises the complete
@@ -125,8 +127,9 @@ def build_paper_query_expr(query: GetPapersRequest) -> str:
     # field. Ingestion lower-cases that field and combines title, abstract,
     # authors, keywords, and source, so this is a case-insensitive cross-field
     # keyword search without pulling the collection into Python.
-    for term in split_query_terms(query.search_query):
-        parts.append(f'TEXT_MATCH(search_text, "{escape_text_match(term)}")')
+    if include_search_query:
+        for term in split_query_terms(query.search_query):
+            parts.append(f'TEXT_MATCH(search_text, "{escape_text_match(term)}")')
 
     like_all("title", query.title)
     like_all("abstract", query.abstract)
