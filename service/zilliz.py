@@ -610,9 +610,10 @@ def query_similar_doc_by_embedding_full(papers: List[dict], embedding_type: str,
 def query_similar_doc_by_embedding_2d(
     papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None
 ):
-    umap_field = {EMBED.ADA: "ada_umap", EMBED.SPECTER: "specter_umap"}.get(embedding_type)
-    if not umap_field:
+    profile = _profile_or_log(embedding_type)
+    if not profile:
         return []
+    umap_field = profile.umap_field
     query_points = []
     for p in papers:
         coords = p.get(umap_field)
@@ -657,6 +658,7 @@ def query_similar_doc_by_embedding_2d(
                     "Keywords": doc.get("Keywords", []),
                     "Source": doc.get("Source", ""),
                     "Year": doc.get("Year"),
+                    "umap": doc.get("umap"),
                     "ada_umap": doc.get("ada_umap"),
                     "specter_umap": doc.get("specter_umap"),
                     "distance": dist,
@@ -670,76 +672,55 @@ def query_similar_doc_by_embedding_2d(
 def query_similar_doc_by_paper(paper: dict, embedding_type: str, limit: int = 25, lang_filter: Dict = None):
     return query_similar_doc_by_embedding_full([paper], embedding_type, limit, lang_filter)
 
-_UMAP_FIELDS = [
-    "ID",
-    "Title",
-    "Year",
-    "Source",
-    "ada_umap",
-    "specter_umap",
-]
-_METADATA_FIELDS = [
-    "ID",
-    "Title",
-    "Authors",
-    "Keywords",
-    "Source",
-    "Year",
-    "CitationCounts",
-]
-_STATIC_CACHE_FIELDS = list(dict.fromkeys(_METADATA_FIELDS + _UMAP_FIELDS))
-
-
-def get_all_umap_points(embedding_type: str = EMBED.SPECTER):
-    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+def get_all_umap_points(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_prod"))
     if not coll:
         return []
     try:
-        rows = _query_all_batched(coll, _UMAP_FIELDS, desc="UMAP")
+        rows = _query_all_batched(coll, _SCALAR_FIELDS, desc="UMAP")
         return format_umap_points(rows or [])
     except Exception as e:
         logging.error(f"Failed to load UMAP points from Zilliz: {e}", exc_info=True)
         return []
 
 
-def get_all_static_cache_rows(embedding_type: str = EMBED.SPECTER) -> List[dict]:
+def get_all_static_cache_rows(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[dict]:
     """Fetch all fields needed for metadata and UMAP cache snapshots in one pass."""
-    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_prod"))
     if not coll:
         return []
     try:
-        return list(
-            _query_all_batched(coll, _STATIC_CACHE_FIELDS, desc="static cache") or []
-        )
+        rows = _query_all_batched(coll, _SCALAR_FIELDS, desc="static cache") or []
+        return [format_doc_for_frontend(row) for row in rows if row]
     except Exception as e:
         logging.error(f"Failed to fetch static cache rows from Zilliz: {e}")
         return []
 
 
 def get_all_metadatas(
-    embedding_type: str = EMBED.SPECTER,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
     limit: Optional[int] = None,
 ) -> List[dict]:
     """Return metadata rows from Zilliz (batched). Optional limit samples for cheap calls."""
-    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_specter"))
+    coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_prod"))
     if not coll:
         return []
     try:
         if limit is not None:
             safe_limit = max(1, int(limit))
             res = coll.query(
-                expr='ID != ""',
-                output_fields=_METADATA_FIELDS,
+                expr='paper_uid != ""',
+                output_fields=_SCALAR_FIELDS,
                 limit=safe_limit,
             )
         else:
-            res = _query_all_batched(coll, _METADATA_FIELDS, desc="metadata")
-        return list(res or [])
+            res = _query_all_batched(coll, _SCALAR_FIELDS, desc="metadata")
+        return [format_doc_for_frontend(row) for row in (res or []) if row]
     except Exception as e:
         logging.error(f"Failed to fetch metadatas from Zilliz: {e}")
         return []
 
-def _aggregate_count(field: str, embedding_type: str = EMBED.SPECTER) -> List[Dict[str, Any]]:
+def _aggregate_count(field: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[Dict[str, Any]]:
     docs = get_all_metadatas(embedding_type)
     counter = {}
     for doc in docs:
@@ -757,20 +738,20 @@ def _aggregate_count(field: str, embedding_type: str = EMBED.SPECTER) -> List[Di
                     counter[key_str] = counter.get(key_str, 0) + 1
     return sorted([{"_id": k, "count": v} for k, v in counter.items()], key=lambda x: -x["count"])
 
-def get_distinct_authors_with_counts(embedding_type: str = EMBED.SPECTER):
+def get_distinct_authors_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return _aggregate_count("Authors", embedding_type)
-def get_distinct_sources_with_counts(embedding_type: str = EMBED.SPECTER):
+def get_distinct_sources_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return _aggregate_count("Source", embedding_type)
-def get_distinct_keywords_with_counts(embedding_type: str = EMBED.SPECTER):
+def get_distinct_keywords_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return _aggregate_count("Keywords", embedding_type)
-def get_distinct_years_with_counts(embedding_type: str = EMBED.SPECTER):
+def get_distinct_years_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return sorted(_aggregate_count("Year", embedding_type), key=lambda x: x["_id"])
-def get_distinct_titles_with_counts(embedding_type: str = EMBED.SPECTER):
+def get_distinct_titles_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return _aggregate_count("Title", embedding_type)
-def get_distinct_citation_counts_with_counts(embedding_type: str = EMBED.SPECTER):
+def get_distinct_citation_counts_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     return _aggregate_count("CitationCounts", embedding_type)
 
-def get_distinct_authors(embedding_type: str = EMBED.SPECTER) -> List[str]:
+def get_distinct_authors(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     authors_set = set()
     for doc in docs:
@@ -785,12 +766,12 @@ def get_distinct_authors(embedding_type: str = EMBED.SPECTER) -> List[str]:
                     authors_set.add(a.strip())
     return list(authors_set)
 
-def get_distinct_sources(embedding_type: str = EMBED.SPECTER):
+def get_distinct_sources(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     docs = get_all_metadatas(embedding_type)
     formatted = [format_doc_for_frontend(d) for d in docs]
     return list(set(d.get("Source") for d in formatted if d.get("Source")))
 
-def get_distinct_keywords(embedding_type: str = EMBED.SPECTER) -> List[str]:
+def get_distinct_keywords(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     keywords_set = set()
     for doc in docs:
@@ -805,15 +786,15 @@ def get_distinct_keywords(embedding_type: str = EMBED.SPECTER) -> List[str]:
                     keywords_set.add(k.strip())
     return list(keywords_set)
 
-def get_distinct_years(embedding_type: str = EMBED.SPECTER) -> List[int]:
+def get_distinct_years(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[int]:
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("Year") for doc in docs if doc.get("Year") is not None))
 
-def get_distinct_titles(embedding_type: str = EMBED.SPECTER) -> List[str]:
+def get_distinct_titles(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     return list(set(doc.get("Title") for doc in docs if doc.get("Title")))
 
-def get_distinct_citation_counts(embedding_type: str = EMBED.SPECTER) -> List[int]:
+def get_distinct_citation_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[int]:
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("CitationCounts") for doc in docs if doc.get("CitationCounts") is not None))
 

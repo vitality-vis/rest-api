@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 from logger_config import get_logger
-from model.const import EMBED
+from model.retrieval import DEFAULT_RETRIEVAL_PROFILE
 from service import zilliz
 from service.metadata_normalizer import normalize_aggregated_metadata, parse_string_list
 
@@ -26,13 +26,15 @@ class ZillizNotConfiguredError(ZillizFingerprintError):
     """Zilliz credentials are not configured for this process."""
 
 
-def read_collection_fingerprint(embedding_type: str = EMBED.SPECTER) -> Dict[str, Any]:
+def read_collection_fingerprint(
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+) -> Dict[str, Any]:
     """Read a collection change detector, raising a clear error on failure.
 
     Uses read-only collection metadata and statistics APIs. Callers that can
     safely fall back to local data should use get_collection_fingerprint().
     """
-    collection_name = zilliz.COLLECTION_MAPPING.get(embedding_type, "paper_specter")
+    collection_name = zilliz.COLLECTION_MAPPING.get(embedding_type, "paper_prod")
     if not config.ZILLIZ_URI or not config.ZILLIZ_TOKEN:
         raise ZillizNotConfiguredError("ZILLIZ_URI / ZILLIZ_TOKEN not set")
     try:
@@ -80,7 +82,9 @@ def read_collection_fingerprint(embedding_type: str = EMBED.SPECTER) -> Dict[str
         ) from e
 
 
-def get_collection_fingerprint(embedding_type: str = EMBED.SPECTER) -> Optional[Dict[str, Any]]:
+def get_collection_fingerprint(
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+) -> Optional[Dict[str, Any]]:
     """Return a fingerprint, or None when the caller can safely fall back."""
     try:
         return read_collection_fingerprint(embedding_type)
@@ -105,7 +109,7 @@ def fingerprints_match(
 
 
 def get_aggregated_metadata(
-    embedding_type: str = EMBED.SPECTER,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
     sample_limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Aggregate filter facets from Zilliz rows.
@@ -168,7 +172,7 @@ def aggregate_metadata(docs: List[dict]) -> Dict[str, Any]:
 
 
 def write_static_cache_from_zilliz(
-    embedding_type: str = EMBED.SPECTER,
+    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
     fingerprint: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Pull meta + UMAP from Zilliz and write local snapshot files + fingerprint."""
@@ -231,7 +235,7 @@ class CachedData:
     aggregated_metadata = None
     fingerprint = None
 
-    def init(self, embedding_type: str = EMBED.SPECTER):
+    def init(self, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
         logging.info("Initializing cached data...")
         meta_path = Path(config.meta_data_file_path)
         umap_path = Path(config.umap_data_file_path)

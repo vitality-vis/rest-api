@@ -48,7 +48,7 @@ def _patch_cache_paths(monkeypatch, meta_path, umap_path, fingerprint_path):
 
 def test_fingerprints_match_happy_and_mismatch():
     base = {
-        "collection": "paper_specter",
+        "collection": "paper_prod",
         "update_timestamp": 100,
         "row_count": 10,
     }
@@ -80,7 +80,7 @@ def test_read_collection_fingerprint_uses_fallback_fields(monkeypatch):
     )
 
     assert read_collection_fingerprint() == {
-        "collection": "paper_specter",
+        "collection": "paper_prod",
         "update_timestamp": 42,
         "row_count": 3,
     }
@@ -144,7 +144,7 @@ def test_get_aggregated_metadata_counts_authors(monkeypatch):
     ]
     assert meta["citation_counts"] == [1, 2]
     assert meta["sample_size"] == 2
-    get_all_metadatas.assert_called_once_with("specter", limit=None)
+    get_all_metadatas.assert_called_once_with("text-embedding-3-small", limit=None)
 
 
 def test_write_static_cache_from_zilliz_writes_normalized_snapshot(tmp_path, monkeypatch):
@@ -152,7 +152,7 @@ def test_write_static_cache_from_zilliz_writes_normalized_snapshot(tmp_path, mon
     umap_p = tmp_path / "umap_data.json"
     fp_p = tmp_path / "cache_fingerprint.json"
     fingerprint = {
-        "collection": "paper_specter",
+        "collection": "paper_prod",
         "update_timestamp": 42,
         "row_count": 1,
     }
@@ -197,7 +197,7 @@ def test_write_static_cache_from_zilliz_writes_normalized_snapshot(tmp_path, mon
     assert json.loads(meta_p.read_text(encoding="utf-8")) == expected_metadata
     assert json.loads(umap_p.read_text(encoding="utf-8")) == points
     assert json.loads(fp_p.read_text(encoding="utf-8")) == fingerprint
-    get_cache_rows.assert_called_once_with("specter")
+    get_cache_rows.assert_called_once_with("text-embedding-3-small")
     format_umap_points.assert_called_once_with(rows)
 
 
@@ -218,7 +218,7 @@ def test_write_static_cache_rejects_incomplete_zilliz_results(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match="expected 2 rows, received 1"):
         write_static_cache_from_zilliz(
             fingerprint={
-                "collection": "paper_specter",
+                "collection": "paper_prod",
                 "update_timestamp": 42,
                 "row_count": 2,
             }
@@ -233,7 +233,7 @@ def test_cached_data_init_uses_local_when_fingerprint_matches(tmp_path, monkeypa
     meta_p = tmp_path / "meta_data.json"
     umap_p = tmp_path / "umap_data.json"
     fp_p = tmp_path / "cache_fingerprint.json"
-    fp = {"collection": "paper_specter", "update_timestamp": 42, "row_count": 3}
+    fp = {"collection": "paper_prod", "update_timestamp": 42, "row_count": 3}
 
     meta_p.write_text(json.dumps(_empty_meta()), encoding="utf-8")
     umap_p.write_text(json.dumps([{"ID": "1", "Title": "x"}]), encoding="utf-8")
@@ -257,8 +257,8 @@ def test_cached_data_init_refreshes_when_stale(tmp_path, monkeypatch):
     meta_p = tmp_path / "meta_data.json"
     umap_p = tmp_path / "umap_data.json"
     fp_p = tmp_path / "cache_fingerprint.json"
-    local = {"collection": "paper_specter", "update_timestamp": 1, "row_count": 1}
-    remote = {"collection": "paper_specter", "update_timestamp": 2, "row_count": 99}
+    local = {"collection": "paper_prod", "update_timestamp": 1, "row_count": 1}
+    remote = {"collection": "paper_prod", "update_timestamp": 2, "row_count": 99}
 
     meta_p.write_text(json.dumps(_empty_meta()), encoding="utf-8")
     umap_p.write_text(json.dumps([]), encoding="utf-8")
@@ -299,7 +299,7 @@ def test_cached_data_init_uses_local_cache_when_remote_fingerprint_unavailable(
     meta_p = tmp_path / "meta_data.json"
     umap_p = tmp_path / "umap_data.json"
     fp_p = tmp_path / "cache_fingerprint.json"
-    local_fp = {"collection": "paper_specter", "update_timestamp": 1, "row_count": 1}
+    local_fp = {"collection": "paper_prod", "update_timestamp": 1, "row_count": 1}
     points = [{"ID": "local"}]
     meta_p.write_text(json.dumps(_empty_meta()), encoding="utf-8")
     umap_p.write_text(json.dumps(points), encoding="utf-8")
@@ -323,8 +323,8 @@ def test_cached_data_init_keeps_local_cache_when_refresh_fails(tmp_path, monkeyp
     meta_p = tmp_path / "meta_data.json"
     umap_p = tmp_path / "umap_data.json"
     fp_p = tmp_path / "cache_fingerprint.json"
-    local_fp = {"collection": "paper_specter", "update_timestamp": 1, "row_count": 1}
-    remote_fp = {"collection": "paper_specter", "update_timestamp": 2, "row_count": 2}
+    local_fp = {"collection": "paper_prod", "update_timestamp": 1, "row_count": 1}
+    remote_fp = {"collection": "paper_prod", "update_timestamp": 2, "row_count": 2}
     points = [{"ID": "local"}]
     meta_p.write_text(json.dumps(_empty_meta()), encoding="utf-8")
     umap_p.write_text(json.dumps(points), encoding="utf-8")
@@ -342,7 +342,7 @@ def test_cached_data_init_keeps_local_cache_when_refresh_fails(tmp_path, monkeyp
 
     assert cache.get_umap_points() == points
     assert cache.fingerprint == local_fp
-    refresh.assert_called_once_with("specter", fingerprint=remote_fp)
+    refresh.assert_called_once_with("text-embedding-3-small", fingerprint=remote_fp)
 
 
 def test_cached_data_init_is_empty_when_no_local_cache_or_remote_fingerprint(
@@ -376,5 +376,5 @@ def test_zilliz_fingerprint_smoke_readonly():
         pytest.skip("ZILLIZ_URI / ZILLIZ_TOKEN not set")
 
     print(f"Zilliz fingerprint: {json.dumps(fp, ensure_ascii=False)}")
-    assert fp.get("collection") == "paper_specter"
+    assert fp.get("collection") == "paper_prod"
     assert fp.get("update_timestamp") is not None or fp.get("row_count") is not None

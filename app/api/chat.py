@@ -23,7 +23,7 @@ from repositories.supabase.chat_repository import (
     load_user_conversations,
     save_message,
 )
-from service.agent_runner import run_two_stage_rag_stream
+from agents.search_v1_legacy import AgentRequest, run as run_search_v1_legacy
 
 
 chat_bp = Blueprint("chat", __name__)
@@ -283,7 +283,8 @@ def chat():
     started_at = monotonic()
 
     async def agen():
-        async for chunk in run_two_stage_rag_stream(text, chat_id, history=history):
+        request = AgentRequest(text=text, chat_id=chat_id, history=history)
+        async for chunk in run_search_v1_legacy(request):
             yield chunk
 
     def stream_sync():

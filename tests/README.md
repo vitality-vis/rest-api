@@ -4,8 +4,8 @@ Run these commands from `rest-api/` using the same Python environment as the API
 
 ```bash
 make test       # Local tests: no credentials or external services
-make test-live  # Read-only checks against real external services
-make test-all   # Both; live checks skip when credentials are unavailable
+make test-live  # Live Zilliz and API smoke tests (API must be running)
+make test-all   # Both local and live tests (API must be running)
 ```
 
 ## Test a running API server
@@ -20,15 +20,15 @@ make test-live TESTS=tests/test_api_bootstrap.py
 make test-live TESTS=tests/test_api_getpapers.py
 ```
 
-When an explicitly selected test matches `tests/test_api_*.py`, Make defaults
-to `http://127.0.0.1:3000`. To test another running server, set its URL:
+Make defaults to `http://127.0.0.1:3000`. To test another running server, set
+its URL:
 
 ```bash
 API_BASE_URL=https://example.com make test-live TESTS=tests/test_api_bootstrap.py
 ```
 
-The normal `make test-live` command does not select an API server, so API smoke
-tests skip themselves in that suite.
+`make test-live` targets `http://127.0.0.1:3000` by default. Start the API
+before running it, or set `API_BASE_URL` to a different running server.
 
 To run one test file:
 

@@ -85,14 +85,23 @@ def parse_coordinates(value: Any):
 
 
 def row_to_umap_point(row: dict) -> dict:
-    """Convert one Zilliz row into the UMAP snapshot representation."""
+    """Convert a Zilliz row or API paper into the UMAP snapshot representation."""
+    coordinates = parse_coordinates(
+        row.get("umap", row.get("specter_umap"))
+    )
     return {
-        "ID": str(row.get("ID")) if row.get("ID") else None,
-        "Title": row.get("Title", ""),
-        "Year": row.get("Year"),
-        "Source": row.get("Source", ""),
+        "ID": str(row.get("ID") or row.get("paper_uid"))
+        if row.get("ID") or row.get("paper_uid")
+        else None,
+        "Title": row.get("Title", row.get("title", "")),
+        "Year": row.get("Year", row.get("year")),
+        "Source": row.get("Source", row.get("source", "")),
         "ada_umap": parse_coordinates(row.get("ada_umap")),
-        "specter_umap": parse_coordinates(row.get("specter_umap")),
+        # The rebuilt frontend still reads ``specter_umap``.  The current
+        # collection exposes one generic ``umap`` field, so retain the legacy
+        # response key as a compatibility alias while also exposing ``umap``.
+        "specter_umap": coordinates,
+        "umap": coordinates,
     }
 
 
