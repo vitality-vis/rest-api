@@ -24,14 +24,12 @@ from repositories.zilliz.connection import (
 )
 from repositories.zilliz.query_expressions import (
     build_paper_query_expr as _build_paper_query_expr,
-    escape_like as _escape_like,
     ids_to_expr as _ids_to_expr,
     query_has_filters as _query_has_filters,
     where_to_expr as _zilliz_where_to_expr,
 )
 from repositories.zilliz.mappers import (
     SCALAR_FIELDS as _SCALAR_FIELDS,
-    entity_to_metadata as _entity_to_meta,
     paper_to_api_response as format_doc_for_frontend,
     row_to_metadata as _row_to_meta,
     rows_to_umap_points as format_umap_points,
@@ -259,22 +257,9 @@ def get_cached_papers(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
         load_all_papers_to_cache(embedding_type)
     return _all_papers_cache.get(collection_name, [])
 
-# --- Query schema & matching ---
-def normalize_text(text: str) -> str:
-    return str(text or "").strip().lower().rstrip(".!?")
-
-
+# --- Query helpers ---
 def _parse_string_list(value) -> List[str]:
     return parse_string_list(value)
-
-
-def _normalized_list(values) -> List[str]:
-    normalized = []
-    for value in _parse_string_list(values):
-        norm = normalize_text(value)
-        if norm:
-            normalized.append(norm)
-    return normalized
 
 
 def _count_matching_entities(coll, expr: str) -> Optional[int]:
@@ -292,93 +277,6 @@ def _count_matching_entities(coll, expr: str) -> Optional[int]:
         logging.warning(f"Zilliz count(*) failed for expr={expr!r}: {e}")
         return None
 
-
-def _contains_token_phrase(container: str, needle: str) -> bool:
-    if not container or not needle:
-        return False
-    if container == needle:
-        return True
-    if needle in container:
-        return True
-    container_tokens = set(container.replace("-", " ").split())
-    needle_tokens = [tok for tok in needle.replace("-", " ").split() if tok]
-    return bool(needle_tokens) and all(tok in container_tokens for tok in needle_tokens)
-
-
-def _author_matches(candidate: str, query_author: str) -> bool:
-    candidate_norm = normalize_text(candidate)
-    query_norm = normalize_text(query_author)
-    if not candidate_norm or not query_norm:
-        return False
-    if candidate_norm == query_norm:
-        return True
-
-    candidate_tokens = [tok for tok in candidate_norm.replace("-", " ").split() if tok]
-    query_tokens = [tok for tok in query_norm.replace("-", " ").split() if tok]
-    if not candidate_tokens or not query_tokens:
-        return False
-
-    # Treat reordered full names as equivalent, but avoid loose substring matches
-    return sorted(candidate_tokens) == sorted(query_tokens)
-
-def match_doc(doc, query: GetPapersRequest):
-    doc_id_str = str(doc.get("ID")) if doc.get("ID") is not None else None
-    if query.title:
-        # Support comma-separated keywords with AND logic (all keywords must match)
-        keywords = [k.strip() for k in query.title.split(',') if k.strip()]
-        d_title = normalize_text(doc.get("Title", ""))
-
-        # Check if all keywords are present in the title
-        if not all(normalize_text(kw) in d_title for kw in keywords):
-            return False
-
-    if query.abstract:
-        # Support comma-separated keywords with AND logic (all keywords must match)
-        keywords = [k.strip() for k in query.abstract.split(',') if k.strip()]
-        d_abstract = str(doc.get("Abstract", "")).lower()
-
-        # Check if all keywords are present in the abstract
-        if not all(kw.lower() in d_abstract for kw in keywords):
-            return False
-    doc_authors = _normalized_list(doc.get("Authors", []))
-    if query.author and not any(
-        any(_author_matches(author, q_author) for author in doc_authors)
-        for q_author in query.author
-    ):
-        return False
-    src = query.source
-    if src is not None:
-        if isinstance(src, list):
-            if not any(s.lower() in str(doc.get("Source", "")).lower() for s in src):
-                return False
-        else:
-            if src.lower() not in str(doc.get("Source", "")).lower():
-                return False
-    doc_keywords = _normalized_list(doc.get("Keywords", []))
-    if query.keyword and not any(
-        any(_contains_token_phrase(keyword, normalize_text(q_keyword)) for keyword in doc_keywords)
-        for q_keyword in query.keyword
-    ):
-        return False
-    try:
-        doc_year = int(doc.get("Year", 0))
-        if query.min_year and doc_year < query.min_year:
-            return False
-        if query.max_year and doc_year > query.max_year:
-            return False
-    except Exception:
-        pass
-    try:
-        doc_citation_counts = int(doc.get("CitationCounts", 0))
-        if getattr(query, "min_citation_counts", None) is not None and doc_citation_counts < query.min_citation_counts:
-            return False
-        if getattr(query, "max_citation_counts", None) is not None and doc_citation_counts > query.max_citation_counts:
-            return False
-    except Exception:
-        pass
-    if query.id_list and (doc_id_str is None or str(doc_id_str) not in [str(i) for i in query.id_list]):
-        return False
-    return True
 
 def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     """Return one Zilliz-backed page of papers without a process-wide cache."""
@@ -538,9 +436,6 @@ def _query_docs_vector(coll, query: GetPapersRequest, profile) -> Dict[str, Any]
         document["score"] = scores.get(paper_id)
         papers.append(document)
     return {"papers": papers, "has_more": has_more}
-
-def query_docs_with_embeddings(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
-    return query_docs(query, embedding_type=embedding_type)
 
 def normalize_results(results, mode="nD"):
     normalized = []
