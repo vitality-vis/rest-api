@@ -28,7 +28,6 @@ torch>=2.4,<3
 accelerate>=0.34,<1
 safetensors
 huggingface-hub<1
-rank_bm25
 
 # === Vector DB (Zilliz Cloud / Milvus) ===
 pymilvus==3.0.0

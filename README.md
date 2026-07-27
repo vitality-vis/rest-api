@@ -184,15 +184,18 @@ POST /chat
 ├── service/              # Core logic
 │   ├── zilliz.py        # Zilliz queries, similarity, UMAP
 │   ├── embed.py         # Specter and Azure Ada embeddings
-│   ├── rag_core.py      # RAG retrieval, rerank, formatting
-│   ├── agent_runner.py  # LangChain agent and tools
-│   ├── agent_tools.py   # RAG/semantic search tools
+│   ├── search.py        # Shared paper search orchestration
+│   ├── agent_tools.py   # RAG/semantic search tools (still shared path for now)
 │   ├── intent_classifier.py
 │   ├── query_rewriter.py
 │   ├── memory_manager.py
 │   ├── session_state.py
 │   ├── grounded_writer.py
 │   └── static_cache.py  # meta/umap local snapshot + fingerprint refresh
+├── agents/
+│   └── search_v1_legacy/
+│       ├── runner.py        # /chat entry + LangChain orchestration
+│       └── rag_core.py      # Agent session docs, CrossEncoder rerank, formatting
 ├── model/
 │   ├── const.py         # e.g. EMBED (specter, ada)
 │   └── query.py         # Query schemas

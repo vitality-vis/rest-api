@@ -23,7 +23,6 @@ from app.api.library import library_bp
 from service import zilliz
 from langchain_openai import AzureChatOpenAI
 from prompt import SUMMARIZE_PROMPT, LITERATURE_REVIEW_PROMPT
-from service import rag_core
 from service.grounded_writer import (
     format_papers_with_segments,
     extract_citations_metadata_from_content
@@ -142,7 +141,7 @@ def checkout_papers():
 
 from flask import Response, request
 from flask_cors import cross_origin
-# from service.agent_runner import streaming_llm  
+# from agents.search_v1_legacy.runner import streaming_llm  # legacy; undefined  
 import asyncio
 
 
@@ -394,7 +393,7 @@ def get_paper_by_title():
     return jsonify(papers)
 
 
-from service.agent_runner import reset_all_sessions
+from agents.search_v1_legacy.runner import reset_all_sessions
 
 # On startup
 reset_all_sessions()

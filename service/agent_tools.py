@@ -10,8 +10,8 @@ from langchain_core.tools import tool
 from langchain.schema import Document
 from pydantic import BaseModel, Field
 
-from service import rag_core
-from service.rag_core import (
+from agents.search_v1_legacy import rag_core
+from agents.search_v1_legacy.rag_core import (
     _run_metadata_search,
     _run_semantic_search,
     format_docs,
@@ -177,7 +177,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     # Step 5 — Save to session + format output (reuse rag_core format)
     # ============================================================
     # Convert rows to LangChain Documents so downstream code (memory, etc.) keeps working.
-    from service.rag_core import _rows_to_documents, save_session_docs, format_docs
+    from agents.search_v1_legacy.rag_core import _rows_to_documents, save_session_docs, format_docs
 
     docs = _rows_to_documents(items)
     save_session_docs(chat_id, docs)
@@ -233,7 +233,7 @@ def mixed_search(query_text, filters, chat_id, top_k=5):
     [PAPER SEARCH — list only] First run metadata search (filters), then re-rank those results by topic/semantic relevance to query_text. Use when the user wants papers that match both metadata (author, year, venue, etc.) and topic — or when they ask a question that combines topic + filters (e.g. "What do CHI papers say about usability?"); call mixed_search then answer from the results.
     """
     from service.session_state import SESSIONS
-    from service.rag_core import (
+    from agents.search_v1_legacy.rag_core import (
         _run_metadata_search,
         _rerank_docs_by_query,
         save_session_docs,

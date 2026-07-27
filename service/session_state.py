@@ -1,6 +1,6 @@
 """
 Centralized session state for the research assistant.
-Holds the global SESSIONS dict and helpers so that rag_core and agent_runner
+Holds the global SESSIONS dict and helpers so that search_v1_legacy and agent_runner
 (and other modules) can access it without circular imports.
 """
 from typing import Optional

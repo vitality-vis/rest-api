@@ -1,15 +1,16 @@
 """
-RAG core: session doc storage, embedding/rerank setup, semantic search, hybrid refine.
+Legacy search agent helpers: session docs, CrossEncoder rerank, formatting.
+
+Owned by ``agents.search_v1_legacy``. Shared paper retrieval goes through
+``service.search``; this module is agent-specific.
 """
 import logging
-import numpy as np
 from copy import deepcopy
 from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
 from model.paper import SearchRequest
 from service.search import search
 from sentence_transformers import CrossEncoder
-from rank_bm25 import BM25Okapi
 
 def save_session_docs(chat_id: str, docs: List[Document]) -> None:
     """
@@ -179,66 +180,7 @@ def _run_metadata_search(plan, chat_id: str) -> List[Document]:
 
 
 # ==========================================
-# 1. Global State & Initialization
-# ==========================================
-
-# These hold the keyword index in memory
-BM25_INDEX = None
-BM25_DOC_MAP = {} 
-
-def initialize_bm25_index(all_documents: List[Document]):
-    """
-    Call this ONCE when your app starts. 
-    It pulls docs from Zilliz (or your cache) to build the keyword index.
-    """
-    global BM25_INDEX, BM25_DOC_MAP
-    
-    logging.info(f"Building BM25 index for {len(all_documents)} documents...")
-    
-    corpus_tokens = []
-    BM25_DOC_MAP = {}
-
-    # for idx, doc in enumerate(all_documents):
-    #     # Combine Title + Abstract for rich keyword matching
-    #     # We map the integer index 'idx' to the actual Document object
-    #     BM25_DOC_MAP[idx] = doc
-        
-    #     content_text = (doc.metadata.get("title", "") + " " + doc.page_content).lower()
-    #     # Simple tokenization (split by whitespace). 
-    #     # For production, consider spaCy or NLTK for better stemming.
-    #     tokens = content_text.split() 
-    #     corpus_tokens.append(tokens)
-
-    # BM25_INDEX = BM25Okapi(corpus_tokens)
-    # logging.info(" BM25 Index built successfully.")
-
-    corpus_tokens = []
-    BM25_DOC_MAP = {}
-
-    for idx, doc in enumerate(all_documents):
-
-        BM25_DOC_MAP[idx] = doc
-
-        # --- Extract metadata fields safely ---
-        title_text = doc.metadata.get("title", "")
-        abstract_text = doc.page_content or doc.metadata.get("abstract", "")
-        keywords_text = doc.metadata.get("keywords", "")
-
-        # --- Build the BM25-optimized text field ---
-        # Important: BM25 is sensitive to duplicate words and noise.
-        # We keep formatting extremely simple: "title keywords abstract"
-        content_text = f"{title_text} {keywords_text} {abstract_text}".lower()
-
-        # Basic tokenization. (You can later switch to spaCy.)
-        tokens = content_text.split()
-
-        corpus_tokens.append(tokens)
-
-    BM25_INDEX = BM25Okapi(corpus_tokens)
-    logging.info(" BM25 Index built successfully (title + keywords + abstract).")
-
-# ==========================================
-# 2. Helper: Reciprocal Rank Fusion (RRF)
+# 1. Helper: Reciprocal Rank Fusion (RRF)
 # ==========================================
 
 def reciprocal_rank_fusion(results_lists: List[List[Document]], k=60) -> List[Document]:
@@ -268,7 +210,7 @@ def reciprocal_rank_fusion(results_lists: List[List[Document]], k=60) -> List[Do
     return [doc_map[did] for did in sorted_ids]
 
 # ==========================================
-# 3. Semantic search (vector + BM25 fusion, cross-encoder rerank)
+# 2. Semantic search (vector retrieval, cross-encoder rerank)
 # ==========================================
 
 
@@ -277,8 +219,8 @@ def _run_semantic_search(
     chat_id: str, 
     top_k: int = 100  # Increase this to 100
 ) -> List[Document]:
-    # --- Stage 1: Parallel Retrieval ---
-    # Fetch more candidates to ensure quality after fusion
+    # --- Stage 1: Retrieval ---
+    # Fetch more candidates than needed so the reranker has room to work
     vector_result = search(
         SearchRequest(
             search_query=query_text,
@@ -287,15 +229,8 @@ def _run_semantic_search(
         )
     )
     vector_docs = _rows_to_documents(vector_result.papers)
-    
-    keyword_docs = []
-    if BM25_INDEX is not None:
-        tokenized_query = query_text.lower().split()
-        keyword_docs = BM25_INDEX.get_top_n(tokenized_query, list(BM25_DOC_MAP.values()), n=120)
 
-    # --- Stage 2: Fusion ---
-    fused_docs = reciprocal_rank_fusion([vector_docs, keyword_docs])
-    rerank_candidates = fused_docs[:100] # Keep the top 100
+    rerank_candidates = vector_docs[:100] # Keep the top 100
 
     # --- Stage 3: Deep Reranking ---
     pairs = []
@@ -341,7 +276,22 @@ def _rerank_docs_by_query(docs: List[Document], query_text: str, top_k: Optional
     return docs_sorted
 
 
+# TODO(hybrid-refine): currently unused — keep for design reference, do not wire
+# back without fixing scores. Production mixed_search uses metadata candidates +
+# _rerank_docs_by_query instead.
+#
+# Idea worth revisiting later (prefer SearchService policy, not this function as-is):
+# 1. Run FILTER (or DENSE+filters) and DENSE as two ranked lists.
+# 2. Prefer ID intersection as high-confidence hits; if empty, fall back to dense
+#    (or to filtered+reranked) rather than pretending they fused.
+# 3. Only compute a hybrid score when both sides have real, normalized scores
+#    (_semantic_score / _meta_score). Missing scores must not default to 1.0.
+# 4. Optional CrossEncoder after fusion; keep retrieval_score / hybrid_score /
+#    rerank_score distinct (see notes/rag-hybrid-fallback-followup.md).
+# 5. Evaluate vs current mixed_search before replacing it; do not expose alpha /
+#    candidate sizes to the client.
 def hybrid_refine(meta_docs, sem_docs, query_text, top_k=5, alpha=0.7):
+    """Legacy metadata∩semantic refine. Not called by production tools."""
 
     # --- 1. Build ID sets (use ID only) ---
     meta_ids = {d.metadata.get("id") or d.metadata.get("ID") for d in meta_docs}
