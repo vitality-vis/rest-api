@@ -5,7 +5,9 @@ from flask_cors import cross_origin
 from pydantic import ValidationError
 
 from model.paper import GetPapersRequest, GetPapersResponse
+from model.retrieval import get_retrieval_profile
 from repositories.zilliz.paper_repository import search_papers
+from service.zilliz import VectorSearchUnavailableError
 
 
 MAX_PAPERS_PAGE_SIZE = 100
@@ -29,6 +31,7 @@ def get_papers():
         query = GetPapersRequest(
             search_query=input_payload.get("search_query"),
             search_mode=input_payload.get("search_mode", "exact"),
+            embedding_model=input_payload.get("embedding_model"),
             title=input_payload.get("title"),
             abstract=input_payload.get("abstract"),
             author=input_payload.get("author"),
@@ -49,7 +52,14 @@ def get_papers():
         )
     except ValidationError as error:
         return jsonify({"error": "Invalid getPapers request", "details": error.errors()}), 400
-    result = search_papers(query)
+    if query.search_mode == "vector" and query.embedding_model and not get_retrieval_profile(
+        query.embedding_model
+    ):
+        return jsonify({"error": "Unsupported embedding_model"}), 400
+    try:
+        result = search_papers(query)
+    except VectorSearchUnavailableError:
+        return jsonify({"error": "Vector search is temporarily unavailable"}), 503
     response = GetPapersResponse(
         papers=result.get("papers", []),
         total=result.get("total"),

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class PaperResponse(BaseModel):
-    """Legacy-compatible paper payload returned by REST endpoints."""
+    """Paper payload returned by REST endpoints."""
 
     paper_id: Optional[str] = Field(default=None, alias="ID")
     title: str = Field(default="", alias="Title")
@@ -22,10 +22,7 @@ class PaperResponse(BaseModel):
     dblp_source: Optional[str] = None
     full_paper: Optional[bool] = None
     umap: Optional[list] = None
-    similarity: float = Field(default=0.0, alias="_Sim")
-    sim: float = Field(default=0.0, alias="Sim")
-    score: float = 0.0
-    bm25_score: Optional[float] = None
+    score: Optional[float] = None
 
 
 class GetPapersRequest(BaseModel):
@@ -44,7 +41,8 @@ class GetPapersRequest(BaseModel):
     offset: int = 0
     min_citation_counts: Optional[int] = None
     max_citation_counts: Optional[int] = None
-    search_mode: Literal["exact", "bm25"] = "exact"
+    search_mode: Literal["exact", "bm25", "vector"] = "exact"
+    embedding_model: Optional[str] = None
 
 
 class GetPapersResponse(BaseModel):

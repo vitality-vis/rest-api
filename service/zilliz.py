@@ -41,6 +41,10 @@ from service.metadata_normalizer import parse_string_list
 
 logging = get_logger()
 
+
+class VectorSearchUnavailableError(RuntimeError):
+    """Raised when the dense query embedding service cannot serve a request."""
+
 # Collection name mapping; include string keys for agent_tools
 COLLECTION_MAPPING = {
     name: profile.collection for name, profile in RETRIEVAL_PROFILES.items()
@@ -379,7 +383,12 @@ def match_doc(doc, query: GetPapersRequest):
 def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
     """Return one Zilliz-backed page of papers without a process-wide cache."""
     try:
-        profile = _profile_or_log(embedding_type)
+        selected_embedding_type = (
+            query.embedding_model
+            if query.search_mode == "vector" and query.embedding_model
+            else embedding_type
+        )
+        profile = _profile_or_log(selected_embedding_type)
         if not profile:
             return {"papers": [], "total": 0}
         coll = _get_collection(profile.collection)
@@ -387,7 +396,9 @@ def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_
             return {"papers": [], "total": 0}
 
         if query.search_mode == "bm25" and str(query.search_query or "").strip():
-            return _query_docs_bm25(coll, query, embedding_type)
+            return _query_docs_bm25(coll, query, profile.name)
+        if query.search_mode == "vector" and str(query.search_query or "").strip():
+            return _query_docs_vector(coll, query, profile)
 
         # Keep this guard in the service as well as the HTTP route: agent code
         # also calls query_docs() directly.
@@ -415,6 +426,8 @@ def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_
                 total_count = offset + len(papers) + int(has_more)
 
         return {"papers": papers, "total": total_count, "has_more": has_more}
+    except VectorSearchUnavailableError:
+        raise
     except Exception as e:
         logging.error(f"Error in query_docs(): {e}", exc_info=True)
         return {"papers": [], "total": 0}
@@ -458,8 +471,71 @@ def _query_docs_bm25(coll, query: GetPapersRequest, embedding_type: str) -> Dict
         if not document:
             continue
         score = bm25_scores.get(paper_id)
-        document["bm25_score"] = score
         document["score"] = score
+        papers.append(document)
+    return {"papers": papers, "has_more": has_more}
+
+
+def _query_docs_vector(coll, query: GetPapersRequest, profile) -> Dict[str, Any]:
+    """Return one cosine-ranked page from the selected dense retrieval profile."""
+    from service.embed import embed_query
+
+    query_embedding = embed_query(str(query.search_query).strip(), profile)
+    if not query_embedding:
+        raise VectorSearchUnavailableError(
+            "The query embedding service did not return a usable embedding."
+        )
+
+    limit = min(max(int(query.limit or 100), 1), 100)
+    offset = max(int(query.offset or 0), 0)
+    metadata_expr = _build_paper_query_expr(query, include_search_query=False)
+    filter_expr = (
+        f'({metadata_expr}) and has_embedding == true '
+        f'and embedding_model == "{profile.name}"'
+    )
+    try:
+        results = coll.search(
+            data=[query_embedding],
+            anns_field=profile.vector_field,
+            param={"metric_type": profile.metric, "params": {}},
+            filter=filter_expr,
+            offset=offset,
+            limit=limit + 1,
+            output_fields=["paper_uid"],
+        ) or []
+    except Exception as error:
+        logging.error("Zilliz vector search failed: %s", error, exc_info=True)
+        return {"papers": [], "has_more": False}
+
+    hits = results[0] if results else []
+    has_more = len(hits) > limit
+    ordered_ids = []
+    scores = {}
+    for hit in hits[:limit]:
+        paper_id, score = search_hit_to_id_and_distance(hit)
+        if not paper_id or paper_id in scores:
+            continue
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            raise VectorSearchUnavailableError(
+                "Zilliz vector search returned a result without a numeric score."
+            )
+        if not math.isfinite(score):
+            raise VectorSearchUnavailableError(
+                "Zilliz vector search returned a non-finite score."
+            )
+        ordered_ids.append(paper_id)
+        scores[paper_id] = score
+
+    documents = query_doc_by_ids(ordered_ids, profile.name)
+    documents_by_id = {str(doc.get("ID")): doc for doc in documents if doc.get("ID")}
+    papers = []
+    for paper_id in ordered_ids:
+        document = documents_by_id.get(paper_id)
+        if not document:
+            continue
+        document["score"] = scores.get(paper_id)
         papers.append(document)
     return {"papers": papers, "has_more": has_more}
 
@@ -477,7 +553,6 @@ def normalize_results(results, mode="nD"):
         if not math.isfinite(sim):
             sim = 0.0
         doc["score"] = float(sim)
-        doc["Sim"] = float(sim)
         normalized.append(doc)
     return normalized
 
@@ -606,11 +681,8 @@ def query_doc_by_embedding(
             continue
         dist = id_to_distance.get(doc_id)
         if dist is not None:
-            d["_score"] = float(dist)
             try:
                 d["score"] = float(dist)
-                d["Sim"] = d["score"]
-                d["_Sim"] = d["score"]
             except Exception:
                 pass
         docs.append(d)
@@ -694,7 +766,6 @@ def query_similar_doc_by_embedding_2d(
                     "specter_umap": doc.get("specter_umap"),
                     "distance": dist,
                     "score": score,
-                    "Sim": score,
                 })
             except Exception:
                 continue

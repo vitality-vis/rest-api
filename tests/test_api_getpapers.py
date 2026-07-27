@@ -47,8 +47,8 @@ def _assert_papers_payload(data: dict) -> dict:
     return data
 
 
-def _assert_bm25_payload(data: dict) -> dict:
-    """Assert the intentionally different BM25 response contract."""
+def _assert_relevance_payload(data: dict) -> dict:
+    """Assert the shared BM25/vector response contract."""
     assert isinstance(data, dict)
     assert isinstance(data.get("papers"), list)
     assert "total" not in data
@@ -56,7 +56,7 @@ def _assert_bm25_payload(data: dict) -> dict:
 
     scores = []
     for paper in data["papers"]:
-        score = paper.get("bm25_score")
+        score = paper.get("score")
         assert isinstance(score, (int, float))
         scores.append(float(score))
     assert scores == sorted(scores, reverse=True)
@@ -139,7 +139,7 @@ def test_get_papers_bm25_with_year_filter(api_base_url):
         "min_year": 2020,
         "limit": 10,
     }
-    data = _assert_bm25_payload(_post_json(api_base_url, "/getPapers", payload))
+    data = _assert_relevance_payload(_post_json(api_base_url, "/getPapers", payload))
 
     assert data["papers"], "Expected BM25 matches for the live production corpus"
     assert all(paper.get("Year") is not None and paper["Year"] >= 2020 for paper in data["papers"])
@@ -152,13 +152,13 @@ def test_get_papers_bm25_offset_page(api_base_url):
         "search_mode": "bm25",
         "limit": 2,
     }
-    first_page = _assert_bm25_payload(
+    first_page = _assert_relevance_payload(
         _post_json(api_base_url, "/getPapers", payload)
     )
     assert len(first_page["papers"]) == payload["limit"]
     assert first_page["has_more"] is True
 
-    second_page = _assert_bm25_payload(
+    second_page = _assert_relevance_payload(
         _post_json(
             api_base_url,
             "/getPapers",
@@ -169,7 +169,7 @@ def test_get_papers_bm25_offset_page(api_base_url):
     second_ids = {paper["ID"] for paper in second_page["papers"]}
     assert second_ids
     assert first_ids.isdisjoint(second_ids)
-    assert first_page["papers"][-1]["bm25_score"] >= second_page["papers"][0]["bm25_score"]
+    assert first_page["papers"][-1]["score"] >= second_page["papers"][0]["score"]
 
 
 def test_get_papers_rejects_unknown_search_mode(api_base_url):
@@ -185,3 +185,71 @@ def test_get_papers_rejects_unknown_search_mode(api_base_url):
 
     assert response.status_code == 400, response.text
     assert response.headers.get("Content-Type", "").startswith("application/json")
+
+
+def test_get_papers_vector_with_year_filter(api_base_url):
+    """Dense vector search ranks a multi-word query within metadata filters."""
+    payload = {
+        "search_query": "visual analytics interactive",
+        "search_mode": "vector",
+        "embedding_model": "text-embedding-3-small",
+        "min_year": 2020,
+        "limit": 10,
+    }
+    data = _assert_relevance_payload(_post_json(api_base_url, "/getPapers", payload))
+
+    print(
+        f"\n[getPapers vector] query={payload['search_query']!r} "
+        f"model={payload['embedding_model']!r} min_year={payload['min_year']} "
+        f"(returned {len(data['papers'])} papers, has_more={data['has_more']})"
+    )
+    for paper in data["papers"]:
+        print(
+            f"  score={paper['score']:.4f} year={paper.get('Year')} "
+            f"title={paper.get('Title', '')!r}"
+        )
+
+    assert data["papers"], "Expected vector matches for the live production corpus"
+    assert all(paper.get("Year") is not None and paper["Year"] >= 2020 for paper in data["papers"])
+
+
+def test_get_papers_vector_offset_page(api_base_url):
+    """Dense vector search supports the frontend's Load more request."""
+    payload = {
+        "search_query": "visual analytics interactive",
+        "search_mode": "vector",
+        "embedding_model": "text-embedding-3-small",
+        "limit": 2,
+    }
+    first_page = _assert_relevance_payload(
+        _post_json(api_base_url, "/getPapers", payload)
+    )
+    print(
+        f"\n[getPapers vector page 1] query={payload['search_query']!r} "
+        f"offset=0 (returned {len(first_page['papers'])} papers, "
+        f"has_more={first_page['has_more']})"
+    )
+    for paper in first_page["papers"]:
+        print(f"  id={paper.get('ID')!r} score={paper['score']:.4f}")
+    assert len(first_page["papers"]) == payload["limit"]
+    assert first_page["has_more"] is True
+
+    second_page = _assert_relevance_payload(
+        _post_json(
+            api_base_url,
+            "/getPapers",
+            {**payload, "offset": len(first_page["papers"])},
+        )
+    )
+    print(
+        f"[getPapers vector page 2] offset={len(first_page['papers'])} "
+        f"(returned {len(second_page['papers'])} papers, "
+        f"has_more={second_page['has_more']})"
+    )
+    for paper in second_page["papers"]:
+        print(f"  id={paper.get('ID')!r} score={paper['score']:.4f}")
+    first_ids = {paper["ID"] for paper in first_page["papers"]}
+    second_ids = {paper["ID"] for paper in second_page["papers"]}
+    assert second_ids
+    assert first_ids.isdisjoint(second_ids)
+    assert first_page["papers"][-1]["score"] >= second_page["papers"][0]["score"]

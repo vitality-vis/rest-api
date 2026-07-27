@@ -143,7 +143,7 @@ def _validate_metadata_snapshot(value: object, paper_id: str) -> dict[str, objec
     if not isinstance(value, dict):
         raise ValueError("Paper metadata must be an object")
 
-    # Ignore response-only fields such as Sim / score from paper_to_api_response.
+    # Ignore response-only retrieval scores from paper_to_api_response.
     if _metadata_paper_id(value.get("ID")) != paper_id:
         raise ValueError("Paper metadata ID must match paper_id")
 

@@ -34,7 +34,7 @@ def entity_to_metadata(entity: Any) -> Optional[Dict[str, Any]]:
     metadata: Dict[str, Any] = {}
     if isinstance(entity, dict):
         for key, value in entity.items():
-            if key in SCALAR_FIELDS or key == "_score":
+            if key in SCALAR_FIELDS or key == "score":
                 metadata[key] = value
             elif key.lower() in (field.lower() for field in SCALAR_FIELDS):
                 canonical_key = next(field for field in SCALAR_FIELDS if field.lower() == key.lower())
@@ -101,29 +101,23 @@ def rows_to_umap_points(rows: List[dict]) -> List[dict]:
     return [row_to_umap_point(row) for row in rows]
 
 
-def paper_to_api_response(doc: dict, score_key: str = "_score") -> dict:
-    """Format a paper dict into the legacy frontend API representation.
+def paper_to_api_response(doc: dict) -> dict:
+    """Format a paper dict into the REST API representation.
 
     TODO: Move this API-specific serializer to ``api/schemas`` or
     ``api/serializers`` when response schemas are introduced. It remains here
     during the repository migration to keep the existing frontend contract
     stable.
     """
-    distance = doc.get(score_key)
-    similarity = 0.0
+    score = None
     try:
-        numeric_distance = float(distance) if distance is not None else float("nan")
-        if not math.isnan(numeric_distance):
-            similarity = 1.0 / (1.0 + numeric_distance)
+        raw_score = doc.get("score")
+        if raw_score is not None:
+            parsed_score = float(raw_score)
+            if math.isfinite(parsed_score):
+                score = parsed_score
     except Exception:
         pass
-
-    bm25_score = doc.get("bm25_score")
-    if bm25_score is not None:
-        try:
-            bm25_score = float(bm25_score)
-        except (TypeError, ValueError):
-            bm25_score = None
 
     paper = PaperResponse(
         ID=doc.get("paper_uid") or doc.get("id"),
@@ -139,10 +133,7 @@ def paper_to_api_response(doc: dict, score_key: str = "_score") -> dict:
         dblp_source=doc.get("dblp_source"),
         full_paper=doc.get("full_paper"),
         umap=parse_coordinates(doc.get("umap")),
-        _Sim=similarity,
-        Sim=similarity,
-        score=bm25_score if bm25_score is not None else similarity,
-        bm25_score=bm25_score,
+        score=score,
     )
     if hasattr(paper, "model_dump"):
         return paper.model_dump(by_alias=True)

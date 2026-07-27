@@ -109,7 +109,7 @@ def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, incl
         abstract = (md_l.get("abstract", "") or "") if include_abstract else ""
 
         # Score / ranking
-        score_val = md_l.get("_score", md_l.get("score", 0.0))
+        score_val = md_l.get("score", 0.0)
         try:
             score_val = float(score_val)
         except Exception:
@@ -148,7 +148,7 @@ def _rows_to_documents(items: List[Dict[str, Any]]) -> List[Document]:
                     "source": m.get("Source", ""),
                     "year": m.get("Year", ""),
                     "id": str(m.get("ID", f"doc_{i}")),
-                    "_score": float(m.get("score", 0.0)),
+                    "score": float(m.get("score", 0.0)),
                 },
             )
         )
@@ -193,7 +193,7 @@ def _query_zilliz_by_embedding(
                     "year": m.get("Year", ""),
                     "abstract": m.get("Abstract", m.get("abstract", "")),
                     "id": str(m.get("ID", f"doc_{i}")),
-                    "_score": float(m.get("score", 0)),
+                    "score": float(m.get("score", 0)),
                 },
             )
         )
