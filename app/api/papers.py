@@ -4,9 +4,9 @@ from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 from pydantic import ValidationError
 
-from model.paper import GetPapersResponse, SearchRequest
+from model.paper import GetPapersResponse, SearchRequest, SimilarPapersRequest
 from config import is_supported_embedding_model
-from service.search import VectorSearchUnavailableError, search
+from service.search import VectorSearchUnavailableError, find_similar_by_papers, search
 
 
 MAX_PAPERS_PAGE_SIZE = 100
@@ -64,6 +64,47 @@ def get_papers():
         total=result.total,
         has_more=result.has_more,
     )
+    if hasattr(response, "model_dump"):
+        return jsonify(response.model_dump(by_alias=True, exclude_none=True))
+    return jsonify(response.dict(by_alias=True, exclude_none=True))
+
+
+@papers_bp.route("/getSimilarPapers", methods=["POST"])
+@cross_origin()
+def get_similar_papers():
+    """Return papers related to one or more seed papers using RRF."""
+    input_payload = request.json or {}
+    if not isinstance(input_payload, dict):
+        return jsonify({"error": "getSimilarPapers request body must be a JSON object"}), 400
+    try:
+        query = SimilarPapersRequest(
+            seed_ids=input_payload.get("seed_ids") or [],
+            limit=_bounded_int(
+                input_payload.get("limit"),
+                default=25,
+                minimum=1,
+                maximum=MAX_PAPERS_PAGE_SIZE,
+            ),
+            title=input_payload.get("title"),
+            abstract=input_payload.get("abstract"),
+            author=input_payload.get("author"),
+            source=input_payload.get("source"),
+            keyword=input_payload.get("keyword"),
+            min_year=input_payload.get("min_year"),
+            max_year=input_payload.get("max_year"),
+            min_citation_counts=input_payload.get("min_citation_counts"),
+            max_citation_counts=input_payload.get("max_citation_counts"),
+            id_list=input_payload.get("id_list"),
+        )
+    except ValidationError as error:
+        return jsonify({"error": "Invalid getSimilarPapers request", "details": error.errors()}), 400
+    if not any(str(seed_id).strip() for seed_id in query.seed_ids):
+        return jsonify({"error": "seed_ids must contain at least one paper ID"}), 400
+    try:
+        result = find_similar_by_papers(query)
+    except VectorSearchUnavailableError:
+        return jsonify({"error": "Vector search is temporarily unavailable"}), 503
+    response = GetPapersResponse(papers=result.papers, has_more=result.has_more)
     if hasattr(response, "model_dump"):
         return jsonify(response.model_dump(by_alias=True, exclude_none=True))
     return jsonify(response.dict(by_alias=True, exclude_none=True))

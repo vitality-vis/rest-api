@@ -1,21 +1,15 @@
 """
 Zilliz Cloud (Milvus-compatible) vector database service.
 """
-import json
-import math
 import sys
-import numpy as np
 from typing import List, Dict, Any, Optional
 
 from tqdm import tqdm
 
-from model.const import EMBED
 from config import (
     DEFAULT_EMBEDDING_MODEL,
     PAPER_COLLECTION,
     PAPER_EMBEDDING_MODEL,
-    PAPER_UMAP_FIELD,
-    PAPER_VECTOR_FIELD,
     is_supported_embedding_model,
 )
 from logger_config import get_logger
@@ -35,9 +29,6 @@ from repositories.zilliz.mappers import (
     rows_to_umap_points as format_umap_points,
 )
 from service.metadata_normalizer import parse_string_list
-from service.search import (
-    VectorSearchUnavailableError,
-)
 
 logging = get_logger()
 
@@ -233,20 +224,6 @@ def _parse_string_list(value) -> List[str]:
     return parse_string_list(value)
 
 
-def normalize_results(results, mode="nD"):
-    normalized = []
-    for doc in results:
-        sim = doc.get("score", 0.0)
-        try:
-            sim = float(sim)
-        except Exception:
-            sim = 0.0
-        if not math.isfinite(sim):
-            sim = 0.0
-        doc["score"] = float(sim)
-        normalized.append(doc)
-    return normalized
-
 def query_doc_by_id(_id: str, embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     if not _embedding_model_supported_or_log(embedding_type):
         return None
@@ -279,114 +256,6 @@ def query_doc_by_ids(ids: List[str], embedding_type: str = DEFAULT_EMBEDDING_MOD
         return []
     records = paper_repository.get_papers_by_ids(ids)
     return [format_doc_for_frontend(record) for record in records if record]
-
-def query_doc_by_embedding(
-    paper_ids: Optional[List[str]],
-    embedding: List[float],
-    embedding_type: str,
-    limit: int,
-    lang_filter: Dict = None,
-) -> List[Dict]:
-    hits = paper_repository.search_papers_by_vector(
-        embedding,
-        embedding_type=embedding_type,
-        limit=limit,
-        exclude_ids=paper_ids or [],
-    )
-    documents = []
-    for hit in hits:
-        record = dict(hit.paper)
-        if hit.score is not None:
-            record["score"] = hit.score
-        documents.append(format_doc_for_frontend(record))
-    return documents
-
-def query_similar_doc_by_embedding_full(papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None):
-    paper_ids_to_exclude = [str(p.get("ID")) for p in papers if p.get("ID")]
-    if not _embedding_model_supported_or_log(embedding_type):
-        return []
-    coll = _get_collection(PAPER_COLLECTION)
-    if not coll:
-        return []
-    try:
-        expr = _ids_to_expr(paper_ids_to_exclude)
-        res = coll.query(expr=expr, output_fields=[PAPER_VECTOR_FIELD], limit=len(paper_ids_to_exclude) + 100)
-    except Exception as e:
-        logging.error(f"Failed to fetch embeddings from Zilliz: {e}", exc_info=True)
-        return []
-    vectors_for_mean = []
-    for r in (res or []):
-        emb = r.get(PAPER_VECTOR_FIELD)
-        if isinstance(emb, (list, np.ndarray)) and (np.any(emb) if hasattr(emb, "__len__") else emb):
-            vectors_for_mean.append(emb if isinstance(emb, list) else emb.tolist())
-    if not vectors_for_mean:
-        return []
-    mean_vector = np.mean(np.array(vectors_for_mean), axis=0).tolist()
-    return query_doc_by_embedding(paper_ids_to_exclude, mean_vector, embedding_type, limit, lang_filter)
-
-def query_similar_doc_by_embedding_2d(
-    papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None
-):
-    if not _embedding_model_supported_or_log(embedding_type):
-        return []
-    umap_field = PAPER_UMAP_FIELD
-    query_points = []
-    for p in papers:
-        coords = p.get(umap_field)
-        if isinstance(coords, str):
-            try:
-                coords = json.loads(coords)
-            except Exception:
-                coords = None
-        if isinstance(coords, (list, tuple)) and len(coords) == 2:
-            try:
-                xy = np.asarray(coords, dtype=float)
-                if np.all(np.isfinite(xy)):
-                    query_points.append(xy)
-            except Exception:
-                pass
-    if not query_points:
-        return []
-    mean_vector = np.mean(np.vstack(query_points), axis=0)
-    all_points_data = get_all_umap_points(embedding_type)
-    results = []
-    for doc in all_points_data:
-        coords = doc.get(umap_field)
-        if isinstance(coords, str):
-            try:
-                coords = json.loads(coords)
-            except Exception:
-                continue
-        if isinstance(coords, (list, tuple)) and len(coords) == 2:
-            try:
-                xy = np.asarray(coords, dtype=float)
-                if not np.all(np.isfinite(xy)):
-                    continue
-                dist = float(np.linalg.norm(xy - mean_vector))
-                if not math.isfinite(dist):
-                    continue
-                score = 1.0 / (1.0 + dist)
-                results.append({
-                    "ID": str(doc.get("ID")) if doc.get("ID") else None,
-                    "Title": doc.get("Title", ""),
-                    "Abstract": doc.get("Abstract", ""),
-                    "Authors": doc.get("Authors", []),
-                    "Keywords": doc.get("Keywords", []),
-                    "Source": doc.get("Source", ""),
-                    "Year": doc.get("Year"),
-                    "umap": doc.get("umap"),
-                    "ada_umap": doc.get("ada_umap"),
-                    "specter_umap": doc.get("specter_umap"),
-                    "distance": dist,
-                    "score": score,
-                })
-            except Exception:
-                continue
-    results.sort(key=lambda x: x["distance"])
-    return results[:limit]
-
-def query_similar_doc_by_paper(paper: dict, embedding_type: str, limit: int = 25, lang_filter: Dict = None):
-    return query_similar_doc_by_embedding_full([paper], embedding_type, limit, lang_filter)
 
 def get_all_umap_points(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_prod"))

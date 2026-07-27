@@ -28,6 +28,13 @@ class SearchRequest(PaperFilters):
     embedding_model: Optional[str] = None
 
 
+class SimilarPapersRequest(PaperFilters):
+    """Request for papers similar to one or more existing papers."""
+
+    seed_ids: List[str] = Field(default_factory=list)
+    limit: int = 25
+
+
 class PaperResponse(BaseModel):
     """Paper payload returned by REST endpoints."""
 

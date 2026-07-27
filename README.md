@@ -125,7 +125,7 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/getPapers` | POST | Get papers by IDs or full payload (with filters) |
-| `/getSimilarPapers` | POST | Similar papers from a list of papers (by embedding) |
+| `/getSimilarPapers` | POST | Similar papers for one or more seed paper IDs (bulk vector search + RRF) |
 | `/getUmapPoints` | GET | 2D UMAP coordinates for visualization |
 | `/getMetaData` | GET | Metadata for UI filters |
 
@@ -137,9 +137,8 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 | `/summarize` | POST | Summarize selected papers |
 | `/literatureReview` | POST | Generate a literature review |
 
-### Embedding types
-
-Supported for similarity search: **`specter`** (default) and **`ada`**. If Ada is requested but the Azure embed deployment is missing, the API falls back to Specter.
+`/getSimilarPapers` uses the collection's configured paper embedding and combines
+the per-seed result lists with reciprocal rank fusion (RRF).
 
 ### Example requests
 
@@ -148,10 +147,10 @@ Supported for similarity search: **`specter`** (default) and **`ada`**. If Ada i
 ```json
 POST /getSimilarPapers
 {
-  "input_data": ["Paper Title 1", "Paper Title 2"],
-  "embedding": "specter",
+  "seed_ids": ["paper-id-1", "paper-id-2"],
   "limit": 25,
-  "dimensions": "nD"
+  "min_year": 2020,
+  "source": ["CHI"]
 }
 ```
 

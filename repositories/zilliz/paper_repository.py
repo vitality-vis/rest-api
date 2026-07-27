@@ -26,6 +26,14 @@ class RepositoryHit:
     score: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class RepositoryVectorHit:
+    """A paper ID and its score from one vector-search result list."""
+
+    paper_id: str
+    score: float
+
+
 @dataclass
 class RepositoryPage:
     hits: List[RepositoryHit] = field(default_factory=list)
@@ -97,6 +105,25 @@ def get_papers_by_ids(
         return []
 
 
+def get_embeddings_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
+    """Fetch stored embeddings for seed papers, without applying search filters."""
+    if not paper_ids:
+        return []
+    client = _client()
+    if not client:
+        return []
+    try:
+        return client.query(
+            collection_name=config.PAPER_COLLECTION,
+            filter=ids_to_expr([str(paper_id) for paper_id in paper_ids]),
+            output_fields=["paper_uid", config.PAPER_VECTOR_FIELD],
+            limit=len(paper_ids) + 100,
+        ) or []
+    except Exception as error:
+        logging.error("Error fetching paper embeddings: %s", error, exc_info=True)
+        return []
+
+
 def search_filtered(
     filters: PaperFilters,
     *,
@@ -138,7 +165,7 @@ def search_filtered(
         return RepositoryPage(total=0)
 
 
-def _hydrate_ranked_hits(
+def hydrate_ranked_papers(
     ordered_ids: List[str],
     scores: Dict[str, Optional[float]],
 ) -> List[RepositoryHit]:
@@ -197,7 +224,7 @@ def search_bm25(
         ordered_ids.append(paper_id)
         scores[paper_id] = score
     return RepositoryPage(
-        hits=_hydrate_ranked_hits(ordered_ids, scores),
+        hits=hydrate_ranked_papers(ordered_ids, scores),
         has_more=has_more,
     )
 
@@ -258,72 +285,63 @@ def search_by_vector(
         ordered_ids.append(paper_id)
         scores[paper_id] = numeric_score
     return RepositoryPage(
-        hits=_hydrate_ranked_hits(ordered_ids, scores),
+        hits=hydrate_ranked_papers(ordered_ids, scores),
         has_more=has_more,
     )
 
 
-def search_papers_by_vector(
-    vector: List[float],
+def search_by_vectors(
+    vectors: List[List[float]],
+    filters: PaperFilters,
     *,
-    embedding_type: str,
-    limit: int,
-    exclude_ids: Optional[List[str]] = None,
-) -> List[RepositoryHit]:
-    """Legacy-compatible unfiltered vector lookup used outside SearchService."""
-    tolist = getattr(vector, "tolist", None)
-    if callable(tolist):
-        vector = tolist()
-    is_supported = config.is_supported_embedding_model(embedding_type)
-    if not is_supported or len(vector) != config.PAPER_VECTOR_DIMENSION:
-        if is_supported:
-            logging.error(
-                "Query vector has %s dimensions for model %s; expected %s",
-                len(vector),
-                config.PAPER_EMBEDDING_MODEL,
-                config.PAPER_VECTOR_DIMENSION,
-            )
+    candidate_limit: int,
+) -> List[List[RepositoryVectorHit]]:
+    """Search a common filtered corpus once for every supplied query vector."""
+    if not vectors:
         return []
     client = _client()
     if not client:
-        return []
+        return [[] for _ in vectors]
 
-    excluded = {str(paper_id) for paper_id in (exclude_ids or [])}
-    multiplier = getattr(config, "ZILLIZ_SEARCH_CANDIDATES_MULTIPLIER", 1.5)
-    top_k = max(limit + len(excluded) + 5, int(limit * multiplier))
-    index_type = getattr(config, "ZILLIZ_INDEX_TYPE", "IVF_FLAT")
-    if index_type.upper() == "HNSW":
-        search_params = {
-            "metric_type": config.PAPER_VECTOR_METRIC,
-            "params": {"ef": getattr(config, "ZILLIZ_SEARCH_EF", 64)},
-        }
-    else:
-        search_params = {
-            "metric_type": config.PAPER_VECTOR_METRIC,
-            "params": {"nprobe": getattr(config, "ZILLIZ_SEARCH_NPROBE", 128)},
-        }
-
+    metadata_expression = build_paper_query_expr(filters, include_query_text=False)
+    expression = (
+        f"({metadata_expression}) and has_embedding == true "
+        f'and embedding_model == "{config.PAPER_EMBEDDING_MODEL}"'
+    )
     try:
         results = client.search(
             collection_name=config.PAPER_COLLECTION,
-            data=[vector],
+            data=vectors,
             anns_field=config.PAPER_VECTOR_FIELD,
-            search_params=search_params,
-            limit=min(top_k, 16384),
+            search_params={"metric_type": config.PAPER_VECTOR_METRIC, "params": {}},
+            filter=expression,
+            limit=min(max(int(candidate_limit), 1), 120),
             output_fields=["paper_uid"],
         ) or []
     except Exception as error:
-        logging.error("Zilliz search failed: %s", error, exc_info=True)
-        return []
+        logging.error("Zilliz bulk vector search failed: %s", error, exc_info=True)
+        return [[] for _ in vectors]
 
-    ordered_ids: List[str] = []
-    scores: Dict[str, Optional[float]] = {}
-    for hit in (results[0] if results else []):
-        paper_id, score = search_hit_to_id_and_distance(hit)
-        if not paper_id or paper_id in excluded or paper_id in scores:
-            continue
-        ordered_ids.append(paper_id)
-        scores[paper_id] = score
-        if len(ordered_ids) >= limit:
-            break
-    return _hydrate_ranked_hits(ordered_ids, scores)
+    ranked_results: List[List[RepositoryVectorHit]] = []
+    for raw_hits in results:
+        ranked_hits: List[RepositoryVectorHit] = []
+        seen_ids = set()
+        for hit in raw_hits or []:
+            paper_id, score = search_hit_to_id_and_distance(hit)
+            if not paper_id or paper_id in seen_ids:
+                continue
+            try:
+                numeric_score = float(score)
+            except (TypeError, ValueError) as error:
+                raise InvalidRetrievalScoreError(
+                    "Zilliz vector search returned a result without a numeric score."
+                ) from error
+            if not math.isfinite(numeric_score):
+                raise InvalidRetrievalScoreError(
+                    "Zilliz vector search returned a non-finite score."
+                )
+            seen_ids.add(paper_id)
+            ranked_hits.append(RepositoryVectorHit(paper_id, numeric_score))
+        ranked_results.append(ranked_hits)
+    ranked_results.extend([[] for _ in range(len(vectors) - len(ranked_results))])
+    return ranked_results

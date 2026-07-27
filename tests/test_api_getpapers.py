@@ -253,3 +253,31 @@ def test_get_papers_vector_offset_page(api_base_url):
     assert second_ids
     assert first_ids.isdisjoint(second_ids)
     assert first_page["papers"][-1]["score"] >= second_page["papers"][0]["score"]
+
+
+def test_get_similar_papers_rrf(api_base_url):
+    """Multiple seed papers should return non-seed papers ranked by RRF."""
+    payload = {
+        "seed_ids": [
+            "doi:10.1109/iv.2008.22",
+            "doi:10.1109/mcg.2009.56",
+        ],
+        "limit": 10,
+    }
+    data = _assert_relevance_payload(
+        _post_json(api_base_url, "/getSimilarPapers", payload)
+    )
+
+    print(
+        f"\n[getSimilarPapers] seed_ids={payload['seed_ids']!r} "
+        f"(returned {len(data['papers'])} papers, has_more={data['has_more']})"
+    )
+    for paper in data["papers"]:
+        print(
+            f"  id={paper.get('ID')!r} rrf_score={paper['score']:.6f} "
+            f"title={paper.get('Title', '')!r}"
+        )
+
+    assert data["papers"], "Expected similar papers for the known live seed IDs"
+    seed_ids = set(payload["seed_ids"])
+    assert all(paper.get("ID") not in seed_ids for paper in data["papers"])

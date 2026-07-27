@@ -1,6 +1,5 @@
 import os
 import json
-import numpy as np
 from datetime import datetime
 import argparse
 
@@ -21,9 +20,7 @@ from app.api.bootstrap import bootstrap_bp
 from app.api.chat import chat_bp
 from app.api.papers import papers_bp
 from app.api.library import library_bp
-from model.const import EMBED
 from service import zilliz
-from service.zilliz import query_doc_by_ids, normalize_results
 from langchain_openai import AzureChatOpenAI
 from prompt import SUMMARIZE_PROMPT, LITERATURE_REVIEW_PROMPT
 from service import rag_core
@@ -118,65 +115,6 @@ def handle_log_event(data, callback=None):
         # Send error acknowledgment
         if callback:
             callback({"status": "error", "message": str(e)})
-
-@app.route('/getSimilarPapers', methods=['POST'])
-@cross_origin()
-def get_similar_papers():
-    try:
-        input_payload = request.json
-        if isinstance(input_payload, str):
-            try:
-                input_payload = json.loads(input_payload)
-            except json.JSONDecodeError:
-                return jsonify({"message": "Request body is a string but not valid JSON."}), 400
-
-        papers_data = input_payload.get("input_data", [])
-        embedding_type = input_payload.get("embedding", EMBED.DEFAULT)
-        limit = int(input_payload.get("limit", 25))
-        query_lang = input_payload.get("lang", "all")
-        dimensions = input_payload.get("dimensions", "nD")
-
-        if not config.is_supported_embedding_model(embedding_type):
-            return jsonify({
-                "message": f"Unsupported embedding type: {embedding_type}. Supported types: {', '.join(sorted(EMBED.ALL))}."
-            }), 400
-
-        if papers_data and isinstance(papers_data[0], str):
-            # It's a list of IDs, so fetch the full paper objects from the database
-            papers = zilliz.query_doc_by_ids(papers_data)
-        else:
-            # It's already a list of full paper objects
-            papers = papers_data
-
-        if not papers:
-            return jsonify({"message": "Could not find details for the provided paper IDs"}), 404
-
-        language_filter = {"lang": query_lang} if query_lang and query_lang != "all" else None
-
-        if dimensions == "2D":
-            raw_results = zilliz.query_similar_doc_by_embedding_2d(
-                papers=papers,
-                embedding_type=embedding_type,
-                limit=limit,
-                lang_filter=language_filter
-            )
-            results = normalize_results(raw_results, mode="2D")
-        else:
-            raw_results = zilliz.query_similar_doc_by_embedding_full(
-                papers=papers,
-                embedding_type=embedding_type,
-                limit=limit,
-                lang_filter=language_filter
-            )
-            results = normalize_results(raw_results, mode="nD")
-
-        return jsonify(results)
-
-    except Exception as e:
-        logger.error(f"Error in get_similar_papers: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"message": f"Internal server error: {e}"}), 500
 
 # === Route: Download selected papers in BibTeX format ===
 @app.route('/checkoutPapers', methods=['POST'])
