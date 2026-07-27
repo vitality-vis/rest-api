@@ -40,10 +40,8 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     # Step 0 — Lazy imports
     # ============================================================
     try:
-        # Use high-level query_docs API over cached papers (fast, in-memory)
         from model.paper import SearchRequest
-        from service.zilliz import query_docs
-        from service.session_state import SESSIONS
+        from service.search import search
     except Exception as e:
         return f"Failed to load metadata search dependencies: {e}"
 
@@ -165,15 +163,15 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     )
 
     logging.info(
-        "[metadata_search] Running query_docs with filters=%s",
+        "[metadata_search] Running SearchService with filters=%s",
         q.model_dump(exclude_none=True) if hasattr(q, "model_dump") else q,
     )
 
     # ============================================================
-    # Step 4 — Execute query against cached papers
+    # Step 4 — Execute the shared metadata search
     # ============================================================
-    result = query_docs(q)
-    items = result.get("papers", []) or []
+    result = search(q)
+    items = result.papers
 
     # ============================================================
     # Step 5 — Save to session + format output (reuse rag_core format)

@@ -18,7 +18,6 @@ from config import (
     PAPER_VECTOR_FIELD,
     is_supported_embedding_model,
 )
-from model.paper import SearchRequest
 from logger_config import get_logger
 from repositories.zilliz.connection import (
     ensure_collection_loaded,
@@ -38,8 +37,6 @@ from repositories.zilliz.mappers import (
 from service.metadata_normalizer import parse_string_list
 from service.search import (
     VectorSearchUnavailableError,
-    search,
-    to_legacy_payload,
 )
 
 logging = get_logger()
@@ -265,15 +262,6 @@ def get_cached_papers(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
 def _parse_string_list(value) -> List[str]:
     return parse_string_list(value)
 
-
-def query_docs(query: SearchRequest, embedding_type: str = DEFAULT_EMBEDDING_MODEL):
-    """Compatibility entry for Agent callers not yet migrated to SearchService."""
-    return to_legacy_payload(
-        search(
-            query,
-            default_embedding_model=embedding_type,
-        )
-    )
 
 def normalize_results(results, mode="nD"):
     normalized = []

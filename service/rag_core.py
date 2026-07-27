@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
 from config import DEFAULT_EMBEDDING_MODEL, is_supported_embedding_model
 from model.paper import SearchRequest
-from service.zilliz import query_docs
+from service.search import search
 from service.embed import embed_query
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
@@ -214,8 +214,8 @@ def _run_metadata_search(plan, chat_id: str) -> List[Document]:
         max_year=filters.get("year_max"),
         id_list=filters.get("paper_ids"),
     )
-    result = query_docs(q)
-    items = result.get("papers", [])
+    result = search(q)
+    items = result.papers
     docs = _rows_to_documents(items)
     save_session_docs(chat_id, docs)
     return docs
