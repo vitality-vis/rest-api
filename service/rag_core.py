@@ -6,10 +6,8 @@ import numpy as np
 from copy import deepcopy
 from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
-from config import DEFAULT_EMBEDDING_MODEL, is_supported_embedding_model
 from model.paper import SearchRequest
 from service.search import search
-from service.embed import embed_query
 from sentence_transformers import CrossEncoder
 from rank_bm25 import BM25Okapi
 
@@ -158,47 +156,6 @@ def _rows_to_documents(items: List[Dict[str, Any]]) -> List[Document]:
 # Query Functions
 # =====================================================
 
-def _query_zilliz_by_embedding(
-    query_text: str,
-    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
-    k: int = 5,
-) -> List[Document]:
-    """Embed query and perform Zilliz vector search."""
-    from service import zilliz
-    if not is_supported_embedding_model(embedding_type):
-        logging.error("Unsupported embedding model requested by RAG: %s", embedding_type)
-        return []
-    qvec = embed_query(query_text)
-    if not qvec:
-        return []
-    raw = zilliz.query_doc_by_embedding(
-        paper_ids=None,
-        embedding=qvec,
-        embedding_type=embedding_type,
-        limit=int(k),
-    )
-    docs = []
-    for i, m in enumerate(raw):
-        authors = m.get("Authors", [])
-        if isinstance(authors, str):
-            authors = [a.strip() for a in authors.split(",") if a.strip()]
-        docs.append(
-            Document(
-                page_content=m.get("Abstract", "") or m.get("Title", ""),
-                metadata={
-                    "title": m.get("Title", ""),
-                    "authors": authors,
-                    "source": m.get("Source", ""),
-                    "year": m.get("Year", ""),
-                    "abstract": m.get("Abstract", m.get("abstract", "")),
-                    "id": str(m.get("ID", f"doc_{i}")),
-                    "score": float(m.get("score", 0)),
-                },
-            )
-        )
-    return docs
-
-
 def _run_metadata_search(plan, chat_id: str) -> List[Document]:
     """Run metadata-based search and save docs to session. plan may be a dict of filters or an object with .filters."""
     if isinstance(plan, dict):
@@ -322,11 +279,14 @@ def _run_semantic_search(
 ) -> List[Document]:
     # --- Stage 1: Parallel Retrieval ---
     # Fetch more candidates to ensure quality after fusion
-    vector_docs = _query_zilliz_by_embedding(
-        query_text,
-        embedding_type=DEFAULT_EMBEDDING_MODEL,
-        k=120,
+    vector_result = search(
+        SearchRequest(
+            search_query=query_text,
+            search_mode="vector",
+            limit=120,
+        )
     )
+    vector_docs = _rows_to_documents(vector_result.papers)
     
     keyword_docs = []
     if BM25_INDEX is not None:

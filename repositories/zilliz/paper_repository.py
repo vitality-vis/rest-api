@@ -40,7 +40,9 @@ def _client():
 
 
 def _safe_limit_offset(limit: int, offset: int) -> tuple[int, int]:
-    return min(max(int(limit or 100), 1), 100), max(int(offset or 0), 0)
+    # The HTTP route caps pages at 100. Agent semantic search intentionally
+    # retrieves 120 candidates before CrossEncoder reranking.
+    return min(max(int(limit or 100), 1), 120), max(int(offset or 0), 0)
 
 
 def _count_matching(client, expression: str) -> Optional[int]:
