@@ -126,7 +126,6 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 |----------|--------|-------------|
 | `/getPapers` | POST | Get papers by IDs or full payload (with filters) |
 | `/getSimilarPapers` | POST | Similar papers from a list of papers (by embedding) |
-| `/getSimilarPapersByAbstract` | POST | Similar papers from abstract (and optional title) text |
 | `/getUmapPoints` | GET | 2D UMAP coordinates for visualization |
 | `/getMetaData` | GET | Metadata for UI filters |
 
@@ -143,19 +142,6 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 Supported for similarity search: **`specter`** (default) and **`ada`**. If Ada is requested but the Azure embed deployment is missing, the API falls back to Specter.
 
 ### Example requests
-
-**Similar papers by abstract:**
-
-```json
-POST /getSimilarPapersByAbstract
-{
-  "input_data": "This paper explores neural retrieval and RAG.",
-  "title": "Optional paper title",
-  "embedding": "specter",
-  "limit": 25,
-  "lang": "all"
-}
-```
 
 **Similar papers by paper list:**
 

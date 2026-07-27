@@ -119,36 +119,6 @@ def _get_collection(collection_name: str):
         _collection_adapters[collection_name] = _MilvusCollectionCompat(collection_name)
     return _collection_adapters[collection_name]
 
-# Expose for agent_tools
-def get_client():
-    """Return a client-like object for get_or_create_collection(name).get(include=[...])."""
-    return _ZillizClientCompat()
-
-class _ZillizClientCompat:
-    def get_or_create_collection(self, collection_name: str):
-        return _ZillizCollectionCompat(collection_name)
-
-class _ZillizCollectionCompat:
-    def __init__(self, name: str):
-        self._name = name
-    def get(self, include=None, ids=None, where=None):
-        if where:
-            expr = _zilliz_where_to_expr(where)
-        elif ids:
-            expr = _ids_to_expr(ids)
-        else:
-            expr = 'paper_uid != ""'
-        coll = _get_collection(self._name)
-        if not coll:
-            return {"metadatas": [], "documents": []}
-        try:
-            res = _query_by_expr_batched(coll, expr, _SCALAR_FIELDS)
-        except Exception as e:
-            logging.error(f"Zilliz query failed: {e}")
-            return {"metadatas": [], "documents": []}
-        metadatas = [r for r in res] if res else []
-        return {"metadatas": metadatas, "documents": []}
-
 _QUERY_BATCH_SIZE = 2000
 _ID_BATCH_SIZE = 5000
 
@@ -543,6 +513,3 @@ def get_distinct_titles(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[s
 def get_distinct_citation_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[int]:
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("CitationCounts") for doc in docs if doc.get("CitationCounts") is not None))
-
-# For agent_tools
-_zilliz_client = get_client()
