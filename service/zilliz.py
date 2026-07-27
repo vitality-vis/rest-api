@@ -9,51 +9,55 @@ from typing import List, Dict, Any, Optional
 
 from tqdm import tqdm
 
-import config
 from model.const import EMBED
-from model.retrieval import (
-    DEFAULT_RETRIEVAL_PROFILE,
-    RETRIEVAL_PROFILES,
-    get_retrieval_profile,
+from config import (
+    DEFAULT_EMBEDDING_MODEL,
+    PAPER_COLLECTION,
+    PAPER_EMBEDDING_MODEL,
+    PAPER_UMAP_FIELD,
+    PAPER_VECTOR_FIELD,
+    is_supported_embedding_model,
 )
-from model.paper import GetPapersRequest
+from model.paper import SearchRequest
 from logger_config import get_logger
 from repositories.zilliz.connection import (
     ensure_collection_loaded,
     get_client as _get_milvus_client,
 )
 from repositories.zilliz.query_expressions import (
-    build_paper_query_expr as _build_paper_query_expr,
     ids_to_expr as _ids_to_expr,
-    query_has_filters as _query_has_filters,
     where_to_expr as _zilliz_where_to_expr,
 )
+from repositories.zilliz import paper_repository
 from repositories.zilliz.mappers import (
     SCALAR_FIELDS as _SCALAR_FIELDS,
     paper_to_api_response as format_doc_for_frontend,
     row_to_metadata as _row_to_meta,
     rows_to_umap_points as format_umap_points,
-    search_hit_to_id_and_distance,
 )
 from service.metadata_normalizer import parse_string_list
+from service.search import (
+    VectorSearchUnavailableError,
+    search,
+    to_legacy_payload,
+)
 
 logging = get_logger()
 
 
-class VectorSearchUnavailableError(RuntimeError):
-    """Raised when the dense query embedding service cannot serve a request."""
-
 # Collection name mapping; include string keys for agent_tools
 COLLECTION_MAPPING = {
-    name: profile.collection for name, profile in RETRIEVAL_PROFILES.items()
+    PAPER_EMBEDDING_MODEL: PAPER_COLLECTION,
 }
 
 
-def _profile_or_log(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
-    profile = get_retrieval_profile(embedding_type)
-    if not profile:
-        logging.error("Unsupported retrieval profile: %s", embedding_type)
-    return profile
+def _embedding_model_supported_or_log(
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
+):
+    supported = is_supported_embedding_model(embedding_type)
+    if not supported:
+        logging.error("Unsupported embedding model: %s", embedding_type)
+    return supported
 
 
 class _MilvusCollectionCompat:
@@ -229,7 +233,7 @@ def _query_by_expr_batched(
 # --- Cache ---
 _all_papers_cache = {}
 
-def load_all_papers_to_cache(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def load_all_papers_to_cache(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     global _all_papers_cache
     collection_name = COLLECTION_MAPPING.get(embedding_type)
     if not collection_name:
@@ -249,7 +253,7 @@ def load_all_papers_to_cache(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
         logging.error(f"Failed to load papers to cache: {e}", exc_info=True)
         _all_papers_cache[collection_name] = []
 
-def get_cached_papers(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_cached_papers(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     collection_name = COLLECTION_MAPPING.get(embedding_type)
     if not collection_name:
         return []
@@ -262,180 +266,14 @@ def _parse_string_list(value) -> List[str]:
     return parse_string_list(value)
 
 
-def _count_matching_entities(coll, expr: str) -> Optional[int]:
-    """Return the exact number of entities matching a Milvus scalar expression."""
-    try:
-        rows = coll.query(expr=expr, output_fields=["count(*)"]) or []
-        if not rows:
-            return 0
-        row = rows[0]
-        for key in ("count(*)", "count()"):
-            if key in row:
-                return int(row[key])
-        return int(next(iter(row.values())))
-    except Exception as e:
-        logging.warning(f"Zilliz count(*) failed for expr={expr!r}: {e}")
-        return None
-
-
-def query_docs(query: GetPapersRequest, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
-    """Return one Zilliz-backed page of papers without a process-wide cache."""
-    try:
-        selected_embedding_type = (
-            query.embedding_model
-            if query.search_mode == "vector" and query.embedding_model
-            else embedding_type
+def query_docs(query: SearchRequest, embedding_type: str = DEFAULT_EMBEDDING_MODEL):
+    """Compatibility entry for Agent callers not yet migrated to SearchService."""
+    return to_legacy_payload(
+        search(
+            query,
+            default_embedding_model=embedding_type,
         )
-        profile = _profile_or_log(selected_embedding_type)
-        if not profile:
-            return {"papers": [], "total": 0}
-        coll = _get_collection(profile.collection)
-        if not coll:
-            return {"papers": [], "total": 0}
-
-        if query.search_mode == "bm25" and str(query.search_query or "").strip():
-            return _query_docs_bm25(coll, query, profile.name)
-        if query.search_mode == "vector" and str(query.search_query or "").strip():
-            return _query_docs_vector(coll, query, profile)
-
-        # Keep this guard in the service as well as the HTTP route: agent code
-        # also calls query_docs() directly.
-        limit = min(max(int(query.limit or 100), 1), 100)
-        offset = max(int(query.offset or 0), 0)
-        expr = _build_paper_query_expr(query)
-        rows = coll.query(
-            expr=expr,
-            output_fields=_SCALAR_FIELDS,
-            limit=limit + 1,
-            offset=offset,
-        ) or []
-        has_more = len(rows) > limit
-        papers = [format_doc_for_frontend(row) for row in rows[:limit] if row]
-
-        if not _query_has_filters(query):
-            # num_entities: total rows in the Zilliz collection (full corpus size).
-            try:
-                total_count = int(coll.num_entities)
-            except Exception:
-                total_count = offset + len(papers) + int(has_more)
-        else:
-            total_count = _count_matching_entities(coll, expr)
-            if total_count is None:
-                total_count = offset + len(papers) + int(has_more)
-
-        return {"papers": papers, "total": total_count, "has_more": has_more}
-    except VectorSearchUnavailableError:
-        raise
-    except Exception as e:
-        logging.error(f"Error in query_docs(): {e}", exc_info=True)
-        return {"papers": [], "total": 0}
-
-
-def _query_docs_bm25(coll, query: GetPapersRequest, embedding_type: str) -> Dict[str, Any]:
-    """Return one relevance-ranked page from the native BM25 sparse index."""
-    limit = min(max(int(query.limit or 100), 1), 100)
-    offset = max(int(query.offset or 0), 0)
-    metadata_expr = _build_paper_query_expr(query, include_search_query=False)
-    try:
-        results = coll.search(
-            data=[str(query.search_query).strip()],
-            anns_field="search_sparse",
-            param={"metric_type": "BM25", "params": {}},
-            filter=metadata_expr,
-            offset=offset,
-            limit=limit + 1,
-            output_fields=["paper_uid"],
-        ) or []
-    except Exception as error:
-        logging.error("Zilliz BM25 search failed: %s", error, exc_info=True)
-        return {"papers": [], "has_more": False}
-
-    hits = results[0] if results else []
-    has_more = len(hits) > limit
-    ordered_ids = []
-    bm25_scores = {}
-    for hit in hits[:limit]:
-        paper_id, score = search_hit_to_id_and_distance(hit)
-        if not paper_id or paper_id in bm25_scores:
-            continue
-        ordered_ids.append(paper_id)
-        bm25_scores[paper_id] = score
-
-    documents = query_doc_by_ids(ordered_ids, embedding_type)
-    documents_by_id = {str(doc.get("ID")): doc for doc in documents if doc.get("ID")}
-    papers = []
-    for paper_id in ordered_ids:
-        document = documents_by_id.get(paper_id)
-        if not document:
-            continue
-        score = bm25_scores.get(paper_id)
-        document["score"] = score
-        papers.append(document)
-    return {"papers": papers, "has_more": has_more}
-
-
-def _query_docs_vector(coll, query: GetPapersRequest, profile) -> Dict[str, Any]:
-    """Return one cosine-ranked page from the selected dense retrieval profile."""
-    from service.embed import embed_query
-
-    query_embedding = embed_query(str(query.search_query).strip(), profile)
-    if not query_embedding:
-        raise VectorSearchUnavailableError(
-            "The query embedding service did not return a usable embedding."
-        )
-
-    limit = min(max(int(query.limit or 100), 1), 100)
-    offset = max(int(query.offset or 0), 0)
-    metadata_expr = _build_paper_query_expr(query, include_search_query=False)
-    filter_expr = (
-        f'({metadata_expr}) and has_embedding == true '
-        f'and embedding_model == "{profile.name}"'
     )
-    try:
-        results = coll.search(
-            data=[query_embedding],
-            anns_field=profile.vector_field,
-            param={"metric_type": profile.metric, "params": {}},
-            filter=filter_expr,
-            offset=offset,
-            limit=limit + 1,
-            output_fields=["paper_uid"],
-        ) or []
-    except Exception as error:
-        logging.error("Zilliz vector search failed: %s", error, exc_info=True)
-        return {"papers": [], "has_more": False}
-
-    hits = results[0] if results else []
-    has_more = len(hits) > limit
-    ordered_ids = []
-    scores = {}
-    for hit in hits[:limit]:
-        paper_id, score = search_hit_to_id_and_distance(hit)
-        if not paper_id or paper_id in scores:
-            continue
-        try:
-            score = float(score)
-        except (TypeError, ValueError):
-            raise VectorSearchUnavailableError(
-                "Zilliz vector search returned a result without a numeric score."
-            )
-        if not math.isfinite(score):
-            raise VectorSearchUnavailableError(
-                "Zilliz vector search returned a non-finite score."
-            )
-        ordered_ids.append(paper_id)
-        scores[paper_id] = score
-
-    documents = query_doc_by_ids(ordered_ids, profile.name)
-    documents_by_id = {str(doc.get("ID")): doc for doc in documents if doc.get("ID")}
-    papers = []
-    for paper_id in ordered_ids:
-        document = documents_by_id.get(paper_id)
-        if not document:
-            continue
-        document["score"] = scores.get(paper_id)
-        papers.append(document)
-    return {"papers": papers, "has_more": has_more}
 
 def normalize_results(results, mode="nD"):
     normalized = []
@@ -451,22 +289,13 @@ def normalize_results(results, mode="nD"):
         normalized.append(doc)
     return normalized
 
-def query_doc_by_id(_id: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
-    profile = _profile_or_log(embedding_type)
-    if not profile:
+def query_doc_by_id(_id: str, embedding_type: str = DEFAULT_EMBEDDING_MODEL):
+    if not _embedding_model_supported_or_log(embedding_type):
         return None
-    coll = _get_collection(profile.collection)
-    if not coll:
-        return None
-    try:
-        res = coll.query(expr=f'paper_uid == "{str(_id).replace(chr(34), "")}"', output_fields=_SCALAR_FIELDS, limit=1)
-        if res and len(res) > 0:
-            return format_doc_for_frontend(res[0])
-    except Exception as e:
-        logging.error(f"Error fetching doc ID {_id} from Zilliz: {e}", exc_info=True)
-    return None
+    record = paper_repository.get_paper_by_id(str(_id))
+    return format_doc_for_frontend(record) if record else None
 
-def query_doc_by_title(title: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> list:
+def query_doc_by_title(title: str, embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> list:
     all_papers = get_cached_papers(embedding_type)
     if not all_papers:
         return []
@@ -487,23 +316,11 @@ def query_doc_by_title(title: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFI
             pass
     return matches
 
-def query_doc_by_ids(ids: List[str], embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[dict]:
-    if not ids:
+def query_doc_by_ids(ids: List[str], embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[dict]:
+    if not _embedding_model_supported_or_log(embedding_type):
         return []
-    profile = _profile_or_log(embedding_type)
-    if not profile:
-        return []
-    coll = _get_collection(profile.collection)
-    if not coll:
-        return []
-    try:
-        expr = _ids_to_expr(ids)
-        # Use scalar fields only so Title, Abstract, etc. are returned (embedding not needed)
-        res = coll.query(expr=expr, output_fields=_SCALAR_FIELDS, limit=len(ids) + 100)
-        return [format_doc_for_frontend(r) for r in (res or []) if r]
-    except Exception as e:
-        logging.error(f"Error in query_doc_by_ids(): {e}", exc_info=True)
-        return []
+    records = paper_repository.get_papers_by_ids(ids)
+    return [format_doc_for_frontend(record) for record in records if record]
 
 def query_doc_by_embedding(
     paper_ids: Optional[List[str]],
@@ -512,94 +329,36 @@ def query_doc_by_embedding(
     limit: int,
     lang_filter: Dict = None,
 ) -> List[Dict]:
-    if paper_ids is None:
-        paper_ids = []
-    if isinstance(embedding, np.ndarray):
-        embedding = embedding.tolist()
-    profile = _profile_or_log(embedding_type)
-    if not profile:
-        return []
-    if len(embedding) != profile.dimension:
-        logging.error(
-            "Query vector has %s dimensions for profile %s; expected %s",
-            len(embedding), profile.name, profile.dimension,
-        )
-        return []
-    coll = _get_collection(profile.collection)
-    if not coll:
-        return []
-    # Request extra candidates for better precision (then trim to limit after excluding paper_ids)
-    mult = getattr(config, "ZILLIZ_SEARCH_CANDIDATES_MULTIPLIER", 1.5)
-    top_k = max(limit + len(paper_ids) + 5, int(limit * mult))
-    index_type = getattr(config, "ZILLIZ_INDEX_TYPE", "IVF_FLAT")
-    if index_type.upper() == "HNSW":
-        ef = getattr(config, "ZILLIZ_SEARCH_EF", 64)
-        search_params = {"metric_type": profile.metric, "params": {"ef": ef}}
-    else:
-        nprobe = getattr(config, "ZILLIZ_SEARCH_NPROBE", 128)
-        search_params = {"metric_type": profile.metric, "params": {"nprobe": nprobe}}
-    # Step 1: vector search returns only ID + distance (Zilliz often omits scalars in search results)
-    try:
-        res = coll.search(
-            data=[embedding],
-            anns_field=profile.vector_field,
-            param=search_params,
-            limit=min(top_k, 16384),
-            output_fields=["paper_uid"],
-        )
-    except Exception as e:
-        logging.error(f"Zilliz search failed: {e}", exc_info=True)
-        return []
-    if not res or len(res) == 0:
-        return []
-    hits = res[0]
-    id_to_distance = {}
-    order_ids = []
+    hits = paper_repository.search_papers_by_vector(
+        embedding,
+        embedding_type=embedding_type,
+        limit=limit,
+        exclude_ids=paper_ids or [],
+    )
+    documents = []
     for hit in hits:
-        doc_id, distance = search_hit_to_id_and_distance(hit)
-        if not doc_id or (paper_ids and doc_id in [str(p) for p in paper_ids]):
-            continue
-        if doc_id not in id_to_distance:
-            id_to_distance[doc_id] = distance
-            order_ids.append(doc_id)
-        if len(order_ids) >= limit:
-            break
-    if not order_ids:
-        return []
-    # Step 2: fetch full metadata (Title, Abstract, etc.) by ID via query API
-    full_docs = query_doc_by_ids(order_ids, embedding_type)
-    doc_by_id = {str(d.get("ID")): d for d in full_docs if d.get("ID")}
-    docs = []
-    for doc_id in order_ids:
-        d = doc_by_id.get(doc_id)
-        if not d:
-            continue
-        dist = id_to_distance.get(doc_id)
-        if dist is not None:
-            try:
-                d["score"] = float(dist)
-            except Exception:
-                pass
-        docs.append(d)
-    return docs
+        record = dict(hit.paper)
+        if hit.score is not None:
+            record["score"] = hit.score
+        documents.append(format_doc_for_frontend(record))
+    return documents
 
 def query_similar_doc_by_embedding_full(papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None):
     paper_ids_to_exclude = [str(p.get("ID")) for p in papers if p.get("ID")]
-    profile = _profile_or_log(embedding_type)
-    if not profile:
+    if not _embedding_model_supported_or_log(embedding_type):
         return []
-    coll = _get_collection(profile.collection)
+    coll = _get_collection(PAPER_COLLECTION)
     if not coll:
         return []
     try:
         expr = _ids_to_expr(paper_ids_to_exclude)
-        res = coll.query(expr=expr, output_fields=[profile.vector_field], limit=len(paper_ids_to_exclude) + 100)
+        res = coll.query(expr=expr, output_fields=[PAPER_VECTOR_FIELD], limit=len(paper_ids_to_exclude) + 100)
     except Exception as e:
         logging.error(f"Failed to fetch embeddings from Zilliz: {e}", exc_info=True)
         return []
     vectors_for_mean = []
     for r in (res or []):
-        emb = r.get(profile.vector_field)
+        emb = r.get(PAPER_VECTOR_FIELD)
         if isinstance(emb, (list, np.ndarray)) and (np.any(emb) if hasattr(emb, "__len__") else emb):
             vectors_for_mean.append(emb if isinstance(emb, list) else emb.tolist())
     if not vectors_for_mean:
@@ -610,10 +369,9 @@ def query_similar_doc_by_embedding_full(papers: List[dict], embedding_type: str,
 def query_similar_doc_by_embedding_2d(
     papers: List[dict], embedding_type: str, limit: int = 25, lang_filter: Dict = None
 ):
-    profile = _profile_or_log(embedding_type)
-    if not profile:
+    if not _embedding_model_supported_or_log(embedding_type):
         return []
-    umap_field = profile.umap_field
+    umap_field = PAPER_UMAP_FIELD
     query_points = []
     for p in papers:
         coords = p.get(umap_field)
@@ -672,7 +430,7 @@ def query_similar_doc_by_embedding_2d(
 def query_similar_doc_by_paper(paper: dict, embedding_type: str, limit: int = 25, lang_filter: Dict = None):
     return query_similar_doc_by_embedding_full([paper], embedding_type, limit, lang_filter)
 
-def get_all_umap_points(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_all_umap_points(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_prod"))
     if not coll:
         return []
@@ -684,7 +442,7 @@ def get_all_umap_points(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
         return []
 
 
-def get_all_static_cache_rows(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[dict]:
+def get_all_static_cache_rows(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[dict]:
     """Fetch all fields needed for metadata and UMAP cache snapshots in one pass."""
     coll = _get_collection(COLLECTION_MAPPING.get(embedding_type, "paper_prod"))
     if not coll:
@@ -698,7 +456,7 @@ def get_all_static_cache_rows(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -
 
 
 def get_all_metadatas(
-    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
     limit: Optional[int] = None,
 ) -> List[dict]:
     """Return metadata rows from Zilliz (batched). Optional limit samples for cheap calls."""
@@ -720,7 +478,7 @@ def get_all_metadatas(
         logging.error(f"Failed to fetch metadatas from Zilliz: {e}")
         return []
 
-def _aggregate_count(field: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[Dict[str, Any]]:
+def _aggregate_count(field: str, embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[Dict[str, Any]]:
     docs = get_all_metadatas(embedding_type)
     counter = {}
     for doc in docs:
@@ -738,20 +496,20 @@ def _aggregate_count(field: str, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE
                     counter[key_str] = counter.get(key_str, 0) + 1
     return sorted([{"_id": k, "count": v} for k, v in counter.items()], key=lambda x: -x["count"])
 
-def get_distinct_authors_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_authors_with_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     return _aggregate_count("Authors", embedding_type)
-def get_distinct_sources_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_sources_with_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     return _aggregate_count("Source", embedding_type)
-def get_distinct_keywords_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_keywords_with_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     return _aggregate_count("Keywords", embedding_type)
-def get_distinct_years_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_years_with_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     return sorted(_aggregate_count("Year", embedding_type), key=lambda x: x["_id"])
-def get_distinct_titles_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_titles_with_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     return _aggregate_count("Title", embedding_type)
-def get_distinct_citation_counts_with_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_citation_counts_with_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     return _aggregate_count("CitationCounts", embedding_type)
 
-def get_distinct_authors(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[str]:
+def get_distinct_authors(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     authors_set = set()
     for doc in docs:
@@ -766,12 +524,12 @@ def get_distinct_authors(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> Lis
                     authors_set.add(a.strip())
     return list(authors_set)
 
-def get_distinct_sources(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+def get_distinct_sources(embedding_type: str = DEFAULT_EMBEDDING_MODEL):
     docs = get_all_metadatas(embedding_type)
     formatted = [format_doc_for_frontend(d) for d in docs]
     return list(set(d.get("Source") for d in formatted if d.get("Source")))
 
-def get_distinct_keywords(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[str]:
+def get_distinct_keywords(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     keywords_set = set()
     for doc in docs:
@@ -786,15 +544,15 @@ def get_distinct_keywords(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> Li
                     keywords_set.add(k.strip())
     return list(keywords_set)
 
-def get_distinct_years(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[int]:
+def get_distinct_years(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[int]:
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("Year") for doc in docs if doc.get("Year") is not None))
 
-def get_distinct_titles(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[str]:
+def get_distinct_titles(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[str]:
     docs = get_all_metadatas(embedding_type)
     return list(set(doc.get("Title") for doc in docs if doc.get("Title")))
 
-def get_distinct_citation_counts(embedding_type: str = DEFAULT_RETRIEVAL_PROFILE) -> List[int]:
+def get_distinct_citation_counts(embedding_type: str = DEFAULT_EMBEDDING_MODEL) -> List[int]:
     docs = get_all_metadatas(embedding_type)
     return sorted(set(doc.get("CitationCounts") for doc in docs if doc.get("CitationCounts") is not None))
 

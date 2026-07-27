@@ -6,8 +6,8 @@ import numpy as np
 from copy import deepcopy
 from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
-from model.retrieval import DEFAULT_RETRIEVAL_PROFILE, get_retrieval_profile
-from model.paper import GetPapersRequest
+from config import DEFAULT_EMBEDDING_MODEL, is_supported_embedding_model
+from model.paper import SearchRequest
 from service.zilliz import query_docs
 from service.embed import embed_query
 from sentence_transformers import CrossEncoder
@@ -160,16 +160,15 @@ def _rows_to_documents(items: List[Dict[str, Any]]) -> List[Document]:
 
 def _query_zilliz_by_embedding(
     query_text: str,
-    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
     k: int = 5,
 ) -> List[Document]:
     """Embed query and perform Zilliz vector search."""
     from service import zilliz
-    profile = get_retrieval_profile(embedding_type)
-    if not profile:
-        logging.error("Unsupported retrieval profile requested by RAG: %s", embedding_type)
+    if not is_supported_embedding_model(embedding_type):
+        logging.error("Unsupported embedding model requested by RAG: %s", embedding_type)
         return []
-    qvec = embed_query(query_text, profile)
+    qvec = embed_query(query_text)
     if not qvec:
         return []
     raw = zilliz.query_doc_by_embedding(
@@ -206,7 +205,7 @@ def _run_metadata_search(plan, chat_id: str) -> List[Document]:
         filters = plan
     else:
         filters = getattr(plan, "filters", {}) or {}
-    q = GetPapersRequest(
+    q = SearchRequest(
         title=filters.get("title"),
         author=filters.get("authors"),
         # keyword=filters.get("keywords"),
@@ -325,7 +324,7 @@ def _run_semantic_search(
     # Fetch more candidates to ensure quality after fusion
     vector_docs = _query_zilliz_by_embedding(
         query_text,
-        embedding_type=DEFAULT_RETRIEVAL_PROFILE,
+        embedding_type=DEFAULT_EMBEDDING_MODEL,
         k=120,
     )
     

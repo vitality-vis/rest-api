@@ -41,7 +41,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     # ============================================================
     try:
         # Use high-level query_docs API over cached papers (fast, in-memory)
-        from model.paper import GetPapersRequest
+        from model.paper import SearchRequest
         from service.zilliz import query_docs
         from service.session_state import SESSIONS
     except Exception as e:
@@ -110,7 +110,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
                 filters_norm.pop(num_key, None)
 
     # ============================================================
-    # Step 3 — Build a GetPapersRequest for metadata filtering
+    # Step 3 — Build a SearchRequest for metadata filtering
     # ============================================================
     # Authors: always a list
     authors_val = filters_norm.get("authors")
@@ -152,7 +152,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     else:
         id_list = None
 
-    q = GetPapersRequest(
+    q = SearchRequest(
         title=filters_norm.get("title"),
         author=authors,
         source=sources,

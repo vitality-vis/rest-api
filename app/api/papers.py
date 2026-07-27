@@ -4,10 +4,9 @@ from flask import Blueprint, jsonify, request
 from flask_cors import cross_origin
 from pydantic import ValidationError
 
-from model.paper import GetPapersRequest, GetPapersResponse
-from model.retrieval import get_retrieval_profile
-from repositories.zilliz.paper_repository import search_papers
-from service.zilliz import VectorSearchUnavailableError
+from model.paper import GetPapersResponse, SearchRequest
+from config import is_supported_embedding_model
+from service.search import VectorSearchUnavailableError, search
 
 
 MAX_PAPERS_PAGE_SIZE = 100
@@ -28,7 +27,7 @@ def get_papers():
     """Fetch at most one bounded page of papers directly from Zilliz."""
     input_payload = request.args if request.method == "GET" else request.json or {}
     try:
-        query = GetPapersRequest(
+        query = SearchRequest(
             search_query=input_payload.get("search_query"),
             search_mode=input_payload.get("search_mode", "exact"),
             embedding_model=input_payload.get("embedding_model"),
@@ -52,18 +51,18 @@ def get_papers():
         )
     except ValidationError as error:
         return jsonify({"error": "Invalid getPapers request", "details": error.errors()}), 400
-    if query.search_mode == "vector" and query.embedding_model and not get_retrieval_profile(
+    if query.search_mode == "vector" and query.embedding_model and not is_supported_embedding_model(
         query.embedding_model
     ):
         return jsonify({"error": "Unsupported embedding_model"}), 400
     try:
-        result = search_papers(query)
+        result = search(query)
     except VectorSearchUnavailableError:
         return jsonify({"error": "Vector search is temporarily unavailable"}), 503
     response = GetPapersResponse(
-        papers=result.get("papers", []),
-        total=result.get("total"),
-        has_more=result.get("has_more", False),
+        papers=result.papers,
+        total=result.total,
+        has_more=result.has_more,
     )
     if hasattr(response, "model_dump"):
         return jsonify(response.model_dump(by_alias=True, exclude_none=True))

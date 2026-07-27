@@ -1,6 +1,8 @@
 
 import os
+
 from dotenv import load_dotenv
+from model.const import EMBED
 
 PROJ_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 
@@ -58,10 +60,27 @@ data_source = "json"  # Keep as json, indicating local JSON file is used for loa
 # Set in .env: ZILLIZ_URI (e.g. https://xxx.api.gcp-us-west1.zillizcloud.com), ZILLIZ_TOKEN (API key)
 ZILLIZ_URI = os.environ.get("ZILLIZ_URI", "")
 ZILLIZ_TOKEN = os.environ.get("ZILLIZ_TOKEN", "")
-# Embedding dimensions per active retrieval collection. Future models should be
-# registered in model/retrieval.py with their own collection/vector profile.
+
+# === Zilliz paper collection schema ===
+PAPER_COLLECTION = "paper_prod"
+
+# === Paper embedding ===
+PAPER_EMBEDDING_MODEL = EMBED.TEXT_EMBEDDING_3_SMALL
+PAPER_VECTOR_FIELD = "embedding"
+PAPER_VECTOR_DIMENSION = 1536
+DEFAULT_EMBEDDING_MODEL = PAPER_EMBEDDING_MODEL
+PAPER_UMAP_FIELD = "umap"
+PAPER_VECTOR_METRIC = "COSINE"
+
+
+def is_supported_embedding_model(name=None) -> bool:
+    """Whether a request selects the one embedding model currently deployed."""
+    return str(name or PAPER_EMBEDDING_MODEL).lower() == PAPER_EMBEDDING_MODEL
+
+
+# Embedding dimensions retained for ingestion scripts using the collection map.
 ZILLIZ_EMBED_DIM = {
-    "paper_prod": 1536,
+    PAPER_COLLECTION: PAPER_VECTOR_DIMENSION,
 }
 
 # === Zilliz search & index tuning (speed vs precision) ===

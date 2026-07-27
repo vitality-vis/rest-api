@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from model.paper import GetPapersRequest
+from model.paper import PaperFilters
 
 
-# TODO: Migrate agent tools from legacy ``where`` dictionaries to
-# GetPapersRequest/repository methods, then remove this compatibility alias map.
-# Normal route filters are compiled from GetPapersRequest below.
+# TODO: Remove this compatibility alias map after Agent tools stop using legacy
+# ``where`` dictionaries. Normal paper search uses ``PaperFilters`` below.
 _LEGACY_WHERE_FIELD_ALIASES = {
     "ID": "paper_uid",
     "Title": "title",
@@ -79,7 +78,10 @@ def split_query_terms(value: Optional[str]) -> List[str]:
 
 
 def build_paper_query_expr(
-    query: GetPapersRequest, *, include_search_query: bool = True
+    filters: PaperFilters,
+    *,
+    query_text: Optional[str] = None,
+    include_query_text: bool = True,
 ) -> str:
     """Translate supported paper filters into a Milvus scalar expression.
 
@@ -127,45 +129,25 @@ def build_paper_query_expr(
     # field. Ingestion lower-cases that field and combines title, abstract,
     # authors, keywords, and source, so this is a case-insensitive cross-field
     # keyword search without pulling the collection into Python.
-    if include_search_query:
-        for term in split_query_terms(query.search_query):
+    if include_query_text:
+        for term in split_query_terms(query_text):
             parts.append(f'TEXT_MATCH(search_text, "{escape_text_match(term)}")')
 
-    like_all("title", query.title)
-    like_all("abstract", query.abstract)
-    like_any("source", query.source)
-    array_contains_any("authors", query.author)
-    array_contains_any("keywords", query.keyword)
+    like_all("title", filters.title)
+    like_all("abstract", filters.abstract)
+    like_any("source", filters.source)
+    array_contains_any("authors", filters.author)
+    array_contains_any("keywords", filters.keyword)
 
-    if query.min_year is not None:
-        parts.append(f"year >= {int(query.min_year)}")
-    if query.max_year is not None:
-        parts.append(f"year <= {int(query.max_year)}")
-    if query.min_citation_counts is not None:
-        parts.append(f"citation_count >= {int(query.min_citation_counts)}")
-    if query.max_citation_counts is not None:
-        parts.append(f"citation_count <= {int(query.max_citation_counts)}")
-    if query.id_list:
-        parts.append(ids_to_expr([str(paper_id) for paper_id in query.id_list]))
+    if filters.min_year is not None:
+        parts.append(f"year >= {int(filters.min_year)}")
+    if filters.max_year is not None:
+        parts.append(f"year <= {int(filters.max_year)}")
+    if filters.min_citation_counts is not None:
+        parts.append(f"citation_count >= {int(filters.min_citation_counts)}")
+    if filters.max_citation_counts is not None:
+        parts.append(f"citation_count <= {int(filters.max_citation_counts)}")
+    if filters.id_list:
+        parts.append(ids_to_expr([str(paper_id) for paper_id in filters.id_list]))
 
     return " and ".join(parts) if parts else 'paper_uid != ""'
-
-
-def query_has_filters(query: GetPapersRequest) -> bool:
-    """Whether a query uses any field that changes the collection-wide total."""
-    return any(
-        value is not None and value != [] and value != ""
-        for value in (
-            query.title,
-            split_query_terms(query.search_query),
-            query.abstract,
-            query.author,
-            query.source,
-            query.keyword,
-            query.min_year,
-            query.max_year,
-            query.min_citation_counts,
-            query.max_citation_counts,
-            query.id_list,
-        )
-    )

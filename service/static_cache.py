@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 from logger_config import get_logger
-from model.retrieval import DEFAULT_RETRIEVAL_PROFILE
+from config import DEFAULT_EMBEDDING_MODEL
 from service import zilliz
 from service.metadata_normalizer import normalize_aggregated_metadata, parse_string_list
 
@@ -27,7 +27,7 @@ class ZillizNotConfiguredError(ZillizFingerprintError):
 
 
 def read_collection_fingerprint(
-    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
 ) -> Dict[str, Any]:
     """Read a collection change detector, raising a clear error on failure.
 
@@ -83,7 +83,7 @@ def read_collection_fingerprint(
 
 
 def get_collection_fingerprint(
-    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
 ) -> Optional[Dict[str, Any]]:
     """Return a fingerprint, or None when the caller can safely fall back."""
     try:
@@ -109,7 +109,7 @@ def fingerprints_match(
 
 
 def get_aggregated_metadata(
-    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
     sample_limit: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Aggregate filter facets from Zilliz rows.
@@ -172,7 +172,7 @@ def aggregate_metadata(docs: List[dict]) -> Dict[str, Any]:
 
 
 def write_static_cache_from_zilliz(
-    embedding_type: str = DEFAULT_RETRIEVAL_PROFILE,
+    embedding_type: str = DEFAULT_EMBEDDING_MODEL,
     fingerprint: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Pull meta + UMAP from Zilliz and write local snapshot files + fingerprint."""
@@ -235,7 +235,7 @@ class CachedData:
     aggregated_metadata = None
     fingerprint = None
 
-    def init(self, embedding_type: str = DEFAULT_RETRIEVAL_PROFILE):
+    def init(self, embedding_type: str = DEFAULT_EMBEDDING_MODEL):
         logging.info("Initializing cached data...")
         meta_path = Path(config.meta_data_file_path)
         umap_path = Path(config.umap_data_file_path)

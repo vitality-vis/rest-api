@@ -1,4 +1,4 @@
-"""Query-embedding helpers for registered retrieval profiles."""
+"""Query-embedding helpers for the deployed paper embedding model."""
 from __future__ import annotations
 
 import os
@@ -7,8 +7,8 @@ from typing import Dict, List, Union
 import numpy as np
 from openai import AzureOpenAI
 
+import config
 from logger_config import get_logger
-from model.retrieval import RetrievalProfile
 
 
 logging = get_logger()
@@ -30,10 +30,8 @@ def _azure_embed_client() -> AzureOpenAI:
     )
 
 
-def embed_query(text: str, profile: RetrievalProfile) -> List[float]:
-    """Embed text with the query embedder registered by ``profile``."""
-    if profile.query_embedder != "azure_text_embedding_3_small":
-        raise ValueError(f"No query embedder registered for profile '{profile.name}'")
+def embed_query(text: str) -> List[float]:
+    """Embed text in the one vector space currently deployed for papers."""
     if not isinstance(text, str) or not text.strip():
         return []
 
@@ -44,27 +42,31 @@ def embed_query(text: str, profile: RetrievalProfile) -> List[float]:
         )
         embedding = list(response.data[0].embedding)
     except Exception as error:
-        logging.error("Azure embedding failed for profile %s: %s", profile.name, error)
+        logging.error(
+            "Azure embedding failed for model %s: %s",
+            config.PAPER_EMBEDDING_MODEL,
+            error,
+        )
         return []
 
-    if len(embedding) != profile.dimension:
+    if len(embedding) != config.PAPER_VECTOR_DIMENSION:
         logging.error(
-            "Embedding deployment returned %s dimensions for profile %s; expected %s",
+            "Embedding deployment returned %s dimensions for model %s; expected %s",
             len(embedding),
-            profile.name,
-            profile.dimension,
+            config.PAPER_EMBEDDING_MODEL,
+            config.PAPER_VECTOR_DIMENSION,
         )
         return []
     return embedding
 
 
-def embed_paper_query(paper: Union[Dict, str], profile: RetrievalProfile) -> List[float]:
-    """Embed a title/abstract pair using the production profile's text space."""
+def embed_paper_query(paper: Union[Dict, str]) -> List[float]:
+    """Embed a title/abstract pair using the deployed paper vector space."""
     if isinstance(paper, dict):
         title = str(paper.get("Title") or paper.get("title") or "").strip()
         abstract = str(paper.get("Abstract") or paper.get("abstract") or "").strip()
-        return embed_query("\n\n".join(part for part in (title, abstract) if part), profile)
-    return embed_query(str(paper or ""), profile)
+        return embed_query("\n\n".join(part for part in (title, abstract) if part))
+    return embed_query(str(paper or ""))
 
 
 def mean_embedding(embeddings: List[List[float]]) -> List[float]:

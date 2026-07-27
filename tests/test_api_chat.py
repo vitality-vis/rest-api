@@ -42,6 +42,29 @@ def test_chat_returns_text_for_hello(api_base_url: str):
     assert response.text.strip()
 
 
-# TODO: Add focused live tests for Agent memory restoration, tool calls,
-# structured paper results, and stream errors after those behaviours have
+def test_chat_finds_papers_with_agent(api_base_url: str):
+    """Temporary live smoke test for chat → Agent retrieval → paper citations."""
+    payload = {
+        "chat_id": f"api-chat-paper-search-{uuid4()}",
+        "text": (
+            "Find papers about using large language models to support literature "
+            "reviews. List the relevant papers."
+        ),
+    }
+
+    try:
+        response = requests.post(f"{api_base_url}/chat", json=payload, timeout=180)
+    except requests.RequestException as error:
+        pytest.fail(f"Could not reach API_BASE_URL at /chat: {error}")
+
+    assert response.status_code == 200, response.text
+    assert response.headers.get("Content-Type", "").startswith("text/plain")
+    print(f"\n[chat paper search]\n{response.text.strip()}")
+    # Agent search responses use stable paper IDs. Do not assert a particular
+    # title or ranking: both the corpus and model output can change.
+    assert "[[ID:" in response.text, response.text
+
+
+# TODO: Add focused live tests for Agent memory restoration, structured paper
+# results, and stream errors after those behaviours have
 # stable contracts.

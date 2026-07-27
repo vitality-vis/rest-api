@@ -1,9 +1,31 @@
-"""Paper models exposed by the REST API."""
+"""Paper records and paper-search request/response models."""
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+class PaperFilters(BaseModel):
+    title: Optional[str] = None
+    abstract: Optional[str] = None
+    author: Optional[List[str]] = None
+    source: Optional[List[str]] = None
+    keyword: Optional[List[str]] = None
+    min_year: Optional[int] = None
+    max_year: Optional[int] = None
+    id_list: Optional[List[str]] = None
+    min_citation_counts: Optional[int] = None
+    max_citation_counts: Optional[int] = None
+
+
+class SearchRequest(PaperFilters):
+    search_query: Optional[str] = None
+    limit: int = 20
+    offset: int = 0
+    search_mode: Literal["exact", "bm25", "vector"] = "exact"
+    embedding_model: Optional[str] = None
 
 
 class PaperResponse(BaseModel):
@@ -25,24 +47,11 @@ class PaperResponse(BaseModel):
     score: Optional[float] = None
 
 
-class GetPapersRequest(BaseModel):
-    """Payload accepted by the ``/getPapers`` endpoint."""
-
-    search_query: Optional[str] = None
-    title: Optional[str] = None
-    abstract: Optional[str] = None
-    author: Optional[List[str]] = None
-    source: Optional[List[str]] = None
-    keyword: Optional[List[str]] = None
-    min_year: Optional[int] = None
-    max_year: Optional[int] = None
-    id_list: Optional[List[str]] = None
-    limit: int = 20
-    offset: int = 0
-    min_citation_counts: Optional[int] = None
-    max_citation_counts: Optional[int] = None
-    search_mode: Literal["exact", "bm25", "vector"] = "exact"
-    embedding_model: Optional[str] = None
+@dataclass
+class SearchResult:
+    papers: List[Dict] = field(default_factory=list)
+    total: Optional[int] = None
+    has_more: bool = False
 
 
 class GetPapersResponse(BaseModel):

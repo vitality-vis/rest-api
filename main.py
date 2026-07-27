@@ -22,7 +22,6 @@ from app.api.chat import chat_bp
 from app.api.papers import papers_bp
 from app.api.library import library_bp
 from model.const import EMBED
-from model.retrieval import get_retrieval_profile
 from service import zilliz
 from service.zilliz import query_doc_by_ids, normalize_results
 from langchain_openai import AzureChatOpenAI
@@ -133,16 +132,15 @@ def get_papers_limited():
 
     from service import embed as embed_service
 
-    profile = get_retrieval_profile()
     query_embedding = embed_service.embed_paper_query({
         "Title": topic,
         "Abstract": ""
-    }, profile)
+    })
 
     results = zilliz.query_doc_by_embedding(
         paper_ids=[],
         embedding=query_embedding,
-        embedding_type=profile.name,
+        embedding_type=config.PAPER_EMBEDDING_MODEL,
         limit=limit * 5   # Fetch extra results to ensure enough candidates
     )
 
@@ -178,8 +176,7 @@ def get_similar_papers_by_abstract():
 
     if not abstract_text:
         return jsonify({"message": "Abstract text is required"}), 400
-    profile = get_retrieval_profile(embedding_type)
-    if not profile:
+    if not config.is_supported_embedding_model(embedding_type):
         return jsonify({
             "message": f"Unsupported embedding type: {embedding_type}. Supported types: {', '.join(sorted(EMBED.ALL))}."
         }), 400
@@ -188,7 +185,7 @@ def get_similar_papers_by_abstract():
         from service import embed as embed_service
 
         query_embedding = embed_service.embed_paper_query(
-            {"Title": title_text, "Abstract": abstract_text}, profile
+            {"Title": title_text, "Abstract": abstract_text}
         )
 
         # Handle nested embeddings safely
@@ -198,9 +195,9 @@ def get_similar_papers_by_abstract():
                 query_embedding = first
 
         if not query_embedding or not isinstance(query_embedding, (list, np.ndarray)):
-            logger.error("Invalid or empty embedding for profile %s: %s", profile.name, type(query_embedding))
+            logger.error("Invalid or empty embedding for model %s: %s", embedding_type, type(query_embedding))
             return jsonify({
-                "message": f"Could not generate an embedding for {profile.name}.",
+                "message": f"Could not generate an embedding for {embedding_type}.",
                 "results": [],
             }), 200
 
@@ -214,7 +211,7 @@ def get_similar_papers_by_abstract():
         results = zilliz.query_doc_by_embedding(
             paper_ids=[],
             embedding=query_embedding,
-            embedding_type=profile.name,
+            embedding_type=embedding_type,
             limit=limit,
             lang_filter=language_filter,
         )
@@ -242,8 +239,7 @@ def get_similar_papers():
         query_lang = input_payload.get("lang", "all")
         dimensions = input_payload.get("dimensions", "nD")
 
-        profile = get_retrieval_profile(embedding_type)
-        if not profile:
+        if not config.is_supported_embedding_model(embedding_type):
             return jsonify({
                 "message": f"Unsupported embedding type: {embedding_type}. Supported types: {', '.join(sorted(EMBED.ALL))}."
             }), 400
@@ -263,7 +259,7 @@ def get_similar_papers():
         if dimensions == "2D":
             raw_results = zilliz.query_similar_doc_by_embedding_2d(
                 papers=papers,
-                embedding_type=profile.name,
+                embedding_type=embedding_type,
                 limit=limit,
                 lang_filter=language_filter
             )
@@ -271,7 +267,7 @@ def get_similar_papers():
         else:
             raw_results = zilliz.query_similar_doc_by_embedding_full(
                 papers=papers,
-                embedding_type=profile.name,
+                embedding_type=embedding_type,
                 limit=limit,
                 lang_filter=language_filter
             )

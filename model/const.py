@@ -3,7 +3,6 @@ class EMBED:
     DEFAULT = TEXT_EMBEDDING_3_SMALL
 
     # Retained only so callers can produce a clear unsupported-model response.
-    # These are not registered retrieval profiles.
     SPECTER = "specter"
     ADA = "ada"
 
