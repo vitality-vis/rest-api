@@ -20,6 +20,10 @@ class InvalidRetrievalScoreError(RuntimeError):
     """Raised when Zilliz returns an unusable relevance score."""
 
 
+class RepositoryUnavailableError(RuntimeError):
+    """Raised when a required Zilliz operation cannot be completed."""
+
+
 @dataclass
 class RepositoryHit:
     paper: Dict[str, Any]
@@ -43,8 +47,11 @@ class RepositoryPage:
 
 def _client():
     if not ensure_collection_loaded(config.PAPER_COLLECTION):
-        return None
-    return get_client()
+        raise RepositoryUnavailableError("Zilliz paper collection is unavailable.")
+    client = get_client()
+    if not client:
+        raise RepositoryUnavailableError("Zilliz client is unavailable.")
+    return client
 
 
 def _safe_limit_offset(limit: int, offset: int) -> tuple[int, int]:
@@ -53,7 +60,7 @@ def _safe_limit_offset(limit: int, offset: int) -> tuple[int, int]:
     return min(max(int(limit or 100), 1), 120), max(int(offset or 0), 0)
 
 
-def _count_matching(client, expression: str) -> Optional[int]:
+def _count_matching(client, expression: str) -> int:
     try:
         rows = client.query(
             collection_name=config.PAPER_COLLECTION,
@@ -68,12 +75,12 @@ def _count_matching(client, expression: str) -> Optional[int]:
                 return int(row[key])
         return int(next(iter(row.values())))
     except Exception as error:
-        logging.warning(
+        logging.error(
             "Zilliz count(*) failed for filter=%r: %s",
             expression,
             error,
         )
-        return None
+        raise RepositoryUnavailableError("Zilliz count query failed.") from error
 
 
 def get_paper_by_id(
@@ -91,8 +98,6 @@ def get_papers_by_ids(
     if not paper_ids:
         return []
     client = _client()
-    if not client:
-        return []
     try:
         return client.query(
             collection_name=config.PAPER_COLLECTION,
@@ -102,7 +107,7 @@ def get_papers_by_ids(
         ) or []
     except Exception as error:
         logging.error("Error fetching papers by ID: %s", error, exc_info=True)
-        return []
+        raise RepositoryUnavailableError("Zilliz paper lookup failed.") from error
 
 
 def get_embeddings_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
@@ -110,8 +115,6 @@ def get_embeddings_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
     if not paper_ids:
         return []
     client = _client()
-    if not client:
-        return []
     try:
         return client.query(
             collection_name=config.PAPER_COLLECTION,
@@ -121,7 +124,7 @@ def get_embeddings_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
         ) or []
     except Exception as error:
         logging.error("Error fetching paper embeddings: %s", error, exc_info=True)
-        return []
+        raise RepositoryUnavailableError("Zilliz embedding lookup failed.") from error
 
 
 def search_filtered(
@@ -134,8 +137,6 @@ def search_filtered(
     """Run scalar filtering with optional analyzed text matching."""
     safe_limit, safe_offset = _safe_limit_offset(limit, offset)
     client = _client()
-    if not client:
-        return RepositoryPage(total=0)
 
     expression = build_paper_query_expr(filters, query_text=query_text)
     try:
@@ -153,16 +154,16 @@ def search_filtered(
             try:
                 stats = client.get_collection_stats(config.PAPER_COLLECTION) or {}
                 total = int(stats.get("row_count", 0))
-            except Exception:
-                total = safe_offset + len(hits) + int(has_more)
+            except Exception as error:
+                raise RepositoryUnavailableError(
+                    "Zilliz collection statistics query failed."
+                ) from error
         else:
             total = _count_matching(client, expression)
-            if total is None:
-                total = safe_offset + len(hits) + int(has_more)
         return RepositoryPage(hits=hits, total=total, has_more=has_more)
     except Exception as error:
         logging.error("Zilliz filtered search failed: %s", error, exc_info=True)
-        return RepositoryPage(total=0)
+        raise RepositoryUnavailableError("Zilliz filtered search failed.") from error
 
 
 def hydrate_ranked_papers(
@@ -192,8 +193,6 @@ def search_bm25(
     """Run native sparse BM25 search and hydrate results in rank order."""
     safe_limit, safe_offset = _safe_limit_offset(limit, offset)
     client = _client()
-    if not client:
-        return RepositoryPage()
 
     expression = build_paper_query_expr(filters, include_query_text=False)
     kwargs = {
@@ -211,7 +210,7 @@ def search_bm25(
         results = client.search(**kwargs) or []
     except Exception as error:
         logging.error("Zilliz BM25 search failed: %s", error, exc_info=True)
-        return RepositoryPage()
+        raise RepositoryUnavailableError("Zilliz BM25 search failed.") from error
 
     raw_hits = results[0] if results else []
     has_more = len(raw_hits) > safe_limit
@@ -239,8 +238,6 @@ def search_by_vector(
     """Run a filtered dense search and hydrate results in rank order."""
     safe_limit, safe_offset = _safe_limit_offset(limit, offset)
     client = _client()
-    if not client:
-        return RepositoryPage()
 
     metadata_expression = build_paper_query_expr(filters, include_query_text=False)
     expression = (
@@ -262,7 +259,7 @@ def search_by_vector(
         results = client.search(**kwargs) or []
     except Exception as error:
         logging.error("Zilliz vector search failed: %s", error, exc_info=True)
-        return RepositoryPage()
+        raise RepositoryUnavailableError("Zilliz vector search failed.") from error
 
     raw_hits = results[0] if results else []
     has_more = len(raw_hits) > safe_limit
@@ -300,8 +297,6 @@ def search_by_vectors(
     if not vectors:
         return []
     client = _client()
-    if not client:
-        return [[] for _ in vectors]
 
     metadata_expression = build_paper_query_expr(filters, include_query_text=False)
     expression = (
@@ -320,7 +315,7 @@ def search_by_vectors(
         ) or []
     except Exception as error:
         logging.error("Zilliz bulk vector search failed: %s", error, exc_info=True)
-        return [[] for _ in vectors]
+        raise RepositoryUnavailableError("Zilliz bulk vector search failed.") from error
 
     ranked_results: List[List[RepositoryVectorHit]] = []
     for raw_hits in results:

@@ -16,7 +16,11 @@ RRF_K = 60
 SIMILAR_PAPERS_CANDIDATES_PER_SEED = 100
 
 
-class VectorSearchUnavailableError(RuntimeError):
+class SearchUnavailableError(RuntimeError):
+    """Raised when a required retrieval dependency cannot complete a search."""
+
+
+class VectorSearchUnavailableError(SearchUnavailableError):
     """Raised when dense retrieval cannot produce a valid ranked result."""
 
 
@@ -81,11 +85,13 @@ def search(
         return _format_result(page)
     except paper_repository.InvalidRetrievalScoreError as error:
         raise VectorSearchUnavailableError(str(error)) from error
-    except VectorSearchUnavailableError:
+    except paper_repository.RepositoryUnavailableError as error:
+        raise SearchUnavailableError(str(error)) from error
+    except SearchUnavailableError:
         raise
     except Exception as error:
         logging.error("Paper search failed: %s", error, exc_info=True)
-        return SearchResult(total=0)
+        raise SearchUnavailableError("Paper search is temporarily unavailable.") from error
 
 
 def find_similar_by_papers(request: SimilarPapersRequest) -> SearchResult:
@@ -131,9 +137,11 @@ def find_similar_by_papers(request: SimilarPapersRequest) -> SearchResult:
         )
     except paper_repository.InvalidRetrievalScoreError as error:
         raise VectorSearchUnavailableError(str(error)) from error
+    except paper_repository.RepositoryUnavailableError as error:
+        raise SearchUnavailableError(str(error)) from error
     except Exception as error:
         logging.error("Similar-paper search failed: %s", error, exc_info=True)
-        return SearchResult()
+        raise SearchUnavailableError("Similar-paper search is temporarily unavailable.") from error
 
 
 def to_legacy_payload(result: SearchResult) -> Dict:

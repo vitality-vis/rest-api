@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from model.paper import GetPapersResponse, SearchRequest, SimilarPapersRequest
 from config import is_supported_embedding_model
-from service.search import VectorSearchUnavailableError, find_similar_by_papers, search
+from service.search import SearchUnavailableError, find_similar_by_papers, search
 
 
 MAX_PAPERS_PAGE_SIZE = 100
@@ -57,8 +57,8 @@ def get_papers():
         return jsonify({"error": "Unsupported embedding_model"}), 400
     try:
         result = search(query)
-    except VectorSearchUnavailableError:
-        return jsonify({"error": "Vector search is temporarily unavailable"}), 503
+    except SearchUnavailableError:
+        return jsonify({"error": "Paper search is temporarily unavailable"}), 503
     response = GetPapersResponse(
         papers=result.papers,
         total=result.total,
@@ -102,8 +102,8 @@ def get_similar_papers():
         return jsonify({"error": "seed_ids must contain at least one paper ID"}), 400
     try:
         result = find_similar_by_papers(query)
-    except VectorSearchUnavailableError:
-        return jsonify({"error": "Vector search is temporarily unavailable"}), 503
+    except SearchUnavailableError:
+        return jsonify({"error": "Similar-paper search is temporarily unavailable"}), 503
     response = GetPapersResponse(papers=result.papers, has_more=result.has_more)
     if hasattr(response, "model_dump"):
         return jsonify(response.model_dump(by_alias=True, exclude_none=True))
