@@ -19,6 +19,7 @@ from service.static_cache import cached_data
 from app.api.bootstrap import bootstrap_bp
 from app.api.chat import chat_bp
 from app.api.papers import papers_bp
+from app.api.search_v2 import search_v2_bp
 from app.api.library import library_bp
 from service import zilliz
 from langchain_openai import AzureChatOpenAI
@@ -39,6 +40,7 @@ app = Flask(__name__, static_folder='./build', static_url_path='/')
 app.register_blueprint(bootstrap_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(papers_bp)
+app.register_blueprint(search_v2_bp)
 app.register_blueprint(library_bp)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type, Authorization'

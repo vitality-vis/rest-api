@@ -250,7 +250,7 @@ def get_chat_conversations():
     return jsonify({"conversations": conversations})
 
 
-def _chat_response(run_agent: ChatRunner) -> Response:
+def _chat_response(run_agent: ChatRunner, *, max_text_length: int | None = None) -> Response:
     """Run one chat turn with shared request, persistence, and streaming behavior."""
     data = request.get_json(force=True) or {}
     text = data.get("text", "")
@@ -262,11 +262,19 @@ def _chat_response(run_agent: ChatRunner) -> Response:
     user_message_id = data.get("user_message_id")
     assistant_message_id = data.get("assistant_message_id")
     message_created_at = data.get("message_created_at")
+    effort = data.get("effort", "low")
+    effort = effort if effort in {"low", "medium", "high"} else "low"
     user_message_id = str(user_message_id) if user_message_id is not None else None
     assistant_message_id = str(assistant_message_id) if assistant_message_id is not None else None
     message_created_at = str(message_created_at) if message_created_at is not None else None
     if not text:
         return Response("Please Input Your Text", status=400)
+    if max_text_length is not None and len(text) > max_text_length:
+        return Response(
+            f"Your message is too long. Please keep it within {max_text_length:,} characters.",
+            status=400,
+            mimetype="text/plain",
+        )
 
     logger = current_app.logger
     try:
@@ -304,7 +312,7 @@ def _chat_response(run_agent: ChatRunner) -> Response:
     started_at = monotonic()
 
     async def agen():
-        request = AgentRequest(text=text, chat_id=chat_id, history=history)
+        request = AgentRequest(text=text, chat_id=chat_id, history=history, effort=effort)
         async for chunk in run_agent(request):
             yield chunk
 
@@ -361,3 +369,17 @@ def _chat_response(run_agent: ChatRunner) -> Response:
 def chat():
     """Stream a research-assistant response using the production legacy runner."""
     return _chat_response(run_search_v1_legacy)
+
+
+def _get_chat_v2_runner() -> ChatRunner:
+    """Lazy import keeps the experimental v2 stack out of the production route startup."""
+    from agents.search_v2.chat_runner import run as run_chat_v2
+
+    return run_chat_v2
+
+
+@chat_bp.route("/chat/v2", methods=["POST"])
+@cross_origin()
+def chat_v2():
+    """Experimental chat route that uses v2 for explicit paper-finding turns."""
+    return _chat_response(_get_chat_v2_runner(), max_text_length=10_000)

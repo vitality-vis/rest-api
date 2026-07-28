@@ -25,11 +25,6 @@ PAPERS_PAYLOAD_END = "[[/VITALITY_PAPERS_JSON]]"
 
 # First N papers included in the tool text for the LLM / chat narrative.
 CHAT_PREVIEW_LIMIT = 5
-# First N papers the frontend should hydrate into the paper list.
-# Remaining ranked_ids are revealed via Load more (client-side).
-LOADED_PAGE_SIZE = 20
-
-
 def _doc_paper_id(doc: Any) -> Optional[str]:
     if isinstance(doc, dict):
         md = doc.get("metadata", doc)
@@ -63,8 +58,7 @@ def format_papers_payload(docs: Sequence[Any], *, limit: int = EMIT_PAPER_LIMIT)
     Shape (forward-compatible with storing loaded papers on chat messages later):
       {
         "ranked_ids": [...],   # full ranked list for this turn (capped)
-        "count_known": false,  # not a corpus total
-        "has_more": bool       # more ranked ids beyond the initial loaded page
+        "count_known": false   # not a corpus total
       }
     """
     ranked_ids = paper_ids_for_emit(docs, limit=limit)
@@ -76,16 +70,11 @@ def format_papers_payload(docs: Sequence[Any], *, limit: int = EMIT_PAPER_LIMIT)
             # Backward-compatible alias while clients migrate.
             "ids": ranked_ids,
             "count_known": False,
-            "has_more": len(ranked_ids) > LOADED_PAGE_SIZE,
         },
         separators=(",", ":"),
     )
     return f"\n\n{PAPERS_PAYLOAD_START}{body}{PAPERS_PAYLOAD_END}"
 
-
-# First N papers the frontend should hydrate into the paper list.
-# Remaining ranked_ids are revealed via Load more (client-side).
-LOADED_PAGE_SIZE = 20
 
 def save_session_docs(chat_id: str, docs: List[Document]) -> None:
     """

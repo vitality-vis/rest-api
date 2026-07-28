@@ -899,6 +899,7 @@ class AgentRequest:
     history: Optional[list[dict[str, str]]] = None
     selected_paper_ids: Optional[list] = None
     selected_paper_titles: Optional[list] = None
+    effort: str = "low"
 
 
 @agent("search_v1_legacy")

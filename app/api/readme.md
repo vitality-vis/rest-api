@@ -25,7 +25,14 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | --- | --- | --- | --- |
 | `POST` | `/chat/import` | required | Body `{ conversations: [...] }`. Idempotent guest→cloud import. |
 | `GET` | `/chat/conversations` | required | User's cloud chat history. |
-| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`. Streams assistant response; persists when authenticated. |
+| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`effort`. Streams the legacy assistant response; persists when authenticated. |
+| `POST` | `/chat/v2` | optional | Same body as `/chat`, with a 10,000-character message limit. Experimental route: explicit paper-finding turns use search v2; all other turns fall back to legacy. |
+
+## `search_v2.py`
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/search/v2` | optional | Body: `query` (1–10,000 characters), optional `effort` (defaults to `low`) and `result_limit`. Returns synchronous low-effort search results; a request without a topic or metadata filter returns 400. |
 
 ## `library.py`
 
