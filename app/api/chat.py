@@ -24,6 +24,10 @@ from repositories.supabase.chat_repository import (
     save_message,
 )
 from agents.search_v1_legacy import AgentRequest, run as run_search_v1_legacy
+from agents.search_v1_legacy.rag_core import (
+    PAPERS_PAYLOAD_END,
+    PAPERS_PAYLOAD_START,
+)
 
 
 chat_bp = Blueprint("chat", __name__)
@@ -40,6 +44,21 @@ MAX_IMPORT_MESSAGES_PER_CONVERSATION = 500
 MAX_IMPORT_MESSAGE_CHARS = 50_000
 
 
+def _strip_machine_markers(content: str) -> str:
+    """Remove frontend-only markers before feeding history to the agent."""
+    cleaned = content
+    while True:
+        start = cleaned.find(PAPERS_PAYLOAD_START)
+        if start < 0:
+            break
+        end = cleaned.find(PAPERS_PAYLOAD_END, start)
+        if end < 0:
+            cleaned = cleaned[:start]
+            break
+        cleaned = cleaned[:start] + cleaned[end + len(PAPERS_PAYLOAD_END) :]
+    return cleaned.replace("[SIGNAL:SHOW_LOAD_MORE]", "").strip()
+
+
 def _normalise_history(value: object) -> list[dict[str, str]]:
     """Return bounded, user/assistant text turns from an untrusted request body."""
     if not isinstance(value, list):
@@ -53,7 +72,7 @@ def _normalise_history(value: object) -> list[dict[str, str]]:
         content = item.get("content")
         if role not in {"user", "assistant"} or not isinstance(content, str):
             continue
-        content = content.strip()
+        content = _strip_machine_markers(content)
         if content:
             turns.append({"role": role, "content": content[:MAX_HISTORY_MESSAGE_CHARS]})
 
@@ -310,6 +329,7 @@ def chat():
             if user_id:
                 response_text = "".join(assistant_chunks)
                 try:
+                    # created_at is when the reply finishes — leave unset so DB uses now().
                     save_message(
                         conversation_id=chat_id,
                         role="assistant",
@@ -318,7 +338,6 @@ def chat():
                         duration_ms=round((monotonic() - started_at) * 1000),
                         error_message=stream_error,
                         message_id=assistant_message_id,
-                        created_at=message_created_at,
                     )
                 except ChatPersistenceError as error:
                     logger.error("Could not save assistant chat message: %s", error)

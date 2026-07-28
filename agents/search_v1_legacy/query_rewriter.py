@@ -1,7 +1,4 @@
-"""
-Query rewriter: turns context-dependent user messages into self-contained queries
-using a single LLM call with structured JSON output.
-"""
+"""Conversation-aware query rewriting for the legacy search agent."""
 import re
 import json
 import logging
@@ -16,7 +13,7 @@ logger = logging.getLogger(__name__)
 class RewriteResult(BaseModel):
     rewritten_query: str
     was_rewritten: bool
-    rewrite_type: str  
+    rewrite_type: str
 
 
 _PROMPT = """\
@@ -29,8 +26,7 @@ RULES:
 2. Expand ellipsis: "what about transformers?" after BERT discussion → full topic
 3. Carry topic: "find more recent ones" → "find recent papers on [topic from history]"
 4. If message is already self-contained OR is small talk → return it unchanged, was_rewritten=false
-5. For load-more requests ("show more", "next", "more papers") → return unchanged, was_rewritten=false
-6. NEVER invent titles, authors, or IDs not present in history
+5. NEVER invent titles, authors, or IDs not present in history
 
 SESSION STATE:
 - active_paper: {active_paper_title}
@@ -56,10 +52,10 @@ def rewrite_query(
     session: Optional[dict] = None,
     chat_id: str = "default",
 ) -> RewriteResult:
-    """
-    Rewrite the user message into a self-contained query using conversation context.
-    Uses the session's memory for history; pass session from agent_runner or get via chat_id.
-    """
+    """Rewrite a context-dependent user message into a standalone query."""
+    # TODO(search-v2): Define the response for manual "more papers" requests.
+    # The paper panel already receives the complete ranked list; do not restore
+    # the retired chat-pagination route here.
     if session is None:
         try:
             from service.session_state import get_session

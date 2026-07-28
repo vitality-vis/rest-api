@@ -11,6 +11,9 @@ from repositories.supabase.client import get_supabase_settings, service_role_hea
 
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
 
+# When created_at ties, prefer user before assistant ("user" > "assistant").
+_MESSAGE_ORDER = "created_at.asc,role.desc,id.asc"
+
 
 class ChatPersistenceError(RuntimeError):
     """Raised when the chat database cannot complete a required operation."""
@@ -18,6 +21,19 @@ class ChatPersistenceError(RuntimeError):
 
 class ConversationOwnershipError(ChatPersistenceError):
     """Raised when a conversation UUID belongs to a different user."""
+
+
+def _sort_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Stable local sort matching _MESSAGE_ORDER (fixes equal-timestamp turns)."""
+    role_rank = {"user": 0, "assistant": 1}
+
+    def key(message: dict[str, object]) -> tuple[str, int, str]:
+        created_at = str(message.get("created_at") or "")
+        role = str(message.get("role") or "")
+        message_id = str(message.get("id") or "")
+        return (created_at, role_rank.get(role, 9), message_id)
+
+    return sorted(messages, key=key)
 
 
 def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
@@ -45,7 +61,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
         params={
             "conversation_id": f"in.({','.join(conversation_ids)})",
             "select": "id,conversation_id,role,content,status,error_message,created_at",
-            "order": "created_at.asc,id.asc",
+            "order": _MESSAGE_ORDER,
         },
     )
     if messages_response.status_code != 200:
@@ -65,7 +81,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
             "title": conversation["title"],
             "created_at": conversation["created_at"],
             "updated_at": conversation["updated_at"],
-            "messages": messages_by_conversation[conversation["id"]],
+            "messages": _sort_messages(messages_by_conversation[conversation["id"]]),
         }
         for conversation in conversations
     ]
@@ -96,14 +112,15 @@ def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[s
             "conversation_id": f"eq.{conversation_id}",
             "status": "eq.completed",
             "select": "role,content,created_at,id",
-            "order": "created_at.asc,id.asc",
+            "order": _MESSAGE_ORDER,
         },
     )
     if messages_response.status_code != 200:
         raise ChatPersistenceError("Could not load chat history")
 
+    ordered_messages = _sort_messages(list(messages_response.json()))
     turns: list[dict[str, str]] = []
-    for message in messages_response.json():
+    for message in ordered_messages:
         role = message.get("role")
         content = message.get("content")
         if role not in {"user", "assistant"} or not isinstance(content, list):
@@ -116,7 +133,7 @@ def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[s
             and isinstance(block.get("text"), str)
         ).strip()
         if text:
-            turns.append({"role": role, "content": text})
+            turns.append({"role": str(role), "content": text})
     return turns
 
 

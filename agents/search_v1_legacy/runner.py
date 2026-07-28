@@ -22,9 +22,9 @@ from langchain_openai import AzureChatOpenAI
 from agents import agent
 from logger_config import get_logger
 from service.agent_tools import ALL_AGENT_TOOLS
-from service.intent_classifier import classify_intent, Intent
+from agents.search_v1_legacy.intent_classifier import classify_intent, Intent
 from service.memory_manager import MemoryManager
-from service.query_rewriter import rewrite_query
+from agents.search_v1_legacy.query_rewriter import rewrite_query
 from service.session_state import SESSIONS
 
 
@@ -272,13 +272,11 @@ Typical user intents:
 - finding papers on a topic
 - listing papers by author, venue, or year
 - browsing search results
-- requesting more results from a previous search
 
 Examples of such requests include:
 - "find papers on X"
 - "show papers about Y"
 - "list papers by author Z"
-- "give me more papers"
 
 The response should be a **list of papers**, not an explanatory answer.
 
@@ -335,18 +333,6 @@ Use when the user provides BOTH:
 Example intent:
 "papers about reinforcement learning published in NeurIPS after 2020"
 
-### load_more_papers(chat_id)
-
-Use when the user requests **additional results from the current search**.
-
-Typical intents:
-- "show more"
-- "load more papers"
-- "next page"
-
-When pagination is requested, **only call load_more_papers**.
-Do not run a new semantic_search or metadata_search.
-
 ----------------------------------------------------
 B. RAG QUESTION-ANSWERING TOOLS
 ----------------------------------------------------
@@ -397,7 +383,7 @@ Do NOT use retrieval tools when the question is:
 ====================================================
 - Only **ONE tool call per assistant message**.
 - Tool call must be valid JSON.
-- **INTENT_HINT:** When the user message includes a line like `[INTENT_HINT: intent=..., tool=..., slots=...]`, treat it as a routing hint from the system. Prefer calling the suggested **tool** (e.g. metadata_search, semantic_search, load_more_papers) for your first tool call unless it clearly does not fit the request. Use **slots** to shape your tool arguments when relevant (e.g. authors, year_min, topic).
+- **INTENT_HINT:** When the user message includes a line like `[INTENT_HINT: intent=..., tool=..., slots=...]`, treat it as a routing hint from the system. Prefer calling the suggested **tool** (e.g. metadata_search, semantic_search, mixed_search) for your first tool call unless it clearly does not fit the request. Use **slots** to shape your tool arguments when relevant (e.g. authors, year_min, topic).
 - Never hallucinate metadata fields.
 - Never combine multiple titles.
 - Never guess missing authors or titles.
@@ -489,18 +475,20 @@ A. Returning Papers (List Results)
 If the user asked to search for papers and the result comes from:
 - semantic_search
 - metadata_search
-- load_more_papers
+- mixed_search
 
 Then the assistant MUST:
 
 1. Start with one or two natural sentences introducing the list.
    Example:
    "Here are some papers related to reinforcement learning:"
-   "Here are additional papers from this search:"
 
-2. Output ALL papers returned by the tool.
-   - Do NOT omit any paper.
+2. Output ALL papers returned by the tool (this is a short chat preview).
+   - Do NOT omit any paper from the tool output.
    - Do NOT reorder papers.
+   - Do NOT invent additional papers beyond the tool output.
+   - Do NOT tell the user there are more results available via "load more" in chat.
+     Additional ranked papers are shown in the paper list panel automatically.
 
 3. Use the **compact display format** below.
 
@@ -516,13 +504,8 @@ Compact display format:
    - relevance scores
    - explanations of relevance
 
-5. If the tool output contains the tag:
-
-[SIGNAL:SHOW_LOAD_MORE]
-
-Then copy the tag exactly and place it on a new line at the very end of the answer.
-
-Do NOT modify, explain, or paraphrase this tag.
+5. Do NOT mention or invent the tag [SIGNAL:SHOW_LOAD_MORE].
+   Do NOT offer a chat "Load more" action.
 
 ----------------------------------------------------
 B. Summary / Comparison Questions
@@ -580,8 +563,6 @@ Here are the relevant papers:
   Authors: Jane Doe
   Year: 2020
   Source: ACL
-
-[SIGNAL:SHOW_LOAD_MORE]
 
 ====================================================
 ## 6. SAFETY RULES
@@ -846,12 +827,6 @@ async def run_two_stage_rag_stream(
                 out = event["data"].get("output")
                 tool_name = event.get("name", "")
 
-                # Only for load_more_papers: return tool output directly (no LLM call). All other tools go through the model.
-                if tool_name == "load_more_papers" and isinstance(out, str) and out.strip():
-                    final_answer += out
-                    logging.info("[agent] load_more_papers: returning tool output directly (no LLM call).")
-                    yield out
-
                 # mixed_search dict output
                 if isinstance(out, dict):
                     docs = out.get("final_docs") or out.get("semantic_docs") or out.get("metadata_docs") or []
@@ -867,7 +842,18 @@ async def run_two_stage_rag_stream(
                     final_answer += chunk.content
                     yield chunk.content
 
-        asyncio.create_task(async_update_memory(session, final_answer))
+        # After the agent turn, send ranked paper IDs for the frontend list.
+        # Chat text stays a short preview; the panel owns browsing / pagination.
+        # Do not persist the machine payload in sliding-window memory.
+        from agents.search_v1_legacy.rag_core import format_papers_payload
+
+        payload = format_papers_payload(session.get("search_cache") or [])
+        memory_text = final_answer
+        if payload:
+            final_answer += payload
+            yield payload
+
+        asyncio.create_task(async_update_memory(session, memory_text))
     except Exception as e:
         logging.warning("[run_two_stage_rag_stream] agent/tool failed: %s", e)
         async for chunk in _fallback_direct_answer(

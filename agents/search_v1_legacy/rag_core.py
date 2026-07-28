@@ -4,6 +4,7 @@ Legacy search agent helpers: session docs, CrossEncoder rerank, formatting.
 Owned by ``agents.search_v1_legacy``. Shared paper retrieval goes through
 ``service.search``; this module is agent-specific.
 """
+import json
 import logging
 from copy import deepcopy
 from typing import List, Dict, Any, Sequence, Optional
@@ -11,6 +12,80 @@ from langchain_core.documents import Document
 from model.paper import SearchRequest
 from service.search import search
 from sentence_transformers import CrossEncoder
+
+# How many ranked papers to send to the frontend paper list after a search.
+# TODO: Replace this fixed cap with score-based truncation (relative threshold /
+# elbow on cross-encoder scores), once cutoffs are tuned. Keep retrieve/rerank
+# candidate pools larger than this emit limit.
+EMIT_PAPER_LIMIT = 100
+
+# Machine-readable block appended to the chat stream (stripped in the UI).
+PAPERS_PAYLOAD_START = "[[VITALITY_PAPERS_JSON]]"
+PAPERS_PAYLOAD_END = "[[/VITALITY_PAPERS_JSON]]"
+
+# First N papers included in the tool text for the LLM / chat narrative.
+CHAT_PREVIEW_LIMIT = 5
+# First N papers the frontend should hydrate into the paper list.
+# Remaining ranked_ids are revealed via Load more (client-side).
+LOADED_PAGE_SIZE = 20
+
+
+def _doc_paper_id(doc: Any) -> Optional[str]:
+    if isinstance(doc, dict):
+        md = doc.get("metadata", doc)
+    else:
+        md = getattr(doc, "metadata", None) or {}
+    raw = md.get("id") or md.get("ID") or md.get("paper_uid")
+    if raw is None:
+        return None
+    paper_id = str(raw).strip()
+    return paper_id or None
+
+
+def paper_ids_for_emit(docs: Sequence[Any], *, limit: int = EMIT_PAPER_LIMIT) -> List[str]:
+    """Ordered unique paper IDs to send to the frontend (capped)."""
+    ids: List[str] = []
+    seen: set[str] = set()
+    for doc in docs or []:
+        paper_id = _doc_paper_id(doc)
+        if not paper_id or paper_id in seen:
+            continue
+        seen.add(paper_id)
+        ids.append(paper_id)
+        if len(ids) >= limit:
+            break
+    return ids
+
+
+def format_papers_payload(docs: Sequence[Any], *, limit: int = EMIT_PAPER_LIMIT) -> str:
+    """Build a hidden stream marker with ranked paper IDs for the frontend.
+
+    Shape (forward-compatible with storing loaded papers on chat messages later):
+      {
+        "ranked_ids": [...],   # full ranked list for this turn (capped)
+        "count_known": false,  # not a corpus total
+        "has_more": bool       # more ranked ids beyond the initial loaded page
+      }
+    """
+    ranked_ids = paper_ids_for_emit(docs, limit=limit)
+    if not ranked_ids:
+        return ""
+    body = json.dumps(
+        {
+            "ranked_ids": ranked_ids,
+            # Backward-compatible alias while clients migrate.
+            "ids": ranked_ids,
+            "count_known": False,
+            "has_more": len(ranked_ids) > LOADED_PAGE_SIZE,
+        },
+        separators=(",", ":"),
+    )
+    return f"\n\n{PAPERS_PAYLOAD_START}{body}{PAPERS_PAYLOAD_END}"
+
+
+# First N papers the frontend should hydrate into the paper list.
+# Remaining ranked_ids are revealed via Load more (client-side).
+LOADED_PAGE_SIZE = 20
 
 def save_session_docs(chat_id: str, docs: List[Document]) -> None:
     """
@@ -81,7 +156,7 @@ def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, incl
     - Handles both `Document` and raw `dict` entries.
     - Truncates long abstracts to stay token-safe when include_abstract=True.
     - Optionally includes stable IDs for follow-ups.
-    - Set include_abstract=False, include_score=False for compact lists (e.g. load more papers).
+    - Set include_abstract=False, include_score=False for compact paper lists.
     """
     if not docs:
         return "_(No documents found or remembered.)_"
@@ -104,7 +179,7 @@ def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, incl
         authors_raw = md_l.get("authors", "")
         authors = ", ".join(authors_raw) if isinstance(authors_raw, list) else authors_raw
 
-        # Abstract (omit for compact "load more" lists)
+        # Abstract (omit for compact paper lists)
         abstract = (md_l.get("abstract", "") or "") if include_abstract else ""
 
         # Score / ranking
@@ -244,14 +319,11 @@ def _run_semantic_search(
         
     rerank_candidates.sort(key=lambda d: d.metadata["_rerank_score"], reverse=True)
     
-    # Store the full 100 in the session cache for pagination / load-more
+    # Store the full ranked candidate list for the frontend papers payload
     from service.session_state import SESSIONS
     if chat_id in SESSIONS:
         sess = SESSIONS[chat_id]
-        # Backend pagination cache used by load_more_papers in agent_tools.py
         sess["search_cache"] = rerank_candidates
-        # First 5 papers are already shown in the initial semantic_search response
-        sess["last_offset"] = 5
 
     return rerank_candidates[:top_k]
 

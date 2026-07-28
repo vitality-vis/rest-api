@@ -1,7 +1,4 @@
-"""
-Intent classifier for the academic research assistant.
-Outputs intent, tool_hint, confidence, and optional slots for downstream routing.
-"""
+"""Intent classification for the legacy search agent."""
 import re
 import json
 import logging
@@ -16,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 class Intent(str, Enum):
     SEARCH_PAPER = "SEARCH_PAPER"
-    LOAD_MORE = "LOAD_MORE"
     RAG_QA = "RAG_QA"
     SMALL_TALK = "SMALL_TALK"
     CLARIFY = "CLARIFY"
@@ -26,7 +22,7 @@ class IntentResult(BaseModel):
     intent: Intent
     confidence: float = Field(ge=0.0, le=1.0)
     tool_hint: str  # metadata_search | semantic_search | mixed_search |
-    # load_more_papers | direct_reply | scoped_search
+    # rag_semantic_qa | direct_reply | scoped_search
     slots: dict = Field(default_factory=dict)
     needs_clarification: bool = False
     clarification_question: Optional[str] = None
@@ -37,7 +33,6 @@ You are an intent classifier for an academic research assistant with these tools
 - metadata_search   : (list papers) author / year / source / title / paper ID filters
 - semantic_search   : (list papers) topic or concept queries
 - mixed_search      : (list papers) topic + at least one filter; use for "papers on X from venue Y" or "What do CHI papers say about X?" — agent answers from results
-- load_more_papers  : pagination — "more", "next", "show more"
 - rag_semantic_qa   : (answer question) retrieve by topic, then answer
 - metadata_search   : (list papers) filter-based; also when user asks about a specific paper (by title/author/venue)
 - direct_reply      : small talk, greetings, thanks, off-topic
@@ -45,8 +40,6 @@ You are an intent classifier for an academic research assistant with these tools
 SESSION STATE (use to resolve ambiguity):
 - has_active_paper: {has_active_paper}
 - active_paper_title: {active_paper_title}
-- has_prior_search: {has_prior_search}
-- NOTE: if has_prior_search=false, LOAD_MORE is impossible → use SEARCH_PAPER instead
 
 CRITICAL — Commonsense vs academic "What is X?":
 - SMALL_TALK (direct_reply): General knowledge, everyday facts, geography, non-academic. Examples: "Where is London?", "What is a dog?" → answer from general knowledge; no paper retrieval.
@@ -55,9 +48,9 @@ CRITICAL — Commonsense vs academic "What is X?":
 
 Classify this message. Respond ONLY with valid JSON:
 {{
-  "intent": "<SEARCH_PAPER|LOAD_MORE|RAG_QA|SMALL_TALK|CLARIFY>",
+  "intent": "<SEARCH_PAPER|RAG_QA|SMALL_TALK|CLARIFY>",
   "confidence": <0.0-1.0>,
-  "tool_hint": "<metadata_search|semantic_search|mixed_search|load_more_papers|rag_semantic_qa|direct_reply>",
+  "tool_hint": "<metadata_search|semantic_search|mixed_search|rag_semantic_qa|direct_reply>",
   "slots": {{
     "authors": [], "year_min": null, "year_max": null,
     "venues": [], "topic": null, "paper_id": null
@@ -86,11 +79,6 @@ _FEW_SHOTS = [
         '{"intent":"SEARCH_PAPER","confidence":0.95,"tool_hint":"mixed_search",'
         '"slots":{"topic":"RAG","year_min":2023},'
         '"needs_clarification":false,"clarification_question":null}',
-    ),
-    (
-        "show me more",
-        '{"intent":"LOAD_MORE","confidence":0.98,"tool_hint":"load_more_papers",'
-        '"slots":{},"needs_clarification":false,"clarification_question":null}',
     ),
     (
         "Where is London?",
@@ -152,7 +140,6 @@ def classify_intent(
     prompt = _PROMPT.format(
         has_active_paper=bool(session.get("active_paper_id")),
         active_paper_title=session.get("active_paper_title", "None"),
-        has_prior_search=bool(session.get("search_cache")),
         message=message,
     )
 

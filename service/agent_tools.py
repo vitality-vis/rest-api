@@ -185,19 +185,17 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     if not docs:
         return "_(No matching papers found.)_"
 
-    # Load-more: store full result set in session (same as semantic_search)
+    # Full ranked set for the frontend paper list (streamed as a hidden payload).
     from service.session_state import get_session, save_session
+    from agents.search_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT
+
     sess = get_session(chat_id) or {}
     sess["search_cache"] = docs
-    sess["last_offset"] = 5
     save_session(chat_id, sess)
 
-    # Show first 5 with abstracts so the model can answer questions about the papers
-    initial_docs = docs[:5]
-    formatted_text = format_docs(initial_docs, include_abstract=True, include_score=False)
-    if len(docs) > 5:
-        formatted_text += "\n\n[SIGNAL:SHOW_LOAD_MORE]"
-    return formatted_text
+    # Chat/LLM preview only — full list goes to the frontend via papers payload.
+    initial_docs = docs[:CHAT_PREVIEW_LIMIT]
+    return format_docs(initial_docs, include_abstract=True, include_score=False)
 
 
 # @tool("semantic_search", return_direct=True)
@@ -205,40 +203,38 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
 @tool("semantic_search", return_direct=False)
 def semantic_search(query: str, chat_id: str = "default") -> str:
     """
-    [PAPER SEARCH — list only] Retrieve a list of papers by topic/semantic similarity. Use ONLY when the user wants to see/find papers (e.g. "give me papers on X"). Returns top 5 and caches the rest for Load More. For answering a question using papers, use rag_semantic_qa instead.
+    [PAPER SEARCH — list only] Retrieve papers by topic/semantic similarity. Use ONLY when the user wants to see/find papers (e.g. "give me papers on X"). Returns a short chat preview and caches the ranked list for the frontend paper panel. For answering a question using papers, use rag_semantic_qa instead.
     """
-    # 1. Fetch 100 results from Zilliz + Reranker
-    # We pass top_k=100 so the core function knows to fetch a large batch
-    docs = rag_core._run_semantic_search(query_text=query, chat_id=chat_id, top_k=100)
-    
+    from agents.search_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT, EMIT_PAPER_LIMIT
+
+    # Fetch a large candidate pool for rerank; emit cap is separate (see EMIT_PAPER_LIMIT).
+    docs = rag_core._run_semantic_search(
+        query_text=query, chat_id=chat_id, top_k=EMIT_PAPER_LIMIT
+    )
+
     if not docs:
         return "_(No relevant papers found.)_"
 
-    # 2. Slice the first 5 for the LLM/User to see immediately
-    initial_docs = docs[:5]
-    formatted_text = rag_core.format_docs(initial_docs)
-
-    # 3. Add the Frontend Signal
-    # Your frontend code will look for this exact string to render the button
-    if len(docs) > 5:
-        formatted_text += "\n\n[SIGNAL:SHOW_LOAD_MORE]"
-    
-    return formatted_text
+    initial_docs = docs[:CHAT_PREVIEW_LIMIT]
+    return rag_core.format_docs(initial_docs)
 
 
 
 @tool("mixed_search", return_direct=False)
-def mixed_search(query_text, filters, chat_id, top_k=5):
+def mixed_search(query_text, filters, chat_id, top_k=None):
     """
     [PAPER SEARCH — list only] First run metadata search (filters), then re-rank those results by topic/semantic relevance to query_text. Use when the user wants papers that match both metadata (author, year, venue, etc.) and topic — or when they ask a question that combines topic + filters (e.g. "What do CHI papers say about usability?"); call mixed_search then answer from the results.
     """
     from service.session_state import SESSIONS
     from agents.search_v1_legacy.rag_core import (
+        CHAT_PREVIEW_LIMIT,
         _run_metadata_search,
         _rerank_docs_by_query,
         save_session_docs,
         format_docs,
     )
+
+    preview_k = CHAT_PREVIEW_LIMIT if top_k is None else top_k
 
     # 1. Run metadata search first
     meta_docs = _run_metadata_search(filters, chat_id)
@@ -261,48 +257,17 @@ def mixed_search(query_text, filters, chat_id, top_k=5):
 
     # 2. Re-rank metadata results by semantic relevance to query_text
     reranked = _rerank_docs_by_query(meta_docs, query_text, top_k=None)
-    # Store full reranked list for load_more_papers
+    # Store full reranked list for the frontend papers payload
     if chat_id in SESSIONS:
         sess = SESSIONS[chat_id]
         sess["search_cache"] = reranked
-        sess["last_offset"] = top_k
-    save_session_docs(chat_id, reranked[:top_k])
+    save_session_docs(chat_id, reranked[:preview_k])
 
     logging.info(
         f"[mixed_search] Metadata returned {len(meta_docs)} papers; "
-        f"returning top {top_k} after semantic re-rank for chat_id={chat_id}"
+        f"returning chat preview top {preview_k} after semantic re-rank for chat_id={chat_id}"
     )
-    return format_docs(reranked[:top_k])
-
-
-@tool("load_more_papers", return_direct=True)
-def load_more_papers(chat_id: str = "default") -> str:
-    """
-    Fetch the next 10 papers from the session cache.
-    """
-    from service.session_state import SESSIONS
-    session = SESSIONS.get(chat_id)
-    if not session:
-        return "No more papers found in this search."
-    all_docs = session.get("search_cache", [])
-    current_offset = session.get("last_offset", 5) 
-    
-    next_batch = all_docs[current_offset : current_offset + 10]
-    
-    if not next_batch:
-        return "No more papers found in this search."
-
-    # Update the offset for the NEXT "Load More" click
-    session["last_offset"] = current_offset + len(next_batch)
-    
-    formatted = rag_core.format_docs(next_batch, include_abstract=False, include_score=False)
-    # Short intro; no need to invoke the model for a simple list
-    result = "Here are more papers from this search:\n\n" + formatted
-    # If there are still more left in the 100, keep the signal alive
-    if session["last_offset"] < len(all_docs):
-        result += "\n\n[SIGNAL:SHOW_LOAD_MORE]"
-        
-    return result
+    return format_docs(reranked[:preview_k])
 
 
 # =====================================================
@@ -333,6 +298,5 @@ ALL_AGENT_TOOLS = [
     metadata_search,
     semantic_search,
     mixed_search,
-    load_more_papers,
     rag_semantic_qa,
 ]
