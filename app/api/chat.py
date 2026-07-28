@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from time import monotonic
 from uuid import UUID
@@ -42,6 +43,9 @@ MAX_HISTORY_TOTAL_CHARS = 24_000
 MAX_IMPORT_CONVERSATIONS = 100
 MAX_IMPORT_MESSAGES_PER_CONVERSATION = 500
 MAX_IMPORT_MESSAGE_CHARS = 50_000
+
+
+ChatRunner = Callable[[AgentRequest], AsyncIterator[str]]
 
 
 def _strip_machine_markers(content: str) -> str:
@@ -246,10 +250,8 @@ def get_chat_conversations():
     return jsonify({"conversations": conversations})
 
 
-@chat_bp.route("/chat", methods=["POST"])
-@cross_origin()
-def chat():
-    """Stream a research-assistant response for one chat session."""
+def _chat_response(run_agent: ChatRunner) -> Response:
+    """Run one chat turn with shared request, persistence, and streaming behavior."""
     data = request.get_json(force=True) or {}
     text = data.get("text", "")
     text = text.strip() if isinstance(text, str) else ""
@@ -303,7 +305,7 @@ def chat():
 
     async def agen():
         request = AgentRequest(text=text, chat_id=chat_id, history=history)
-        async for chunk in run_search_v1_legacy(request):
+        async for chunk in run_agent(request):
             yield chunk
 
     def stream_sync():
@@ -352,3 +354,10 @@ def chat():
             loop.close()
 
     return Response(stream_sync(), status=200, mimetype="text/plain")
+
+
+@chat_bp.route("/chat", methods=["POST"])
+@cross_origin()
+def chat():
+    """Stream a research-assistant response using the production legacy runner."""
+    return _chat_response(run_search_v1_legacy)
