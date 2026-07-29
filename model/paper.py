@@ -35,6 +35,45 @@ class SimilarPapersRequest(PaperFilters):
     limit: int = 25
 
 
+class PaperCitationsRequest(BaseModel):
+    """Request for one paper's OpenAlex citation neighbors."""
+
+    doi: str = Field(min_length=1)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class PaperCitationItem(BaseModel):
+    """OpenAlex metadata for one reference or citing work."""
+
+    openalex_id: str
+    title: Optional[str] = None
+    year: Optional[int] = None
+    doi: Optional[str] = None
+    cited_by_count: Optional[int] = None
+
+
+class PaperCitationSource(BaseModel):
+    """Resolved identity of the paper whose citations were requested."""
+
+    doi: str
+    openalex_id: str
+
+
+class PaperCitationGroup(BaseModel):
+    """One citation direction with its OpenAlex total and returned items."""
+
+    total_hint: int = Field(ge=0)
+    items: List[PaperCitationItem] = Field(default_factory=list)
+
+
+class PaperCitationsResponse(BaseModel):
+    """Response returned by the ``/getPaperCitations`` endpoint."""
+
+    source: PaperCitationSource
+    references: PaperCitationGroup
+    cited_by: PaperCitationGroup
+
+
 class PaperResponse(BaseModel):
     """Paper payload returned by REST endpoints."""
 

@@ -68,7 +68,6 @@ SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-or-secret-key
 
 # Optional
-SEMANTIC_SCHOLAR_API_KEY=your-key
 PORT=3000
 ```
 
@@ -126,6 +125,7 @@ gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:a
 |----------|--------|-------------|
 | `/getPapers` | POST | Get papers by IDs or full payload (with filters) |
 | `/getSimilarPapers` | POST | Similar papers for one or more seed paper IDs (bulk vector search + RRF) |
+| `/getPaperCitations` | POST | References and cited-by papers from OpenAlex for one DOI |
 | `/getUmapPoints` | GET | 2D UMAP coordinates for visualization |
 | `/getMetaData` | GET | Metadata for UI filters |
 
@@ -200,12 +200,6 @@ POST /chat
 │   ├── const.py         # e.g. EMBED (specter, ada)
 │   └── query.py         # Query schemas
 ```
-
----
-
-## Tuning Zilliz
-
-See **`docs/ZILLIZ_TUNING.md`** for index type (IVF_FLAT vs HNSW), `nprobe`, `ef`, and related options. Key env vars: `ZILLIZ_INDEX_TYPE`, `ZILLIZ_SEARCH_NPROBE`, `ZILLIZ_SEARCH_EF`, `ZILLIZ_SEARCH_CANDIDATES_MULTIPLIER`.
 
 ---
 

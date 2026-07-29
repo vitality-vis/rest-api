@@ -9,11 +9,17 @@ Current layout:
 
 ```text
 repositories/
+  openalex/
+    client.py              # OpenAlex Works API (DOI resolve, references, cited-by)
   zilliz/
     paper_repository.py    # paper lookup, filtering, and vector retrieval
     connection.py          # pymilvus connection and collection lifecycle
     query_expressions.py   # Milvus filter-expression compilation
     mappers.py             # Zilliz row <-> internal paper mapping
+  azure_openai/
+    files.py               # Azure OpenAI Files uploads for library PDFs
+  supabase/
+    ...                    # auth and user-owned persistence
 ```
 
 `zilliz/paper_repository.py` is intentionally a compatibility facade during
