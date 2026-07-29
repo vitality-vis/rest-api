@@ -317,7 +317,7 @@ function renderFiles(files) {
   for (const file of files) {
     const row = document.createElement("tr");
     row.innerHTML = `
-      <td>${escapeHtml(file.filename || "—")}</td>
+      <td class="filename" title="${escapeHtml(file.filename || "—")}">${escapeHtml(file.filename || "—")}</td>
       <td class="mono">${escapeHtml(file.id || "—")}</td>
       <td>${escapeHtml(file.purpose || "—")}</td>
       <td>${escapeHtml(file.status || "—")}</td>

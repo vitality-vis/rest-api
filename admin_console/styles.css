@@ -28,7 +28,7 @@ body {
 }
 
 .page {
-  width: min(1120px, calc(100% - 2rem));
+  width: min(96vw, 90rem);
   margin: 0 auto;
   padding: 2rem 0 3rem;
 }
@@ -213,6 +213,42 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.92rem;
+}
+
+.files-table {
+  min-width: 80rem;
+  table-layout: fixed;
+}
+
+.files-table th:first-child {
+  width: clamp(9.5rem, 11vw, 11rem);
+}
+
+.files-table th:nth-child(2) {
+  width: clamp(16rem, 19vw, 19rem);
+}
+
+.files-table th:nth-child(3),
+.files-table th:nth-child(4) {
+  width: 7rem;
+}
+
+.files-table th:nth-child(5) {
+  width: 5.5rem;
+}
+
+.files-table th:nth-child(6) {
+  width: 10rem;
+}
+
+.files-table th:nth-child(7) {
+  width: 20rem;
+}
+
+.files-table td.filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 th,
