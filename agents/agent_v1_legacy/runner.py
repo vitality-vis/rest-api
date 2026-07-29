@@ -1,6 +1,6 @@
 """Legacy search agent: public entry + LangChain orchestration.
 
-Owned by ``agents.search_v1_legacy``. Callers should use ``run`` / ``AgentRequest``;
+Owned by ``agents.agent_v1_legacy``. Callers should use ``run`` / ``AgentRequest``;
 ``run_two_stage_rag_stream`` remains the internal pipeline.
 """
 from __future__ import annotations
@@ -22,9 +22,9 @@ from langchain_openai import AzureChatOpenAI
 from agents import agent
 from logger_config import get_logger
 from service.agent_tools import ALL_AGENT_TOOLS
-from agents.search_v1_legacy.intent_classifier import classify_intent, Intent
+from agents.agent_v1_legacy.intent_classifier import classify_intent, Intent
 from service.memory_manager import MemoryManager
-from agents.search_v1_legacy.query_rewriter import rewrite_query
+from agents.agent_v1_legacy.query_rewriter import rewrite_query
 from service.session_state import SESSIONS
 
 
@@ -616,7 +616,7 @@ def _resolve_selected_papers_from_cache(chat_id: str, requested: list, question:
     Look up requested papers (list of (title, id)) in session cache only.
     Returns (resolved_agent_input_str, from_cache: bool).
     """
-    from agents.search_v1_legacy.rag_core import get_session_docs, format_docs
+    from agents.agent_v1_legacy.rag_core import get_session_docs, format_docs
 
     requested_ids = {str(pid).strip() for (_, pid) in requested if pid}
     requested_titles = {str(t).strip().lower() for (t, _) in requested if t}
@@ -845,7 +845,7 @@ async def run_two_stage_rag_stream(
         # After the agent turn, send ranked paper IDs for the frontend list.
         # Chat text stays a short preview; the panel owns browsing / pagination.
         # Do not persist the machine payload in sliding-window memory.
-        from agents.search_v1_legacy.rag_core import format_papers_payload
+        from agents.agent_v1_legacy.rag_core import format_papers_payload
 
         payload = format_papers_payload(session.get("search_cache") or [])
         memory_text = final_answer

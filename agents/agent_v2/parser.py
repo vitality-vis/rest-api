@@ -58,7 +58,7 @@ def parse_search_intent(
     """Extract filters without changing the raw query used for retrieval."""
     try:
         # Keep model configuration in one place until search v2 owns its own LLM factory.
-        from agents.search_v1_legacy.runner import get_azure_llm
+        from agents.agent_v1_legacy.runner import get_azure_llm
 
         raw = get_azure_llm().invoke([HumanMessage(content=f"{_PROMPT}\nUSER REQUEST: {query}")]).content
         clean = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
@@ -129,7 +129,7 @@ def parse_chat_route(
 ) -> ChatRoute:
     """One LLM call for the v2 chat experiment; failure safely falls back to legacy."""
     try:
-        from agents.search_v1_legacy.runner import get_azure_llm
+        from agents.agent_v1_legacy.runner import get_azure_llm
 
         prompt = _CHAT_ROUTE_PROMPT.replace("{recent_history}", _recent_history(history))
         raw = get_azure_llm().invoke([HumanMessage(content=f"{prompt}\n{query}")]).content

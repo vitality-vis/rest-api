@@ -10,8 +10,8 @@ from langchain_core.tools import tool
 from langchain.schema import Document
 from pydantic import BaseModel, Field
 
-from agents.search_v1_legacy import rag_core
-from agents.search_v1_legacy.rag_core import (
+from agents.agent_v1_legacy import rag_core
+from agents.agent_v1_legacy.rag_core import (
     _run_metadata_search,
     _run_semantic_search,
     format_docs,
@@ -177,7 +177,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
     # Step 5 — Save to session + format output (reuse rag_core format)
     # ============================================================
     # Convert rows to LangChain Documents so downstream code (memory, etc.) keeps working.
-    from agents.search_v1_legacy.rag_core import _rows_to_documents, save_session_docs, format_docs
+    from agents.agent_v1_legacy.rag_core import _rows_to_documents, save_session_docs, format_docs
 
     docs = _rows_to_documents(items)
     save_session_docs(chat_id, docs)
@@ -187,7 +187,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
 
     # Full ranked set for the frontend paper list (streamed as a hidden payload).
     from service.session_state import get_session, save_session
-    from agents.search_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT
+    from agents.agent_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT
 
     sess = get_session(chat_id) or {}
     sess["search_cache"] = docs
@@ -205,7 +205,7 @@ def semantic_search(query: str, chat_id: str = "default") -> str:
     """
     [PAPER SEARCH — list only] Retrieve papers by topic/semantic similarity. Use ONLY when the user wants to see/find papers (e.g. "give me papers on X"). Returns a short chat preview and caches the ranked list for the frontend paper panel. For answering a question using papers, use rag_semantic_qa instead.
     """
-    from agents.search_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT, EMIT_PAPER_LIMIT
+    from agents.agent_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT, EMIT_PAPER_LIMIT
 
     # Fetch a large candidate pool for rerank; emit cap is separate (see EMIT_PAPER_LIMIT).
     docs = rag_core._run_semantic_search(
@@ -226,7 +226,7 @@ def mixed_search(query_text, filters, chat_id, top_k=None):
     [PAPER SEARCH — list only] First run metadata search (filters), then re-rank those results by topic/semantic relevance to query_text. Use when the user wants papers that match both metadata (author, year, venue, etc.) and topic — or when they ask a question that combines topic + filters (e.g. "What do CHI papers say about usability?"); call mixed_search then answer from the results.
     """
     from service.session_state import SESSIONS
-    from agents.search_v1_legacy.rag_core import (
+    from agents.agent_v1_legacy.rag_core import (
         CHAT_PREVIEW_LIMIT,
         _run_metadata_search,
         _rerank_docs_by_query,

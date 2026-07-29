@@ -5,9 +5,9 @@ from flask import Blueprint, Response, jsonify, request
 from flask_cors import cross_origin
 from pydantic import ValidationError
 
-from agents.search_v2.models import MAX_SEARCH_QUERY_LENGTH, SearchV2Request
-from agents.search_v2.runner import SearchCriteriaRequiredError, run_search
-from agents.search_v2.logging import SearchV2Trace
+from agents.agent_v2.models import MAX_SEARCH_QUERY_LENGTH, SearchV2Request
+from agents.agent_v2.runner import SearchCriteriaRequiredError, run_search
+from agents.agent_v2.logging import SearchV2Trace
 from service.search import SearchUnavailableError
 
 

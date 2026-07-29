@@ -24,8 +24,8 @@ from repositories.supabase.chat_repository import (
     load_user_conversations,
     save_message,
 )
-from agents.search_v1_legacy import AgentRequest, run as run_search_v1_legacy
-from agents.search_v1_legacy.rag_core import (
+from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
+from agents.agent_v1_legacy.rag_core import (
     PAPERS_PAYLOAD_END,
     PAPERS_PAYLOAD_START,
 )
@@ -317,7 +317,7 @@ def _chat_response(
     started_at = monotonic()
 
     async def agen():
-        request = AgentRequest(
+        agent_request = AgentRequest(
             text=text,
             chat_id=chat_id,
             history=history,
@@ -326,7 +326,7 @@ def _chat_response(
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
         )
-        async for chunk in run_agent(request):
+        async for chunk in run_agent(agent_request):
             yield chunk
 
     def stream_sync():
@@ -342,8 +342,10 @@ def _chat_response(
                 yield text_chunk
         except StopAsyncIteration:
             stream_completed = True
-        except Exception as error:
-            logger.warning("Chat stream error: %s", error)
+        except Exception as error:  # pylint: disable=broad-except
+            # Status 200 and earlier chunks are already sent, so no failure may escape:
+            # every error has to degrade into fallback text plus a "failed" saved message.
+            logger.warning("Chat stream error: %s", error, exc_info=True)
             stream_error = str(error)[:500]
             fallback_text = "I'm sorry, something went wrong on our side. Please try again."
             assistant_chunks.append(fallback_text)
@@ -386,7 +388,7 @@ def chat():
 
 def _get_chat_v2_runner() -> ChatRunner:
     """Lazy import keeps the experimental v2 stack out of the production route startup."""
-    from agents.search_v2.chat_runner import run as run_chat_v2
+    from agents.agent_v2.chat_runner import run as run_chat_v2
 
     return run_chat_v2
 
@@ -395,7 +397,7 @@ def _get_chat_v2_runner() -> ChatRunner:
 @cross_origin()
 def chat_v2():
     """Experimental chat route that uses v2 for explicit paper-finding turns."""
-    from agents.search_v2.logging import SearchV2Trace
+    from agents.agent_v2.logging import SearchV2Trace
 
     trace = SearchV2Trace.create()
     response = _chat_response(

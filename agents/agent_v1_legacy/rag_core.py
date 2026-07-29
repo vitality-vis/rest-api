@@ -1,7 +1,7 @@
 """
 Legacy search agent helpers: session docs, CrossEncoder rerank, formatting.
 
-Owned by ``agents.search_v1_legacy``. Shared paper retrieval goes through
+Owned by ``agents.agent_v1_legacy``. Shared paper retrieval goes through
 ``service.search``; this module is agent-specific.
 """
 import json

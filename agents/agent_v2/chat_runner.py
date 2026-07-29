@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from typing import AsyncIterator
 
-from agents.search_v1_legacy import AgentRequest, run as run_search_v1_legacy
-from agents.search_v1_legacy.rag_core import PAPERS_PAYLOAD_END, PAPERS_PAYLOAD_START
+from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
+from agents.agent_v1_legacy.rag_core import PAPERS_PAYLOAD_END, PAPERS_PAYLOAD_START
 
 from .models import SearchV2Request
 from .parser import parse_chat_route
