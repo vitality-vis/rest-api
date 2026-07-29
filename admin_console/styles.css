@@ -145,6 +145,27 @@ button:focus-visible {
   font-size: 0.8rem;
 }
 
+.tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.tab {
+  border: 1px solid var(--line);
+  background: rgba(255, 252, 247, 0.7);
+  color: var(--muted);
+  padding: 0.55rem 0.95rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab[aria-selected="true"] {
+  background: var(--panel);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
@@ -153,8 +174,33 @@ button:focus-visible {
   margin-bottom: 1rem;
 }
 
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+
 .filter {
   min-width: 11rem;
+}
+
+.detail-title {
+  margin-top: 0.75rem;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover,
+.clickable-row:focus-visible {
+  background: #f7f3ec;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.85em;
 }
 
 .table-wrap {
@@ -204,6 +250,7 @@ td.mono,
 @media (max-width: 720px) {
   .header,
   .toolbar,
+  .toolbar-actions,
   .session-actions {
     align-items: stretch;
     flex-direction: column;

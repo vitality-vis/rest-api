@@ -12,7 +12,8 @@ from repositories.supabase.client import get_supabase_settings, service_role_hea
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
 _SHELF_COLUMNS = (
     "id,user_id,paper_id,metadata_snapshot,is_saved,azure_file_id,uploaded_filename,"
-    "uploaded_bytes,uploaded_at,created_at,updated_at"
+    "uploaded_bytes,uploaded_at,vs_file_status,vs_file_id,"
+    "vs_indexed_at,vs_last_error,created_at,updated_at"
 )
 
 
@@ -174,6 +175,10 @@ def upsert_user_paper_file(
         "uploaded_filename": uploaded_filename,
         "uploaded_bytes": uploaded_bytes,
         "uploaded_at": uploaded_at,
+        "vs_file_status": "pending",
+        "vs_file_id": None,
+        "vs_indexed_at": None,
+        "vs_last_error": None,
     }
 
     if existing is None:
@@ -240,6 +245,10 @@ def clear_user_paper_file(*, user_id: str, paper_id: str) -> None:
             "uploaded_filename": None,
             "uploaded_bytes": None,
             "uploaded_at": None,
+            "vs_file_status": "not_indexed",
+            "vs_file_id": None,
+            "vs_indexed_at": None,
+            "vs_last_error": None,
         },
     )
     if response.status_code not in {200, 204}:
@@ -258,6 +267,30 @@ def delete_empty_user_paper(*, user_id: str, paper_id: str) -> None:
     if paper.get("is_saved") or paper.get("azure_file_id"):
         return
     delete_user_paper(user_id=user_id, paper_id=paper_id)
+
+
+def update_user_paper_index_state(
+    *, user_id: str, paper_id: str, azure_file_id: str, status: str,
+    vs_file_id: str | None = None, error: str | None = None,
+) -> dict[str, object] | None:
+    """Conditionally update only the current upload's indexing state."""
+    payload: dict[str, object] = {"vs_file_status": status, "vs_last_error": error}
+    if vs_file_id is not None:
+        payload["vs_file_id"] = vs_file_id
+    if status == "completed":
+        payload["vs_indexed_at"] = datetime.now(timezone.utc).isoformat()
+    response = _request(
+        "PATCH", "user_papers",
+        params={"user_id": f"eq.{user_id}", "paper_id": f"eq.{paper_id}",
+                "azure_file_id": f"eq.{azure_file_id}"},
+        headers={"Prefer": "return=representation"}, json=payload,
+    )
+    if response.status_code not in {200, 204}:
+        raise UserPapersPersistenceError("Could not update file indexing status")
+    if response.status_code == 204 or not response.content:
+        return None
+    records = _json_list(response, "User paper indexing update returned an invalid response")
+    return records[0] if records else None
 
 
 def _request(method: str, path: str, **kwargs) -> requests.Response:
@@ -297,5 +330,6 @@ __all__ = [
     "list_user_papers",
     "save_user_paper",
     "unsave_user_paper",
+    "update_user_paper_index_state",
     "upsert_user_paper_file",
 ]

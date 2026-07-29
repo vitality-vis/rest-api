@@ -35,6 +35,7 @@ from repositories.supabase.user_papers_repository import (
     unsave_user_paper,
     upsert_user_paper_file,
 )
+from service.fulltext import LibraryIndexError, detach_user_paper_file, index_user_paper
 
 
 library_bp = Blueprint("library", __name__)
@@ -196,6 +197,8 @@ def _file_response(paper: dict[str, object]) -> dict[str, object]:
         "filename": paper.get("uploaded_filename"),
         "bytes": paper.get("uploaded_bytes"),
         "uploaded_at": paper.get("uploaded_at"),
+        "vs_file_status": paper.get("vs_file_status"),
+        "vs_last_error": paper.get("vs_last_error"),
     }
 
 
@@ -468,6 +471,11 @@ def put_library_paper_file(paper_id: str):
                 cleanup_error,
             )
 
+    try:
+        paper = index_user_paper(user_id=user_id, paper_id=paper_id)
+    except LibraryIndexError as error:
+        current_app.logger.warning("Full-text indexing failed user_id=%s paper_id=%s error=%s", user_id, paper_id, error)
+        paper = get_user_paper(user_id=user_id, paper_id=paper_id) or paper
     return jsonify(_file_response(paper))
 
 
@@ -496,6 +504,7 @@ def delete_library_paper_file(paper_id: str):
         return Response("Not found", status=404, mimetype="text/plain")
 
     try:
+        detach_user_paper_file(user_id=user_id, paper=paper)
         delete_azure_file(file_id=azure_file_id)
     except AzureFilesConfigurationError:
         current_app.logger.error("Azure OpenAI files are not configured for the library")

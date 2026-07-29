@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vitality Admin · Azure Files</title>
+    <title>Vitality Admin · Azure OpenAI</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <header class="header">
         <div>
           <p class="eyebrow">Vitality admin</p>
-          <h1>Azure Files</h1>
+          <h1>Azure OpenAI</h1>
         </div>
         <div id="session-actions" class="session-actions" hidden>
           <span id="endpoint-label" class="endpoint-label"></span>
@@ -64,44 +64,129 @@
         </form>
       </section>
 
-      <section id="files-view" class="panel" hidden>
-        <div class="toolbar">
-          <div>
-            <h2>Files</h2>
-            <p id="files-summary" class="hint"></p>
+      <div id="main-view" hidden>
+        <nav class="tabs" aria-label="Resource">
+          <button type="button" class="tab" data-tab="files" aria-selected="true">Files</button>
+          <button type="button" class="tab" data-tab="stores" aria-selected="false">
+            Vector Stores
+          </button>
+        </nav>
+
+        <section id="files-view" class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Files</h2>
+              <p id="files-summary" class="hint"></p>
+            </div>
+            <div class="toolbar-actions">
+              <label class="filter">
+                Purpose
+                <select id="purpose-filter">
+                  <option value="">All</option>
+                  <option value="assistants">assistants</option>
+                  <option value="fine-tune">fine-tune</option>
+                  <option value="fine-tune-results">fine-tune-results</option>
+                  <option value="batch">batch</option>
+                  <option value="vision">vision</option>
+                  <option value="user_data">user_data</option>
+                </select>
+              </label>
+            </div>
           </div>
-          <label class="filter">
-            Purpose
-            <select id="purpose-filter">
-              <option value="">All</option>
-              <option value="assistants">assistants</option>
-              <option value="fine-tune">fine-tune</option>
-              <option value="fine-tune-results">fine-tune-results</option>
-              <option value="batch">batch</option>
-              <option value="vision">vision</option>
-              <option value="user_data">user_data</option>
-            </select>
-          </label>
-        </div>
-        <p id="files-error" class="error" hidden></p>
-        <p id="files-loading" class="hint" hidden>Loading…</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Filename</th>
-                <th>ID</th>
-                <th>Purpose</th>
-                <th>Status</th>
-                <th>Size</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody id="files-body"></tbody>
-          </table>
-        </div>
-        <p id="files-empty" class="hint" hidden>No files found.</p>
-      </section>
+          <p class="hint">
+            “In vector store” is resolved by scanning every store’s files and matching on Azure file
+            id, so it reflects Azure rather than the Vitality database.
+          </p>
+          <p id="files-error" class="error" hidden></p>
+          <p id="files-loading" class="hint" hidden>Loading…</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Filename</th>
+                  <th>ID</th>
+                  <th>Purpose</th>
+                  <th>Status</th>
+                  <th>Size</th>
+                  <th>Created</th>
+                  <th>In vector store</th>
+                </tr>
+              </thead>
+              <tbody id="files-body"></tbody>
+            </table>
+          </div>
+          <p id="files-empty" class="hint" hidden>No files found.</p>
+        </section>
+
+        <section id="stores-view" class="panel" hidden>
+          <div id="stores-list">
+            <div class="toolbar">
+              <div>
+                <h2>Vector Stores</h2>
+                <p id="stores-summary" class="hint"></p>
+              </div>
+            </div>
+            <p id="stores-error" class="error" hidden></p>
+            <p id="stores-loading" class="hint" hidden>Loading…</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>ID</th>
+                    <th>Status</th>
+                    <th>Files</th>
+                    <th>Usage</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody id="stores-body"></tbody>
+              </table>
+            </div>
+            <p id="stores-empty" class="hint" hidden>No vector stores found.</p>
+          </div>
+
+          <div id="store-detail" hidden>
+            <div class="toolbar">
+              <div>
+                <button type="button" id="back-stores-btn" class="btn btn-secondary">
+                  ← All stores
+                </button>
+                <h2 id="store-detail-title" class="detail-title">Store files</h2>
+                <p id="store-files-summary" class="hint"></p>
+              </div>
+              <label class="filter">
+                Filter by file id / paper_id / status
+                <input id="store-files-filter" type="search" placeholder="file-… or paper id" />
+              </label>
+            </div>
+            <p class="hint">
+              Each row’s File ID is the Azure Files id. Status
+              <code>completed</code> means the file is indexed in this store;
+              <code>in_progress</code> / <code>pending</code> means still indexing;
+              <code>failed</code> means attach/index failed.
+            </p>
+            <p id="store-files-error" class="error" hidden></p>
+            <p id="store-files-loading" class="hint" hidden>Loading…</p>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>File ID</th>
+                    <th>Status</th>
+                    <th>paper_id</th>
+                    <th>Usage</th>
+                    <th>Created</th>
+                    <th>Last error</th>
+                  </tr>
+                </thead>
+                <tbody id="store-files-body"></tbody>
+              </table>
+            </div>
+            <p id="store-files-empty" class="hint" hidden>No files in this store.</p>
+          </div>
+        </section>
+      </div>
     </div>
     <script src="./app.js"></script>
   </body>
