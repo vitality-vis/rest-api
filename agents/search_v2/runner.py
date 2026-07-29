@@ -9,6 +9,7 @@ from service.search import SearchUnavailableError, search
 from .models import SearchIntent, SearchV2Paper, SearchV2Request, SearchV2Response
 from .parser import parse_search_intent
 from .reranker import paper_id, rerank
+from .logging import SearchV2Trace
 
 
 RRF_K = 60
@@ -51,7 +52,10 @@ def _policy(intent: SearchIntent) -> str:
     return "hybrid"
 
 
-def _hybrid(query: str, intent: SearchIntent) -> tuple[list[SearchV2Paper], dict]:
+def _hybrid(
+    query: str,
+    intent: SearchIntent,
+) -> tuple[list[SearchV2Paper], dict]:
     kwargs = _filters(intent)
     requests = {
         "bm25": SearchRequest(search_query=query, search_mode="bm25", limit=CANDIDATE_LIMIT, **kwargs),
@@ -85,12 +89,14 @@ def _hybrid(query: str, intent: SearchIntent) -> tuple[list[SearchV2Paper], dict
             item.rrf_score = (item.rrf_score or 0.0) + 1.0 / (RRF_K + rank)
 
     candidates = sorted(merged.values(), key=lambda item: (-(item.rrf_score or 0), paper_id(item.paper)))[:FUSED_CANDIDATE_LIMIT]
-    return candidates, {"retrieval_failures": failures, "retrieval_counts": {name: len(value.papers) for name, value in results.items()}}
+    retrieval_counts = {name: len(value.papers) for name, value in results.items()}
+    return candidates, {"retrieval_failures": failures, "retrieval_counts": retrieval_counts}
 
 
 def _filter(intent: SearchIntent) -> tuple[list[SearchV2Paper], dict]:
     result = search(SearchRequest(search_mode="exact", limit=CANDIDATE_LIMIT, **_filters(intent)))
-    return [SearchV2Paper(paper=paper, retrieval_sources=["filter"], retrieval_ranks={"filter": rank}) for rank, paper in enumerate(result.papers, start=1)], {}
+    candidates = [SearchV2Paper(paper=paper, retrieval_sources=["filter"], retrieval_ranks={"filter": rank}) for rank, paper in enumerate(result.papers, start=1)]
+    return candidates, {}
 
 
 def run_search(
@@ -98,6 +104,7 @@ def run_search(
     *,
     intent: SearchIntent | None = None,
     enable_cross_encoder: bool | None = None,
+    trace: SearchV2Trace | None = None,
 ) -> SearchV2Response:
     """Run low-effort retrieval; CrossEncoder rerank is an opt-in server experiment."""
     query = request.query.strip()
@@ -105,9 +112,13 @@ def run_search(
         raise SearchCriteriaRequiredError(
             "Please provide a research topic or at least one filter such as title, author, venue, year, or paper ID."
         )
-    intent = intent or parse_search_intent(query)
+    intent = intent or parse_search_intent(query, effort=request.effort, trace=trace)
     policy = _policy(intent)
-    candidates, diagnostics = _filter(intent) if policy == "filter" else _hybrid(query, intent)
+    candidates, diagnostics = (
+        _filter(intent)
+        if policy == "filter"
+        else _hybrid(query, intent)
+    )
     use_cross_encoder = DEFAULT_ENABLE_CROSS_ENCODER if enable_cross_encoder is None else enable_cross_encoder
     rerank_status = "skipped"
     if use_cross_encoder and candidates:
@@ -122,4 +133,5 @@ def run_search(
             diagnostics["rerank_error"] = str(error)
 
     diagnostics.update({"retrieved": len(candidates), "reranked": len(candidates) if rerank_status == "complete" else 0, "rerank_status": rerank_status})
-    return SearchV2Response(query=query, effort=request.effort, intent=intent, policy=policy, papers=candidates[:request.result_limit], status="partial" if diagnostics.get("retrieval_failures") or rerank_status == "failed" else "complete", diagnostics=diagnostics)
+    response = SearchV2Response(query=query, effort=request.effort, intent=intent, policy=policy, papers=candidates[:request.result_limit], status="partial" if diagnostics.get("retrieval_failures") or rerank_status == "failed" else "complete", diagnostics=diagnostics)
+    return response

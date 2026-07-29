@@ -44,3 +44,10 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | `DELETE` | `/library/papers/{paper_id}/saved` | required | Unsave; deletes row only if no file. |
 | `PUT` | `/library/papers/{paper_id}/file` | required | multipart: `file` (PDF) + `metadata` (JSON `Paper`). |
 | `DELETE` | `/library/papers/{paper_id}/file` | required | Deletes Azure file, clears upload fields; drops unsaved empty rows. |
+
+## `notes.py`
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/notes` | required | One research-notes document per user. Missing row → `200` with empty `content`. |
+| `PUT` | `/notes` | required | Body `{ content: string }`. Upsert by `user_id`. |

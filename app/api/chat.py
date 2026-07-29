@@ -250,7 +250,12 @@ def get_chat_conversations():
     return jsonify({"conversations": conversations})
 
 
-def _chat_response(run_agent: ChatRunner, *, max_text_length: int | None = None) -> Response:
+def _chat_response(
+    run_agent: ChatRunner,
+    *,
+    max_text_length: int | None = None,
+    trace_id: str | None = None,
+) -> Response:
     """Run one chat turn with shared request, persistence, and streaming behavior."""
     data = request.get_json(force=True) or {}
     text = data.get("text", "")
@@ -312,7 +317,15 @@ def _chat_response(run_agent: ChatRunner, *, max_text_length: int | None = None)
     started_at = monotonic()
 
     async def agen():
-        request = AgentRequest(text=text, chat_id=chat_id, history=history, effort=effort)
+        request = AgentRequest(
+            text=text,
+            chat_id=chat_id,
+            history=history,
+            effort=effort,
+            trace_id=trace_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+        )
         async for chunk in run_agent(request):
             yield chunk
 
@@ -382,4 +395,13 @@ def _get_chat_v2_runner() -> ChatRunner:
 @cross_origin()
 def chat_v2():
     """Experimental chat route that uses v2 for explicit paper-finding turns."""
-    return _chat_response(_get_chat_v2_runner(), max_text_length=10_000)
+    from agents.search_v2.logging import SearchV2Trace
+
+    trace = SearchV2Trace.create()
+    response = _chat_response(
+        _get_chat_v2_runner(),
+        max_text_length=10_000,
+        trace_id=trace.trace_id,
+    )
+    response.headers["X-Trace-Id"] = trace.trace_id
+    return response

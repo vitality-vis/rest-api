@@ -900,6 +900,9 @@ class AgentRequest:
     selected_paper_ids: Optional[list] = None
     selected_paper_titles: Optional[list] = None
     effort: str = "low"
+    trace_id: str | None = None
+    user_message_id: str | None = None
+    assistant_message_id: str | None = None
 
 
 @agent("search_v1_legacy")
