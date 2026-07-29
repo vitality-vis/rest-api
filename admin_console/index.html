@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vitality Admin · Azure Files</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <div>
+          <p class="eyebrow">Vitality admin</p>
+          <h1>Azure Files</h1>
+        </div>
+        <div id="session-actions" class="session-actions" hidden>
+          <span id="endpoint-label" class="endpoint-label"></span>
+          <button type="button" id="refresh-btn" class="btn btn-secondary">Refresh</button>
+          <button type="button" id="logout-btn" class="btn btn-secondary">Log out</button>
+        </div>
+      </header>
+
+      <section id="login-view" class="panel">
+        <h2>Sign in with Azure OpenAI</h2>
+        <p class="hint">
+          Endpoint and API key are stored in this browser’s localStorage and sent only to your
+          Azure endpoint from the page.
+        </p>
+        <form id="login-form" class="form">
+          <label>
+            Endpoint
+            <input
+              id="endpoint-input"
+              name="endpoint"
+              type="url"
+              required
+              placeholder="https://your-resource.openai.azure.com"
+              autocomplete="off"
+            />
+          </label>
+          <label>
+            API key
+            <input
+              id="api-key-input"
+              name="apiKey"
+              type="password"
+              required
+              placeholder="Azure OpenAI API key"
+              autocomplete="off"
+            />
+          </label>
+          <label>
+            API version
+            <input
+              id="api-version-input"
+              name="apiVersion"
+              type="text"
+              value="2025-04-01-preview"
+              autocomplete="off"
+            />
+          </label>
+          <p id="login-error" class="error" hidden></p>
+          <button type="submit" class="btn btn-primary">Continue</button>
+        </form>
+      </section>
+
+      <section id="files-view" class="panel" hidden>
+        <div class="toolbar">
+          <div>
+            <h2>Files</h2>
+            <p id="files-summary" class="hint"></p>
+          </div>
+          <label class="filter">
+            Purpose
+            <select id="purpose-filter">
+              <option value="">All</option>
+              <option value="assistants">assistants</option>
+              <option value="fine-tune">fine-tune</option>
+              <option value="fine-tune-results">fine-tune-results</option>
+              <option value="batch">batch</option>
+              <option value="vision">vision</option>
+              <option value="user_data">user_data</option>
+            </select>
+          </label>
+        </div>
+        <p id="files-error" class="error" hidden></p>
+        <p id="files-loading" class="hint" hidden>Loading…</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>ID</th>
+                <th>Purpose</th>
+                <th>Status</th>
+                <th>Size</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="files-body"></tbody>
+          </table>
+        </div>
+        <p id="files-empty" class="hint" hidden>No files found.</p>
+      </section>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>
