@@ -34,11 +34,6 @@ def escape_like(value: str) -> str:
     return escaped.replace('"', '\\"')
 
 
-def escape_text_match(value: str) -> str:
-    """Escape a query term embedded in a Milvus ``TEXT_MATCH`` string literal."""
-    return str(value).lower().replace("\\", "\\\\").replace('"', '\\"')
-
-
 def where_to_expr(where: dict) -> str:
     """Convert the legacy agent-tools where syntax into a Milvus expression."""
     if not where:
@@ -86,9 +81,10 @@ def build_paper_query_expr(
     """Translate supported paper filters into a Milvus scalar expression.
 
     Filtering stays in Zilliz so a page request never materialises the complete
-    collection in Python. ``search_query`` uses the analyzed, lower-case
-    ``search_text`` field; the remaining field-specific filters retain their
-    current Milvus ``like`` / array semantics.
+    collection in Python. ``search_query`` performs case-insensitive substring
+    matching against the lower-case ``search_text`` field; the remaining
+    field-specific filters retain their current Milvus ``like`` / array
+    semantics.
     """
     parts = []
 
@@ -125,13 +121,12 @@ def build_paper_query_expr(
         if matches:
             parts.append("(" + " or ".join(matches) + ")")
 
-    # Each comma-separated search_query term must match the analyzed search_text
-    # field. Ingestion lower-cases that field and combines title, abstract,
-    # authors, keywords, and source, so this is a case-insensitive cross-field
-    # keyword search without pulling the collection into Python.
+    # Each comma-separated term must occur as a contiguous substring. Ingestion
+    # lower-cases search_text and combines title, abstract, authors, keywords,
+    # and source, so terms can match case-insensitively across paper metadata.
     if include_query_text:
         for term in split_query_terms(query_text):
-            parts.append(f'TEXT_MATCH(search_text, "{escape_text_match(term)}")')
+            parts.append(f'search_text like "%{escape_like(term.lower())}%"')
 
     like_all("title", filters.title)
     like_all("abstract", filters.abstract)
