@@ -205,6 +205,38 @@ def response_output_text(response: dict[str, Any]) -> str | None:
     return "\n".join(texts) or None
 
 
+def response_file_citations(response: dict[str, Any]) -> list[dict[str, str]]:
+    """Return valid file citations attached to assistant output text."""
+    citations: list[dict[str, str]] = []
+    output = response.get("output")
+    if not isinstance(output, list):
+        return citations
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "output_text":
+                continue
+            annotations = block.get("annotations")
+            if not isinstance(annotations, list):
+                continue
+            for annotation in annotations:
+                if not isinstance(annotation, dict) or annotation.get("type") != "file_citation":
+                    continue
+                file_id = annotation.get("file_id")
+                if not isinstance(file_id, str) or not file_id:
+                    continue
+                citation = {"file_id": file_id}
+                filename = annotation.get("filename")
+                if isinstance(filename, str) and filename:
+                    citation["filename"] = filename
+                citations.append(citation)
+    return citations
+
+
 def _request_json(
     method: str,
     path: str,
@@ -272,5 +304,6 @@ __all__ = [
     "get_azure_vector_stores_settings",
     "get_vector_store_file",
     "poll_file_until_terminal",
+    "response_file_citations",
     "response_output_text",
 ]

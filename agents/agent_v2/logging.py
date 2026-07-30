@@ -99,3 +99,23 @@ class SearchV2Trace:
         if filters is not None:
             data["filters"] = filters
         log_structured("agent_v2.synthesis_payload", self._with_ids(data))
+
+    def log_synthesis_scope_check(
+        self,
+        *,
+        allowed_file_ids: list[str],
+        cited_file_ids: list[str],
+        unexpected_file_ids: list[str],
+    ) -> None:
+        """Record the best-effort citation scope check after File Search."""
+        log_structured(
+            "agent_v2.synthesis_scope_check",
+            self._with_ids(
+                {
+                    "allowed_file_ids": allowed_file_ids,
+                    "cited_file_ids": cited_file_ids,
+                    "unexpected_file_ids": unexpected_file_ids,
+                    "scope_warning": bool(unexpected_file_ids),
+                }
+            ),
+        )

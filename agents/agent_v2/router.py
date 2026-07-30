@@ -48,7 +48,12 @@ def _recent_history(history: list[dict[str, str]] | None) -> str:
         role, content = turn.get("role"), turn.get("content")
         if role not in {"user", "assistant"} or not isinstance(content, str):
             continue
-        content = re.sub(r"\[\[VITALITY_PAPERS_JSON\]\][\s\S]*?\[\[/VITALITY_PAPERS_JSON\]\]", "", content).strip()
+        content = re.sub(r"\[\[VITALITY_PAPERS_JSON\]\][\s\S]*?\[\[/VITALITY_PAPERS_JSON\]\]", "", content)
+        content = re.sub(
+            r"\[\[VITALITY_FILE_SEARCH_SCOPE_WARNING\]\][\s\S]*?\[\[/VITALITY_FILE_SEARCH_SCOPE_WARNING\]\]",
+            "",
+            content,
+        ).strip()
         if not content or remaining <= 0:
             continue
         content = content[: min(1_000, remaining)]
