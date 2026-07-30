@@ -59,6 +59,7 @@ class V2ChatRequest:
     chat_id: str = "default"
     history: list[dict[str, str]] | None = None
     selected_paper_ids: list[str] | None = None
+    context: dict[str, object] | None = None
     effort: str = "low"
     trace_id: str | None = None
     user_message_id: str | None = None

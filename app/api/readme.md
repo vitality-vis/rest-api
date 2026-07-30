@@ -25,7 +25,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | --- | --- | --- | --- |
 | `POST` | `/chat/import` | required | Body `{ conversations: [...] }`. Idempotent guest→cloud import. |
 | `GET` | `/chat/conversations` | required | User's cloud chat history. |
-| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`effort`. Streams the legacy assistant response; persists when authenticated. |
+| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`. `context` is a non-visible JSON object attached to this user message. Streams the legacy assistant response; persists when authenticated. |
 | `POST` | `/chat/v2` | optional | Same body as `/chat`, with a 10,000-character message limit. `agent_v2` routes paper finding internally; other turns may fall back to legacy. |
 
 ## `library.py`

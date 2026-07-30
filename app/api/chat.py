@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from time import monotonic
@@ -37,8 +38,9 @@ chat_bp = Blueprint("chat", __name__)
 # TODO: Replace these fixed client-history limits with recent turns plus a
 # compact summary and on-demand retrieval of relevant older history.
 MAX_HISTORY_MESSAGES = 12
-MAX_HISTORY_MESSAGE_CHARS = 4_000
+MAX_HISTORY_MESSAGE_CHARS = 8_000
 MAX_HISTORY_TOTAL_CHARS = 24_000
+MAX_MESSAGE_CONTEXT_CHARS = 6_000
 # TODO: Import oversized guest histories in resumable batches instead of
 # rejecting them at these single-request safety limits.
 MAX_IMPORT_CONVERSATIONS = 100
@@ -47,6 +49,9 @@ MAX_IMPORT_MESSAGE_CHARS = 50_000
 
 
 ChatRunner = Callable[[Any], AsyncIterator[str]]
+
+CONTEXT_START = "<CONTEXT>"
+CONTEXT_END = "</CONTEXT>"
 
 
 def _strip_machine_markers(content: str) -> str:
@@ -64,6 +69,47 @@ def _strip_machine_markers(content: str) -> str:
     return cleaned.replace("[SIGNAL:SHOW_LOAD_MORE]", "").strip()
 
 
+def _normalise_context(value: object) -> dict[str, object]:
+    """Return bounded JSON-object context attached to one chat message."""
+    if not isinstance(value, dict):
+        return {}
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > MAX_MESSAGE_CONTEXT_CHARS:
+            # Keep a useful, valid paper reference rather than persisting a
+            # partial JSON payload when many/full abstracts were selected.
+            papers = value.get("selectedPapers")
+            if not isinstance(papers, list):
+                return {}
+            compact_papers: list[dict[str, object]] = []
+            for paper in papers:
+                if not isinstance(paper, dict):
+                    continue
+                paper_id = paper.get("id")
+                title = paper.get("title")
+                if not isinstance(paper_id, str) or not isinstance(title, str):
+                    continue
+                compact: dict[str, object] = {"id": paper_id, "title": title}
+                if isinstance(paper.get("abstract"), str):
+                    compact["abstract"] = paper["abstract"][:1_000]
+                candidate = {"selectedPapers": [*compact_papers, compact]}
+                if len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) > MAX_MESSAGE_CONTEXT_CHARS:
+                    break
+                compact_papers.append(compact)
+            value = {"selectedPapers": compact_papers}
+            encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        decoded = json.loads(encoded)
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _context_marker(context: dict[str, object]) -> str:
+    if not context:
+        return ""
+    return f"\n{CONTEXT_START}\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}\n{CONTEXT_END}"
+
+
 def _normalise_history(value: object) -> list[dict[str, str]]:
     """Return bounded, user/assistant text turns from an untrusted request body."""
     if not isinstance(value, list):
@@ -79,7 +125,8 @@ def _normalise_history(value: object) -> list[dict[str, str]]:
             continue
         content = _strip_machine_markers(content)
         if content:
-            turns.append({"role": role, "content": content[:MAX_HISTORY_MESSAGE_CHARS]})
+            context = _normalise_context(item.get("context"))
+            turns.append({"role": role, "content": f"{content}{_context_marker(context)}"[:MAX_HISTORY_MESSAGE_CHARS]})
 
     bounded: list[dict[str, str]] = []
     remaining = MAX_HISTORY_TOTAL_CHARS
@@ -121,7 +168,7 @@ def _require_timestamp(value: object, field_name: str) -> str:
     return value
 
 
-def _importable_message(value: object) -> dict[str, str | None]:
+def _importable_message(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("message must be an object")
     role = value.get("role")
@@ -152,6 +199,7 @@ def _importable_message(value: object) -> dict[str, str | None]:
         "text": text,
         "created_at": _require_timestamp(value.get("createdAt"), "message createdAt"),
         "error_message": error_message[:500] if isinstance(error_message, str) else None,
+        "context": _normalise_context(value.get("context")),
     }
 
 
@@ -208,6 +256,7 @@ def import_guest_chats():
                     text=imported_message["text"],
                     status=imported_message["status"],
                     error_message=imported_message["error_message"],
+                    context=imported_message["context"],
                     message_id=imported_message["id"],
                     created_at=imported_message["created_at"],
                 )
@@ -274,6 +323,7 @@ def _chat_response(
     user_message_id = str(user_message_id) if user_message_id is not None else None
     assistant_message_id = str(assistant_message_id) if assistant_message_id is not None else None
     message_created_at = str(message_created_at) if message_created_at is not None else None
+    message_context = _normalise_context(data.get("context"))
     requested_mode = "auto"
     paper_ids: list[str] = []
     if use_v2_request:
@@ -314,6 +364,7 @@ def _chat_response(
                 text=text,
                 message_id=user_message_id,
                 created_at=message_created_at,
+                context=message_context,
             )
         except ConversationOwnershipError:
             return Response("Forbidden", status=403, mimetype="text/plain")
@@ -335,6 +386,7 @@ def _chat_response(
                 chat_id=chat_id,
                 history=history,
                 selected_paper_ids=paper_ids,
+                context=message_context,
                 effort=effort,
                 trace_id=trace_id,
                 user_message_id=user_message_id,

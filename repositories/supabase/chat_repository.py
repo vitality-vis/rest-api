@@ -60,7 +60,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
         "chat_messages",
         params={
             "conversation_id": f"in.({','.join(conversation_ids)})",
-            "select": "id,conversation_id,role,content,status,error_message,created_at",
+            "select": "id,conversation_id,role,content,context,status,error_message,created_at",
             "order": _MESSAGE_ORDER,
         },
     )
@@ -87,7 +87,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
     ]
 
 
-def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[str, str]]:
+def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[str, object]]:
     """Return ordered, user-visible completed turns for one owned conversation."""
     conversation_id = _normalise_uuid(conversation_id)
     user_id = _normalise_uuid(user_id)
@@ -111,7 +111,7 @@ def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[s
         params={
             "conversation_id": f"eq.{conversation_id}",
             "status": "eq.completed",
-            "select": "role,content,created_at,id",
+            "select": "role,content,context,created_at,id",
             "order": _MESSAGE_ORDER,
         },
     )
@@ -119,7 +119,7 @@ def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[s
         raise ChatPersistenceError("Could not load chat history")
 
     ordered_messages = _sort_messages(list(messages_response.json()))
-    turns: list[dict[str, str]] = []
+    turns: list[dict[str, object]] = []
     for message in ordered_messages:
         role = message.get("role")
         content = message.get("content")
@@ -133,7 +133,10 @@ def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[s
             and isinstance(block.get("text"), str)
         ).strip()
         if text:
-            turns.append({"role": str(role), "content": text})
+            turn: dict[str, object] = {"role": str(role), "content": text}
+            if isinstance(message.get("context"), dict) and message["context"]:
+                turn["context"] = message["context"]
+            turns.append(turn)
     return turns
 
 
@@ -216,6 +219,7 @@ def save_message(
     error_message: str | None = None,
     message_id: str | None = None,
     created_at: str | None = None,
+    context: dict[str, object] | None = None,
 ) -> None:
     """Append one immutable user-visible text message to a conversation."""
     if role not in {"user", "assistant"}:
@@ -237,6 +241,8 @@ def save_message(
         payload["duration_ms"] = duration_ms
     if error_message is not None:
         payload["error_message"] = error_message
+    if context:
+        payload["context"] = context
 
     response = _request(
         "POST",
