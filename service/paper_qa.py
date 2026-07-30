@@ -29,7 +29,9 @@ SCOPE_WARNING_START = "[[VITALITY_FILE_SEARCH_SCOPE_WARNING]]"
 SCOPE_WARNING_END = "[[/VITALITY_FILE_SEARCH_SCOPE_WARNING]]"
 
 
-def build_evidence_plan(*, user_id: str, paper_ids: list[str]) -> tuple[SynthesisExecutionPlan, str]:
+def build_evidence_plan(
+    *, user_id: str, paper_ids: list[str], use_file_search: bool
+) -> tuple[SynthesisExecutionPlan, str]:
     if not paper_ids:
         raise PaperQAError("Select at least one paper first.")
 
@@ -81,7 +83,7 @@ def build_evidence_plan(*, user_id: str, paper_ids: list[str]) -> tuple[Synthesi
         )
 
     plan = SynthesisExecutionPlan(
-        use_file_search=bool(searchable),
+        use_file_search=use_file_search and bool(searchable),
         metadata_paper_ids=paper_ids,
         file_search_paper_ids=searchable,
         file_search_file_ids=searchable_file_ids,
@@ -126,8 +128,19 @@ def _append_scope_warning(output: str, unexpected_file_ids: list[str]) -> str:
     return f"{output}\n\n{SCOPE_WARNING_START}{payload}{SCOPE_WARNING_END}"
 
 
-def answer(*, user_id: str, paper_ids: list[str], text: str, trace: SearchV2Trace | None = None) -> str:
-    plan, metadata = build_evidence_plan(user_id=user_id, paper_ids=paper_ids)
+def answer(
+    *,
+    user_id: str,
+    paper_ids: list[str],
+    text: str,
+    use_file_search: bool = False,
+    trace: SearchV2Trace | None = None,
+) -> str:
+    plan, metadata = build_evidence_plan(
+        user_id=user_id,
+        paper_ids=paper_ids,
+        use_file_search=use_file_search,
+    )
     if trace:
         trace.log_synthesis_evidence_plan(
             metadata_paper_ids=plan.metadata_paper_ids,

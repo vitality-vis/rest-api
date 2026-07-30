@@ -86,14 +86,16 @@ class RouteDecision(BaseModel):
     search_mode: SearchMode | None = None
     search_intent: SearchIntent | None = None
     clarification_question: str | None = None
+    use_file_search: bool = False
 
 
 class SynthesisExecutionPlan(BaseModel):
     """Evidence plan resolved after checking the selected papers' file state.
 
-    Metadata is always included for the supplied IDs. File Search is used when
-    at least one selected paper has a completed full-text index. Selected
-    papers without an indexed PDF remain represented by their metadata.
+    Metadata is always included for the supplied IDs. File Search is used only
+    when the router judged full-text evidence necessary and at least one
+    selected paper has a completed full-text index. Selected papers without an
+    indexed PDF remain represented by their metadata.
     """
 
     use_file_search: bool

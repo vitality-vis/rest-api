@@ -45,6 +45,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
                 user_id=request.user_id,
                 paper_ids=[str(item) for item in request.selected_paper_ids or []],
                 text=request.text,
+                use_file_search=decision.use_file_search,
                 trace=trace,
             )
         except PaperQAError as error:
