@@ -46,7 +46,7 @@ class SearchV2Trace:
     def log_decision(
         self,
         *,
-        decision: Literal["talk", "search", "synthesis", "clarify"],
+        decision: Literal["talk", "answer_with_search", "search", "synthesis", "clarify"],
         search_intent: dict[str, Any] | None,
         query: str,
         effort: Literal["low", "medium", "high"],

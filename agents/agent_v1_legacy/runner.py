@@ -21,7 +21,7 @@ from langchain_openai import AzureChatOpenAI
 
 from agents import agent
 from logger_config import get_logger
-from service.agent_tools import ALL_AGENT_TOOLS
+from .agent_tools import ALL_AGENT_TOOLS
 from agents.agent_v1_legacy.intent_classifier import classify_intent, Intent
 from service.memory_manager import MemoryManager
 from agents.agent_v1_legacy.query_rewriter import rewrite_query

@@ -68,8 +68,7 @@ class V2ChatRequest:
     user_id: str | None = None
 
 
-RouteKind = Literal["talk", "search", "synthesis", "clarify"]
-SearchMode = Literal["find_papers", "answer_with_search"]
+RouteKind = Literal["talk", "answer_with_search", "search", "synthesis", "clarify"]
 
 
 class ChatRequestContext(BaseModel):
@@ -80,10 +79,9 @@ class ChatRequestContext(BaseModel):
 
 
 class RouteDecision(BaseModel):
-    """One structured result from a future top-level routing model call."""
+    """The top-level routing decision for a v2 chat turn."""
 
     route: RouteKind
-    search_mode: SearchMode | None = None
     search_intent: SearchIntent | None = None
     clarification_question: str | None = None
     use_file_search: bool = False
