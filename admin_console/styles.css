@@ -283,6 +283,44 @@ td.mono,
   font-size: 0.9rem;
 }
 
+.raw-json-dialog {
+  width: min(90vw, 60rem);
+  max-height: 85vh;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 1rem;
+}
+
+.raw-json-dialog::backdrop {
+  background: rgba(28, 26, 22, 0.35);
+}
+
+.raw-json-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.raw-json-dialog pre {
+  max-height: 65vh;
+  margin: 1rem 0 0;
+  overflow: auto;
+  padding: 0.9rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.raw-json-button {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8rem;
+}
+
 @media (max-width: 720px) {
   .header,
   .toolbar,

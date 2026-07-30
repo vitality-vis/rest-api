@@ -31,6 +31,9 @@ const storeFilesEmpty = document.getElementById("store-files-empty");
 const storeFilesSummary = document.getElementById("store-files-summary");
 const storeFilesFilter = document.getElementById("store-files-filter");
 const backStoresBtn = document.getElementById("back-stores-btn");
+const rawJsonDialog = document.getElementById("raw-json-dialog");
+const rawJsonContent = document.getElementById("raw-json-content");
+const rawJsonCloseBtn = document.getElementById("raw-json-close-btn");
 const refreshBtn = document.getElementById("refresh-btn");
 const logoutBtn = document.getElementById("logout-btn");
 const tabButtons = [...document.querySelectorAll(".tab")];
@@ -290,6 +293,39 @@ function lastErrorText(vsFile) {
   return JSON.stringify(err);
 }
 
+function showRawJson(value) {
+  rawJsonContent.textContent = JSON.stringify(value, null, 2);
+  rawJsonDialog.showModal();
+}
+
+async function showVectorStoreFileRawJson(vsFile) {
+  const credentials = readCredentials();
+  const fileId = resolveAzureFileId(vsFile);
+  if (!credentials || !selectedStoreId || !fileId) {
+    showRawJson(vsFile);
+    return;
+  }
+
+  rawJsonContent.textContent = "Loading…";
+  rawJsonDialog.showModal();
+  try {
+    const payload = await azureGet(
+      credentials,
+      `/openai/vector_stores/${selectedStoreId}/files/${fileId}`,
+    );
+    rawJsonContent.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    rawJsonContent.textContent = JSON.stringify(
+      {
+        error: error instanceof Error ? error.message : "Could not load association detail",
+        list_response_item: vsFile,
+      },
+      null,
+      2,
+    );
+  }
+}
+
 function formatMembershipCell(fileId) {
   const entries = vsMembershipByFileId.get(fileId);
   if (!entries || entries.length === 0) {
@@ -388,7 +424,14 @@ function renderStoreFiles(files, filterText = "") {
       <td>${escapeHtml(formatBytes(file.usage_bytes))}</td>
       <td>${escapeHtml(formatCreatedAt(file.created_at))}</td>
       <td>${escapeHtml(lastErrorText(file))}</td>
+      <td></td>
     `;
+    const rawJsonButton = document.createElement("button");
+    rawJsonButton.type = "button";
+    rawJsonButton.className = "btn btn-secondary raw-json-button";
+    rawJsonButton.textContent = "View";
+    rawJsonButton.addEventListener("click", () => void showVectorStoreFileRawJson(file));
+    row.lastElementChild.appendChild(rawJsonButton);
     storeFilesBody.appendChild(row);
   }
 }
@@ -567,6 +610,12 @@ purposeFilter.addEventListener("change", () => {
 
 backStoresBtn.addEventListener("click", () => {
   void loadStores();
+});
+
+rawJsonCloseBtn.addEventListener("click", () => rawJsonDialog.close());
+
+rawJsonDialog.addEventListener("click", (event) => {
+  if (event.target === rawJsonDialog) rawJsonDialog.close();
 });
 
 storeFilesFilter.addEventListener("input", () => {

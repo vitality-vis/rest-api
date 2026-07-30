@@ -178,6 +178,7 @@
                     <th>Usage</th>
                     <th>Created</th>
                     <th>Last error</th>
+                    <th>Raw JSON</th>
                   </tr>
                 </thead>
                 <tbody id="store-files-body"></tbody>
@@ -188,6 +189,13 @@
         </section>
       </div>
     </div>
+    <dialog id="raw-json-dialog" class="raw-json-dialog">
+      <div class="raw-json-header">
+        <h2>Vector Store file JSON</h2>
+        <button type="button" id="raw-json-close-btn" class="btn btn-secondary">Close</button>
+      </div>
+      <pre id="raw-json-content"></pre>
+    </dialog>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -1,8 +1,8 @@
 """Minimal Azure OpenAI Vector Store and Responses adapter.
 
-This adapter deliberately uses a File Search-specific API version instead of
-the application's existing chat/files version.  Azure support for Vector
-Stores, Responses, and File Search filters must be validated together.
+Vector Stores, Responses, and File Search live on the Azure AI Foundry
+``/openai/v1`` contract, which is versioned as ``v1`` or ``preview`` rather
+than by the date-versioned API used for chat and Files.
 """
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ from typing import Any
 import requests
 
 
-DEFAULT_REQUEST_TIMEOUT_SECONDS = 60
+# /openai/v1 only accepts "v1" or "preview" — not the date-versioned chat API.
+API_VERSION = "preview"
+REQUEST_TIMEOUT_SECONDS = 60
 TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 TERMINAL_FILE_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -25,7 +27,7 @@ class AzureVectorStoresError(RuntimeError):
 
 
 class AzureVectorStoresConfigurationError(AzureVectorStoresError):
-    """Raised when the dedicated File Search settings are missing or invalid."""
+    """Raised when Azure OpenAI credentials for File Search are missing."""
 
 
 class AzureVectorStoresTransientError(AzureVectorStoresError):
@@ -42,35 +44,22 @@ class AzureVectorStoresSettings:
 
 
 def get_azure_vector_stores_settings() -> AzureVectorStoresSettings:
-    """Load settings specific to the File Search capability.
+    """Load settings for the Azure File Search capability.
 
-    The normal chat deployment is always reused. A dedicated File Search API
-    version remains an optional override when Azure requires it.
+    Reuses the chat endpoint, key, and deployment. API version and timeout are
+    fixed for the ``/openai/v1`` Vector Store / File Search contract.
     """
     endpoint = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
     api_key = os.getenv("AZURE_OPENAI_API_KEY") or ""
-    api_version = (
-        os.getenv("AZURE_OPENAI_FILE_SEARCH_API_VERSION")
-        or os.getenv("AZURE_OPENAI_API_VERSION")
-        or ""
-    ).strip()
     deployment = (os.getenv("AZURE_OPENAI_DEPLOYMENT") or "").strip()
-    if not endpoint or not api_key or not api_version or not deployment:
+    if not endpoint or not api_key or not deployment:
         raise AzureVectorStoresConfigurationError("Azure OpenAI File Search is not configured")
-
-    timeout_raw = os.getenv("AZURE_OPENAI_FILE_SEARCH_TIMEOUT_SECONDS")
-    try:
-        timeout_seconds = float(timeout_raw) if timeout_raw else DEFAULT_REQUEST_TIMEOUT_SECONDS
-    except ValueError as error:
-        raise AzureVectorStoresConfigurationError("Azure OpenAI File Search timeout is invalid") from error
-    if timeout_seconds <= 0:
-        raise AzureVectorStoresConfigurationError("Azure OpenAI File Search timeout is invalid")
     return AzureVectorStoresSettings(
         endpoint=endpoint,
         api_key=api_key,
-        api_version=api_version,
+        api_version=API_VERSION,
         deployment=deployment,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=REQUEST_TIMEOUT_SECONDS,
     )
 
 
@@ -78,7 +67,7 @@ def create_vector_store(*, name: str, settings: AzureVectorStoresSettings | None
     """Create a Vector Store and return Azure's complete response payload."""
     if not name:
         raise AzureVectorStoresError("Vector Store name is required")
-    return _request_json("POST", "/openai/vector_stores", json={"name": name}, settings=settings)
+    return _request_json("POST", "/openai/v1/vector_stores", json={"name": name}, settings=settings)
 
 
 def attach_file(
@@ -88,7 +77,11 @@ def attach_file(
     attributes: dict[str, str | int | float | bool] | None = None,
     settings: AzureVectorStoresSettings | None = None,
 ) -> dict[str, Any]:
-    """Attach a File to a Vector Store, optionally with controlled filter attributes."""
+    """Attach a File to a Vector Store, optionally with controlled filter attributes.
+
+    Azure accepts ``attributes`` but does not currently persist or return them,
+    so callers must not treat them as readable state.
+    """
     if not vector_store_id or not file_id:
         raise AzureVectorStoresError("Vector Store id and file id are required")
     payload: dict[str, Any] = {"file_id": file_id}
@@ -96,7 +89,7 @@ def attach_file(
         payload["attributes"] = attributes
     return _request_json(
         "POST",
-        f"/openai/vector_stores/{vector_store_id}/files",
+        f"/openai/v1/vector_stores/{vector_store_id}/files",
         json=payload,
         settings=settings,
     )
@@ -110,7 +103,7 @@ def get_vector_store_file(
         raise AzureVectorStoresError("Vector Store id and file id are required")
     return _request_json(
         "GET",
-        f"/openai/vector_stores/{vector_store_id}/files/{vector_store_file_id}",
+        f"/openai/v1/vector_stores/{vector_store_id}/files/{vector_store_file_id}",
         settings=settings,
     )
 
@@ -118,7 +111,7 @@ def get_vector_store_file(
 def detach_file(*, vector_store_id: str, vector_store_file_id: str, settings: AzureVectorStoresSettings | None = None) -> None:
     """Remove one file association; Azure 404 is treated as already detached."""
     try:
-        _request_json("DELETE", f"/openai/vector_stores/{vector_store_id}/files/{vector_store_file_id}", settings=settings)
+        _request_json("DELETE", f"/openai/v1/vector_stores/{vector_store_id}/files/{vector_store_file_id}", settings=settings)
     except AzureVectorStoresError as error:
         if "(404)" not in str(error):
             raise
@@ -170,10 +163,46 @@ def create_file_search_response(
     resolved = settings or get_azure_vector_stores_settings()
     return _request_json(
         "POST",
-        "/openai/responses",
+        "/openai/v1/responses",
         json={"model": resolved.deployment, "input": input_text, "tools": [tool]},
         settings=resolved,
     )
+
+
+def create_text_response(*, input_text: str, settings: AzureVectorStoresSettings | None = None) -> dict[str, Any]:
+    """Call Responses without retrieval tools, for metadata-only synthesis."""
+    if not input_text:
+        raise AzureVectorStoresError("Input text is required")
+    resolved = settings or get_azure_vector_stores_settings()
+    return _request_json(
+        "POST", "/openai/v1/responses",
+        json={"model": resolved.deployment, "input": input_text}, settings=resolved,
+    )
+
+
+def response_output_text(response: dict[str, Any]) -> str | None:
+    """Extract assistant text from the raw REST Responses payload."""
+    direct = response.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    texts: list[str] = []
+    output = response.get("output")
+    if not isinstance(output, list):
+        return None
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "output_text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text.strip())
+    return "\n".join(texts) or None
 
 
 def _request_json(
@@ -201,7 +230,9 @@ def _request_json(
     if response.status_code in TRANSIENT_STATUS_CODES:
         raise AzureVectorStoresTransientError("Azure File Search is temporarily unavailable")
     if response.status_code >= 400:
-        raise AzureVectorStoresError(f"Azure File Search request failed ({response.status_code})")
+        raise AzureVectorStoresError(
+            f"Azure File Search request failed ({response.status_code}): {_error_summary(response)}"
+        )
     try:
         payload = response.json()
     except ValueError as error:
@@ -211,6 +242,23 @@ def _request_json(
     return payload
 
 
+def _error_summary(response: requests.Response) -> str:
+    """Return Azure's non-sensitive error code/message for server logs."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return "no error details returned"
+    if not isinstance(payload, dict):
+        return "no error details returned"
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return "no error details returned"
+    code = error.get("code")
+    message = error.get("message")
+    details = ": ".join(value for value in (code, message) if isinstance(value, str) and value.strip())
+    return details[:500] if details else "no error details returned"
+
+
 __all__ = [
     "AzureVectorStoresConfigurationError",
     "AzureVectorStoresError",
@@ -218,9 +266,11 @@ __all__ = [
     "AzureVectorStoresTransientError",
     "attach_file",
     "create_file_search_response",
+    "create_text_response",
     "create_vector_store",
     "detach_file",
     "get_azure_vector_stores_settings",
     "get_vector_store_file",
     "poll_file_until_terminal",
+    "response_output_text",
 ]

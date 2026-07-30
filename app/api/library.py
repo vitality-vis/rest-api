@@ -474,7 +474,13 @@ def put_library_paper_file(paper_id: str):
     try:
         paper = index_user_paper(user_id=user_id, paper_id=paper_id)
     except LibraryIndexError as error:
-        current_app.logger.warning("Full-text indexing failed user_id=%s paper_id=%s error=%s", user_id, paper_id, error)
+        current_app.logger.warning(
+            "Full-text indexing failed user_id=%s paper_id=%s error=%s",
+            user_id,
+            paper_id,
+            error,
+            exc_info=True,
+        )
         paper = get_user_paper(user_id=user_id, paper_id=paper_id) or paper
     return jsonify(_file_response(paper))
 

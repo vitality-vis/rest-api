@@ -42,14 +42,6 @@ LIBRARY_PDF_MAX_BYTES = _positive_int_environment_value(
     "LIBRARY_PDF_MAX_BYTES", 100 * 1024 * 1024
 )
 
-# === Library File Search ===
-# The optional API-version override falls back to AZURE_OPENAI_API_VERSION.
-# File Search always reuses AZURE_OPENAI_DEPLOYMENT. Capability support is
-# determined by Phase 0.
-AZURE_OPENAI_FILE_SEARCH_API_VERSION = os.environ.get(
-    "AZURE_OPENAI_FILE_SEARCH_API_VERSION", os.environ.get("AZURE_OPENAI_API_VERSION", "")
-).strip()
-
 # === File path settings ===
 meta_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/meta_data.json')
 umap_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/umap_data.json')

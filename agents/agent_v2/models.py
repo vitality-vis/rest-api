@@ -1,6 +1,7 @@
-"""Public and internal DTOs for search v2."""
+"""Public and internal DTOs for agent v2 and its search capability."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -46,6 +47,54 @@ class SearchV2Response(BaseModel):
     diagnostics: dict = Field(default_factory=dict)
 
 
-class ChatRoute(BaseModel):
-    route: Literal["search", "other"]
+@dataclass(frozen=True)
+class V2ChatRequest:
+    """Request contract owned by the ``/chat/v2`` pipeline.
+
+    This intentionally stays separate from the legacy agent request.  When v2
+    temporarily falls back to v1, its runner performs an explicit conversion.
+    """
+
+    text: str
+    chat_id: str = "default"
+    history: list[dict[str, str]] | None = None
+    selected_paper_ids: list[str] | None = None
+    effort: str = "low"
+    trace_id: str | None = None
+    user_message_id: str | None = None
+    assistant_message_id: str | None = None
+    requested_mode: Literal["auto", "synthesis"] = "auto"
+    user_id: str | None = None
+
+
+RouteKind = Literal["talk", "search", "synthesis", "clarify"]
+SearchMode = Literal["find_papers", "answer_with_search"]
+
+
+class ChatRequestContext(BaseModel):
+    """Structured client context; IDs are validated again by the handler."""
+
+    selected_paper_ids: list[str] = Field(default_factory=list)
+    requested_mode: Literal["auto", "synthesis"] = "auto"
+
+
+class RouteDecision(BaseModel):
+    """One structured result from a future top-level routing model call."""
+
+    route: RouteKind
+    search_mode: SearchMode | None = None
     search_intent: SearchIntent | None = None
+    clarification_question: str | None = None
+
+
+class SynthesisExecutionPlan(BaseModel):
+    """Evidence plan resolved after checking the selected papers' file state.
+
+    Metadata is always included for the supplied IDs. File Search is used when
+    at least one selected paper has a completed full-text index. Selected
+    papers without an indexed PDF remain represented by their metadata.
+    """
+
+    use_file_search: bool
+    metadata_paper_ids: list[str] = Field(default_factory=list)
+    file_search_paper_ids: list[str] = Field(default_factory=list)

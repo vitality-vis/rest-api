@@ -1,137 +1,93 @@
-"""Low-effort raw-query retrieval, fusion, and reranking."""
+"""Experimental chat-v2 runner: paper finding uses v2, everything else falls back."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import json
+from typing import AsyncIterator
 
-from model.paper import SearchRequest
-from service.search import SearchUnavailableError, search
+from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
+from agents.agent_v1_legacy.rag_core import PAPERS_PAYLOAD_END, PAPERS_PAYLOAD_START
 
-from .models import SearchIntent, SearchV2Paper, SearchV2Request, SearchV2Response
-from .parser import parse_search_intent
-from .reranker import paper_id, rerank
+from .models import SearchV2Request, V2ChatRequest
+from .router import route
+from service.paper_qa import PaperQAError, answer as answer_selected_papers
+from .search_executor import FUSED_CANDIDATE_LIMIT, SearchCriteriaRequiredError, run_search
 from .logging import SearchV2Trace
 
 
-RRF_K = 60
-CANDIDATE_LIMIT = 50
-FUSED_CANDIDATE_LIMIT = 100
-# Server-side experiment switch. Keep false until benchmark evidence supports enabling it.
-DEFAULT_ENABLE_CROSS_ENCODER = False
+CHAT_RESULT_LIMIT = FUSED_CANDIDATE_LIMIT
 
 
-class SearchCriteriaRequiredError(ValueError):
-    """Raised when a request has neither a research topic nor usable filters."""
+def _paper_id(paper: dict) -> str | None:
+    value = paper.get("ID") or paper.get("id")
+    return str(value) if value else None
 
 
-def _filters(intent: SearchIntent) -> dict:
-    return {
-        "title": intent.title,
-        "id_list": intent.paper_ids or None,
-        "author": intent.authors or None,
-        "source": intent.venues or None,
-        "min_year": intent.min_year,
-        "max_year": intent.max_year,
-        "min_citation_counts": intent.min_citations,
-    }
+def _format_search_intro() -> str:
+    """Keep chat prose separate from the embedded, interactive paper list."""
+    return "Below are the papers I found."
 
 
-def _has_filters(intent: SearchIntent) -> bool:
-    return any(
-        value is not None and value != [] and value != ""
-        for value in _filters(intent).values()
+async def run(request: V2ChatRequest) -> AsyncIterator[str]:
+    trace = SearchV2Trace.create(
+        trace_id=request.trace_id,
+        chat_id=request.chat_id,
+        user_message_id=request.user_message_id,
+        assistant_message_id=request.assistant_message_id,
     )
-
-
-def _policy(intent: SearchIntent) -> str:
-    if not intent.topic and not _has_filters(intent):
-        raise SearchCriteriaRequiredError(
-            "Please provide a research topic or at least one filter such as title, author, venue, year, or paper ID."
-        )
-    if intent.retrieval_target == "metadata_browse" and not intent.topic:
-        return "filter"
-    return "hybrid"
-
-
-def _hybrid(
-    query: str,
-    intent: SearchIntent,
-) -> tuple[list[SearchV2Paper], dict]:
-    kwargs = _filters(intent)
-    requests = {
-        "bm25": SearchRequest(search_query=query, search_mode="bm25", limit=CANDIDATE_LIMIT, **kwargs),
-        "vector": SearchRequest(search_query=query, search_mode="vector", limit=CANDIDATE_LIMIT, **kwargs),
-    }
-    results: dict[str, object] = {}
-    failures: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = {name: executor.submit(search, value) for name, value in requests.items()}
-        for name, future in futures.items():
-            try:
-                results[name] = future.result()
-            except SearchUnavailableError as error:
-                failures[name] = str(error)
-
-    if not results:
-        raise SearchUnavailableError("Both hybrid retrieval arms failed.")
-
-    merged: dict[str, SearchV2Paper] = {}
-    for source, result in results.items():
-        for rank, paper in enumerate(result.papers, start=1):
-            identifier = paper_id(paper)
-            if not identifier:
-                continue
-            item = merged.get(identifier)
-            if item is None:
-                item = SearchV2Paper(paper=paper)
-                merged[identifier] = item
-            item.retrieval_sources.append(source)
-            item.retrieval_ranks[source] = rank
-            item.rrf_score = (item.rrf_score or 0.0) + 1.0 / (RRF_K + rank)
-
-    candidates = sorted(merged.values(), key=lambda item: (-(item.rrf_score or 0), paper_id(item.paper)))[:FUSED_CANDIDATE_LIMIT]
-    retrieval_counts = {name: len(value.papers) for name, value in results.items()}
-    return candidates, {"retrieval_failures": failures, "retrieval_counts": retrieval_counts}
-
-
-def _filter(intent: SearchIntent) -> tuple[list[SearchV2Paper], dict]:
-    result = search(SearchRequest(search_mode="exact", limit=CANDIDATE_LIMIT, **_filters(intent)))
-    candidates = [SearchV2Paper(paper=paper, retrieval_sources=["filter"], retrieval_ranks={"filter": rank}) for rank, paper in enumerate(result.papers, start=1)]
-    return candidates, {}
-
-
-def run_search(
-    request: SearchV2Request,
-    *,
-    intent: SearchIntent | None = None,
-    enable_cross_encoder: bool | None = None,
-    trace: SearchV2Trace | None = None,
-) -> SearchV2Response:
-    """Run low-effort retrieval; CrossEncoder rerank is an opt-in server experiment."""
-    query = request.query.strip()
-    if not query:
-        raise SearchCriteriaRequiredError(
-            "Please provide a research topic or at least one filter such as title, author, venue, year, or paper ID."
-        )
-    intent = intent or parse_search_intent(query, effort=request.effort, trace=trace)
-    policy = _policy(intent)
-    candidates, diagnostics = (
-        _filter(intent)
-        if policy == "filter"
-        else _hybrid(query, intent)
-    )
-    use_cross_encoder = DEFAULT_ENABLE_CROSS_ENCODER if enable_cross_encoder is None else enable_cross_encoder
-    rerank_status = "skipped"
-    if use_cross_encoder and candidates:
+    effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
+    decision = route(request, trace=trace)
+    if decision.route == "synthesis":
+        if not request.user_id:
+            yield "Sign in to ask about selected papers."
+            return
         try:
-            scores = {paper_id(paper): score for paper, score in rerank(query, [item.paper for item in candidates])}
-            candidates.sort(key=lambda item: (-scores[paper_id(item.paper)], paper_id(item.paper)))
-            for item in candidates:
-                item.rerank_score = scores[paper_id(item.paper)]
-            rerank_status = "complete"
-        except Exception as error:
-            rerank_status = "failed"
-            diagnostics["rerank_error"] = str(error)
+            yield answer_selected_papers(
+                user_id=request.user_id,
+                paper_ids=[str(item) for item in request.selected_paper_ids or []],
+                text=request.text,
+                trace=trace,
+            )
+        except PaperQAError as error:
+            yield str(error)
+        return
+    if decision.route != "search" or decision.search_intent is None:
+        legacy_request = AgentRequest(
+            text=request.text,
+            chat_id=request.chat_id,
+            history=request.history,
+            selected_paper_ids=request.selected_paper_ids,
+            effort=request.effort,
+            trace_id=request.trace_id,
+            user_message_id=request.user_message_id,
+            assistant_message_id=request.assistant_message_id,
+        )
+        async for chunk in run_search_v1_legacy(legacy_request):
+            yield chunk
+        return
 
-    diagnostics.update({"retrieved": len(candidates), "reranked": len(candidates) if rerank_status == "complete" else 0, "rerank_status": rerank_status})
-    response = SearchV2Response(query=query, effort=request.effort, intent=intent, policy=policy, papers=candidates[:request.result_limit], status="partial" if diagnostics.get("retrieval_failures") or rerank_status == "failed" else "complete", diagnostics=diagnostics)
-    return response
+    # Chat sends the full bounded ranked list to the paper panel.
+    # TODO: Replace this history-based refinement with an explicit active-search
+    # state and deterministic intent-patch merge.
+    topic = decision.search_intent.topic.strip() if decision.search_intent.topic else ""
+    use_resolved_topic = bool(topic and topic.casefold() not in request.text.casefold())
+    retrieval_query = topic if use_resolved_topic else request.text
+    try:
+        result = run_search(
+            SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),
+            intent=decision.search_intent,
+            trace=trace,
+        )
+    except SearchCriteriaRequiredError as error:
+        yield str(error)
+        return
+    ids: list[str] = []
+    for item in result.papers:
+        paper_id = _paper_id(item.paper)
+        if paper_id:
+            ids.append(paper_id)
+    if ids:
+        yield _format_search_intro()
+        yield "\n\n"
+        yield f"{PAPERS_PAYLOAD_START}{json.dumps({'ids': ids, 'ranked_ids': ids, 'count_known': False, 'search_version': 'v2', 'policy': result.policy, 'effort': effort}, separators=(',', ':'))}{PAPERS_PAYLOAD_END}"
+    else:
+        yield "I couldn't find papers matching that request. Try broadening the topic or filters."

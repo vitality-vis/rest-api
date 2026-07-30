@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from time import monotonic
+from typing import Any
 from uuid import UUID
 
 from flask import Blueprint, Response, current_app, jsonify, request
@@ -45,7 +46,7 @@ MAX_IMPORT_MESSAGES_PER_CONVERSATION = 500
 MAX_IMPORT_MESSAGE_CHARS = 50_000
 
 
-ChatRunner = Callable[[AgentRequest], AsyncIterator[str]]
+ChatRunner = Callable[[Any], AsyncIterator[str]]
 
 
 def _strip_machine_markers(content: str) -> str:
@@ -255,6 +256,7 @@ def _chat_response(
     *,
     max_text_length: int | None = None,
     trace_id: str | None = None,
+    use_v2_request: bool = False,
 ) -> Response:
     """Run one chat turn with shared request, persistence, and streaming behavior."""
     data = request.get_json(force=True) or {}
@@ -272,6 +274,14 @@ def _chat_response(
     user_message_id = str(user_message_id) if user_message_id is not None else None
     assistant_message_id = str(assistant_message_id) if assistant_message_id is not None else None
     message_created_at = str(message_created_at) if message_created_at is not None else None
+    requested_mode = "auto"
+    paper_ids: list[str] = []
+    if use_v2_request:
+        requested_mode = data.get("mode", "auto")
+        requested_mode = requested_mode if requested_mode in {"auto", "synthesis"} else "auto"
+        paper_ids = data.get("paper_ids", [])
+        if not isinstance(paper_ids, list) or not all(isinstance(item, str) and item for item in paper_ids):
+            return Response("paper_ids must be an array of strings", status=400, mimetype="text/plain")
     if not text:
         return Response("Please Input Your Text", status=400)
     if max_text_length is not None and len(text) > max_text_length:
@@ -317,15 +327,31 @@ def _chat_response(
     started_at = monotonic()
 
     async def agen():
-        agent_request = AgentRequest(
-            text=text,
-            chat_id=chat_id,
-            history=history,
-            effort=effort,
-            trace_id=trace_id,
-            user_message_id=user_message_id,
-            assistant_message_id=assistant_message_id,
-        )
+        if use_v2_request:
+            from agents.agent_v2.models import V2ChatRequest
+
+            agent_request = V2ChatRequest(
+                text=text,
+                chat_id=chat_id,
+                history=history,
+                selected_paper_ids=paper_ids,
+                effort=effort,
+                trace_id=trace_id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+                requested_mode=requested_mode,
+                user_id=user_id,
+            )
+        else:
+            agent_request = AgentRequest(
+                text=text,
+                chat_id=chat_id,
+                history=history,
+                effort=effort,
+                trace_id=trace_id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
         async for chunk in run_agent(agent_request):
             yield chunk
 
@@ -388,7 +414,7 @@ def chat():
 
 def _get_chat_v2_runner() -> ChatRunner:
     """Lazy import keeps the experimental v2 stack out of the production route startup."""
-    from agents.agent_v2.chat_runner import run as run_chat_v2
+    from agents.agent_v2.runner import run as run_chat_v2
 
     return run_chat_v2
 
@@ -404,6 +430,7 @@ def chat_v2():
         _get_chat_v2_runner(),
         max_text_length=10_000,
         trace_id=trace.trace_id,
+        use_v2_request=True,
     )
     response.headers["X-Trace-Id"] = trace.trace_id
     return response
