@@ -198,12 +198,17 @@ def upsert_user_paper_file(
     uploaded_filename: str,
     uploaded_bytes: int,
     create_if_missing: bool,
+    preserve_metadata_snapshot: bool = False,
 ) -> dict[str, object]:
-    """Write file metadata onto an existing row, or create an unsaved upload-only row."""
+    """Write file metadata onto an existing row, or create an unsaved upload-only row.
+
+    Imported papers own an immutable canonical snapshot. Their file upload path
+    sets ``preserve_metadata_snapshot`` so this generic file update cannot
+    replace it with the corpus DOI fallback value.
+    """
     existing = get_user_paper(user_id=user_id, paper_id=paper_id)
     uploaded_at = datetime.now(timezone.utc).isoformat()
-    file_fields = {
-        "metadata_snapshot": metadata_snapshot,
+    file_fields: dict[str, object] = {
         "azure_file_id": azure_file_id,
         "uploaded_filename": uploaded_filename,
         "uploaded_bytes": uploaded_bytes,
@@ -213,9 +218,11 @@ def upsert_user_paper_file(
         "vs_indexed_at": None,
         "vs_last_error": None,
     }
+    if not preserve_metadata_snapshot:
+        file_fields["metadata_snapshot"] = metadata_snapshot
 
     if existing is None:
-        if not create_if_missing:
+        if not create_if_missing or preserve_metadata_snapshot:
             raise UserPaperNotFoundError("User paper does not exist")
         response = _request(
             "POST",

@@ -552,22 +552,36 @@ def put_library_paper_file(paper_id: str):
     if upload is None or not upload.filename:
         return jsonify({"error": "file is required"}), 400
 
-    metadata_raw = request.form.get("metadata")
-    if not metadata_raw:
-        return jsonify({"error": "metadata is required"}), 400
-    try:
-        metadata_payload = json.loads(metadata_raw)
-        metadata_snapshot = _validate_metadata_snapshot(metadata_payload, paper_id)
-    except (json.JSONDecodeError, ValueError) as error:
-        return jsonify({"error": str(error)}), 400
-
-    maximum_bytes = _pdf_max_bytes()
     try:
         existing = get_user_paper(user_id=user_id, paper_id=paper_id)
     except UserPapersPersistenceError as error:
         current_app.logger.error("Could not load library paper before upload: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
 
+    is_imported_paper = existing is not None and existing.get("origin") == "user"
+    if is_imported_paper:
+        # The import API created this snapshot as the canonical metadata. Do
+        # not accept a browser copy or pass it through the corpus DOI fallback.
+        if not isinstance(existing.get("metadata_snapshot"), dict):
+            return Response(
+                "Imported paper metadata is unavailable", status=409, mimetype="text/plain"
+            )
+        metadata_snapshot = None
+    else:
+        # A user-prefixed ID must have been created through the import API; do
+        # not let the generic upload path create a corpus-origin row for it.
+        if paper_id.startswith("user:"):
+            return Response("Not found", status=404, mimetype="text/plain")
+        metadata_raw = request.form.get("metadata")
+        if not metadata_raw:
+            return jsonify({"error": "metadata is required"}), 400
+        try:
+            metadata_payload = json.loads(metadata_raw)
+            metadata_snapshot = _validate_metadata_snapshot(metadata_payload, paper_id)
+        except (json.JSONDecodeError, ValueError) as error:
+            return jsonify({"error": str(error)}), 400
+
+    maximum_bytes = _pdf_max_bytes()
     old_file_id = existing.get("azure_file_id") if existing else None
     if old_file_id is not None and not isinstance(old_file_id, str):
         old_file_id = None
@@ -587,6 +601,7 @@ def put_library_paper_file(paper_id: str):
             uploaded_filename=azure_file.filename or filename,
             uploaded_bytes=persisted_bytes,
             create_if_missing=True,
+            preserve_metadata_snapshot=is_imported_paper,
         )
     except UnsupportedMediaType as error:
         return Response(str(error), status=415, mimetype="text/plain")
