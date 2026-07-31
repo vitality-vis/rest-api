@@ -21,13 +21,8 @@ from app.api.chat import chat_bp
 from app.api.papers import papers_bp
 from app.api.library import library_bp
 from app.api.notes import notes_bp
+from agents.agent_v1_legacy.summary_routes import legacy_summary_bp
 from service import zilliz
-from langchain_openai import AzureChatOpenAI
-from prompt import SUMMARIZE_PROMPT, LITERATURE_REVIEW_PROMPT
-from service.grounded_writer import (
-    format_papers_with_segments,
-    extract_citations_metadata_from_content
-)
 
 # === Initialize RAG Agent ===
 _rag_agent = None
@@ -42,6 +37,7 @@ app.register_blueprint(chat_bp)
 app.register_blueprint(papers_bp)
 app.register_blueprint(library_bp)
 app.register_blueprint(notes_bp)
+app.register_blueprint(legacy_summary_bp)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type, Authorization'
 
@@ -180,182 +176,6 @@ def chat_stream_simple():
             loop.close()
 
     return Response(sync_stream(), mimetype="text/plain", status=200)
-
-
-llm = AzureChatOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    temperature=1,  # GPT-5 only supports temperature=1
-    streaming=True
-)
-
-
-def format_papers_in_prompt(papers):
-    lines = []
-    for p in papers:
-        title = p.get('Title', '')
-        authors_data = p.get('Authors', [])
-        authors = ', '.join(authors_data) if isinstance(authors_data, list) else str(authors_data)
-        
-        abstract = p.get('Abstract', '')
-        source = p.get('Source', '')
-        year = p.get('Year', '')
-        
-        keywords_data = p.get('Keywords', [])
-        keywords = ', '.join(keywords_data) if isinstance(keywords_data, list) else str(keywords_data)
-
-        lines.append(
-            f" --- \nTitle: {title}\nAuthors: {authors}\nAbstract: {abstract}\nSource: {source}\nYear: {year}\nKeywords: {keywords}\n ---"
-        )
-    return "\n".join(lines)
-
-def summarize_output(prompt_data):
-    return (i.content for i in llm.stream(SUMMARIZE_PROMPT.format(**prompt_data)))
-
-def literature_review_output(prompt_data):
-    return (i.content for i in llm.stream(LITERATURE_REVIEW_PROMPT.format(**prompt_data)))
-
-def summarize_output_streaming_with_citations(prompt_data, papers, segments_map):
-    """
-    Stream summary with citation markers, then send citation metadata.
-
-    This is a hybrid approach:
-    1. Stream content with [0.1] markers in real-time
-    2. Send citation metadata at the end
-    3. Frontend can replace markers with links
-
-    Args:
-        prompt_data: Dict with 'prompt' and 'content' keys
-        papers: List of paper dicts
-        segments_map: Dict mapping paper_index -> segment list
-
-    Yields:
-        Text chunks with citation markers, then citation metadata
-    """
-    # Stream the content (citation instructions already in SUMMARIZE_PROMPT)
-    full_content = ""
-    for chunk in llm.stream(SUMMARIZE_PROMPT.format(
-        prompt=prompt_data['prompt'],
-        content=prompt_data['content']
-    )):
-        text = chunk.content
-        full_content += text
-        yield text
-
-    # After streaming, use grounded_writer to extract citation metadata
-    citations_metadata = extract_citations_metadata_from_content(
-        full_content,
-        papers,
-        segments_map
-    )
-
-    # Send separator and metadata as a single block
-    citations_block = (
-        "\n\n[[CITATIONS_START]]\n" +
-        json.dumps(citations_metadata, ensure_ascii=False) +
-        "\n[[CITATIONS_END]]"
-    )
-    yield citations_block
-
-def literature_review_output_streaming_with_citations(prompt_data, papers, segments_map):
-    """
-    Stream literature review with citation markers, then send citation metadata.
-
-    Similar to summarize_output_streaming_with_citations but for literature reviews.
-    """
-    # Stream the content (citation instructions already in LITERATURE_REVIEW_PROMPT)
-    formatted_prompt = LITERATURE_REVIEW_PROMPT.format(
-        prompt=prompt_data['prompt'],
-        content=prompt_data['content']
-    )
-    
-    # Save the prompt to a temporary file for debugging
-    # try:
-    #     with open('tmp_literature_review_prompt.txt', 'w', encoding='utf-8') as f:
-    #         f.write(formatted_prompt)
-    # except Exception as e:
-    #     logger.warning(f"Failed to save prompt to tmp file: {e}")
-    
-    full_content = ""
-    for chunk in llm.stream(formatted_prompt):
-        text = chunk.content
-        full_content += text
-        yield text
-
-    # After streaming, use grounded_writer to extract citation metadata
-    citations_metadata = extract_citations_metadata_from_content(
-        full_content,
-        papers,
-        segments_map
-    )
-
-    # Send separator and metadata as a single block
-    citations_block = (
-        "\n\n[[CITATIONS_START]]\n" +
-        json.dumps(citations_metadata, ensure_ascii=False) +
-        "\n[[CITATIONS_END]]"
-    )
-
-    yield citations_block
-
-@app.route('/summarize', methods=['POST'])
-@cross_origin()
-def summarize():
-    try:
-        import traceback
-        data = request.json or {}
-        prompt = data.get('prompt', '')
-        paper_ids = data.get('ids', [])
-
-        if not paper_ids:
-            return Response("Error: Saved paper list is empty", status=400)
-
-        selected_papers = zilliz.query_doc_by_ids(paper_ids)
-        if not selected_papers:
-            return Response("Error: No papers found for the given IDs", status=404)
-
-        formatted_content, segments_map = format_papers_with_segments(selected_papers)
-        output_generator = summarize_output_streaming_with_citations(
-            {'prompt': prompt, 'content': formatted_content},
-            selected_papers,
-            segments_map
-        )
-        return Response(output_generator, mimetype='text/plain')
-
-    except Exception as e:
-        traceback.print_exc()
-        return Response(f"An internal error occurred: {str(e)}", status=500)
-
-
-@app.route('/literatureReview', methods=['POST'])
-@cross_origin()
-def literature_review():
-    try:
-        import traceback
-        data = request.json or {}
-        prompt = data.get('prompt', '')
-        paper_ids = data.get('ids', [])
-
-        if not paper_ids:
-            return Response("Error: Saved paper list is empty", status=400)
-
-        selected_papers = zilliz.query_doc_by_ids(paper_ids)
-        if not selected_papers:
-            return Response("Error: No papers found for the given IDs", status=404)
-
-        formatted_content, segments_map = format_papers_with_segments(selected_papers)
-        output_generator = literature_review_output_streaming_with_citations(
-            {'prompt': prompt, 'content': formatted_content},
-            selected_papers,
-            segments_map
-        )
-        return Response(output_generator, mimetype='text/plain')
-
-    except Exception as e:
-        traceback.print_exc()
-        return Response(f"An internal error occurred: {str(e)}", status=500)
 
 
 # === Route: Serve frontend index.html ===

@@ -75,13 +75,17 @@ def search_hit_to_id_and_distance(hit: Any) -> Tuple[Optional[str], Optional[flo
 
 
 def parse_coordinates(value: Any):
-    """Decode persisted JSON UMAP coordinates when necessary."""
+    """Decode current UMAP coordinate objects and normalize legacy arrays."""
     if isinstance(value, str):
         try:
-            return json.loads(value)
+            value = json.loads(value)
         except Exception:
             return None
-    return value
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return {"x": value[0], "y": value[1]}
+    return None
 
 
 def row_to_umap_point(row: dict) -> dict:

@@ -85,7 +85,7 @@ def save_user_paper(
     return records[0], response.status_code == 201
 
 
-def import_user_papers(
+def save_user_papers(
     *, user_id: str, papers: list[tuple[str, dict[str, object] | None]]
 ) -> list[dict[str, object]]:
     """Idempotently upsert a batch of papers as saved for one user."""
@@ -105,8 +105,8 @@ def import_user_papers(
         ],
     )
     if response.status_code not in {200, 201}:
-        raise UserPapersPersistenceError("Could not import user papers")
-    return _json_list(response, "User paper import returned an invalid response")
+        raise UserPapersPersistenceError("Could not save user papers")
+    return _json_list(response, "User paper bulk save returned an invalid response")
 
 
 def unsave_user_paper(*, user_id: str, paper_id: str) -> None:
@@ -326,9 +326,9 @@ __all__ = [
     "delete_empty_user_paper",
     "delete_user_paper",
     "get_user_paper",
-    "import_user_papers",
     "list_user_papers",
     "save_user_paper",
+    "save_user_papers",
     "unsave_user_paper",
     "update_user_paper_index_state",
     "upsert_user_paper_file",

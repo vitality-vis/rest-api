@@ -81,7 +81,7 @@ def save_session_docs(chat_id: str, docs: List[Document]) -> None:
     Save retrieved docs into the current chat session so they can be reused
     (e.g., for follow-up questions about already listed papers).
     """
-    from service.session_state import SESSIONS
+    from .session_state import SESSIONS
     session = SESSIONS.get(chat_id)
     if not session:
         return
@@ -102,7 +102,7 @@ def save_session_docs(chat_id: str, docs: List[Document]) -> None:
 
 def get_session_docs(chat_id: str) -> List[Document]:
     """Return current docs for this chat (fallback to memory cache if empty)."""
-    from service.session_state import SESSIONS
+    from .session_state import SESSIONS
     session = SESSIONS.get(chat_id)
     if not session:
         return []
@@ -117,7 +117,7 @@ def get_session_docs(chat_id: str) -> List[Document]:
 
 def clear_session_docs(chat_id: str) -> None:
     """Clear doc cache for one chat (and structured memory if exists)."""
-    from service.session_state import SESSIONS
+    from .session_state import SESSIONS
     session = SESSIONS.get(chat_id)
     if not session:
         return
@@ -309,7 +309,7 @@ def _run_semantic_search(
     rerank_candidates.sort(key=lambda d: d.metadata["_rerank_score"], reverse=True)
     
     # Store the full ranked candidate list for the frontend papers payload
-    from service.session_state import SESSIONS
+    from .session_state import SESSIONS
     if chat_id in SESSIONS:
         sess = SESSIONS[chat_id]
         sess["search_cache"] = rerank_candidates

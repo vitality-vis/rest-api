@@ -132,7 +132,7 @@ def classify_intent(
     """Classify user message into intent, tool hint, and optional slots."""
     if session is None:
         try:
-            from service.session_state import get_session
+            from .session_state import get_session
             session = get_session(chat_id) or {}
         except Exception:
             session = {}

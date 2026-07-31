@@ -182,23 +182,37 @@ POST /chat
 ├── data/
 │   └── VitaLITy-2.0.0.json   # Paper dataset (path configurable in config.py)
 ├── service/              # Core logic
-│   ├── zilliz.py        # Zilliz queries, similarity, UMAP
-│   ├── embed.py         # Specter and Azure Ada embeddings
-│   ├── search.py        # Shared paper search orchestration
-│   ├── agent_tools.py   # RAG/semantic search tools (still shared path for now)
-│   ├── intent_classifier.py
-│   ├── query_rewriter.py
+│   ├── bootstrap.py
+│   ├── citations.py
+│   ├── embed.py
+│   ├── fulltext.py
+│   ├── lib.py
 │   ├── memory_manager.py
-│   ├── session_state.py
-│   ├── grounded_writer.py
-│   └── static_cache.py  # meta/umap local snapshot + fingerprint refresh
+│   ├── metadata_normalizer.py
+│   ├── paper_qa.py
+│   ├── search.py
+│   ├── static_cache.py
+│   └── zilliz.py
 ├── agents/
-│   └── search_v1_legacy/
-│       ├── runner.py        # /chat entry + LangChain orchestration
-│       └── rag_core.py      # Agent session docs, CrossEncoder rerank, formatting
+│   ├── agent_v1_legacy/
+│   │   ├── agent_tools.py
+│   │   ├── grounded_writer.py
+│   │   ├── intent_classifier.py
+│   │   ├── query_rewriter.py
+│   │   ├── rag_core.py
+│   │   ├── runner.py
+│   │   ├── session_state.py
+│   │   └── summary_routes.py
+│   └── agent_v2/
+│       ├── logging.py
+│       ├── models.py
+│       ├── reranker.py
+│       ├── router.py
+│       ├── runner.py
+│       └── search_executor.py
 ├── model/
 │   ├── const.py         # e.g. EMBED (specter, ada)
-│   └── query.py         # Query schemas
+│   └── paper.py         # Paper request and response schemas
 ```
 
 ---

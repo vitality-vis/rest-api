@@ -74,6 +74,14 @@ class PaperCitationsResponse(BaseModel):
     cited_by: PaperCitationGroup
 
 
+class UmapCoordinates(BaseModel):
+    """Current persisted 2D projection format."""
+
+    x: float
+    y: float
+    embedding_model: Optional[str] = None
+
+
 class PaperResponse(BaseModel):
     """Paper payload returned by REST endpoints."""
 
@@ -89,7 +97,7 @@ class PaperResponse(BaseModel):
     dblp_key: Optional[str] = None
     dblp_source: Optional[str] = None
     full_paper: Optional[bool] = None
-    umap: Optional[list] = None
+    umap: Optional[UmapCoordinates] = None
     score: Optional[float] = None
 
 

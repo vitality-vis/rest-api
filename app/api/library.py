@@ -29,9 +29,9 @@ from repositories.supabase.user_papers_repository import (
     UserPapersPersistenceError,
     clear_user_paper_file,
     get_user_paper,
-    import_user_papers,
     list_user_papers,
     save_user_paper,
+    save_user_papers,
     unsave_user_paper,
     upsert_user_paper_file,
 )
@@ -47,7 +47,7 @@ MAX_ABSTRACT_LENGTH = 100_000
 MAX_SOURCE_LENGTH = 2_000
 MAX_LIST_ITEMS = 500
 MAX_LIST_ITEM_LENGTH = 2_000
-MAX_IMPORT_PAPERS = 100
+MAX_BULK_SAVE_PAPERS = 100
 PDF_MAGIC = b"%PDF-"
 READ_CHUNK_BYTES = 64 * 1024
 SPOOLED_PDF_MEMORY_BYTES = 8 * 1024 * 1024
@@ -113,19 +113,25 @@ def _metadata_paper_id(value: object) -> str:
     raise ValueError("Paper metadata ID must match paper_id")
 
 
-def _nullable_coordinate(value: object, field_name: str) -> list[float] | None:
+def _nullable_coordinate(value: object, field_name: str) -> dict[str, object] | None:
     if value is None:
         return None
-    if not isinstance(value, list) or len(value) != 2:
+    if not isinstance(value, dict):
         raise ValueError(f"{field_name} is invalid")
-    coordinates: list[float] = []
-    for coordinate in value:
+    coordinates: dict[str, object] = {}
+    for axis in ("x", "y"):
+        coordinate = value.get(axis)
         if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
             raise ValueError(f"{field_name} is invalid")
         coordinate = float(coordinate)
         if not math.isfinite(coordinate):
             raise ValueError(f"{field_name} is invalid")
-        coordinates.append(coordinate)
+        coordinates[axis] = coordinate
+    embedding_model = value.get("embedding_model")
+    if embedding_model is not None:
+        if not isinstance(embedding_model, str) or not embedding_model.strip():
+            raise ValueError(f"{field_name} is invalid")
+        coordinates["embedding_model"] = embedding_model
     return coordinates
 
 
@@ -202,12 +208,12 @@ def _file_response(paper: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _validate_import_papers(value: object) -> list[tuple[str, dict[str, object]]]:
+def _validate_bulk_save_papers(value: object) -> list[tuple[str, dict[str, object]]]:
     if not isinstance(value, dict) or not isinstance(value.get("papers"), list):
         raise ValueError("papers must be an array")
     papers = value["papers"]
-    if not papers or len(papers) > MAX_IMPORT_PAPERS:
-        raise ValueError(f"papers must contain between 1 and {MAX_IMPORT_PAPERS} items")
+    if not papers or len(papers) > MAX_BULK_SAVE_PAPERS:
+        raise ValueError(f"papers must contain between 1 and {MAX_BULK_SAVE_PAPERS} items")
 
     validated: list[tuple[str, dict[str, object] | None]] = []
     paper_ids: set[str] = set()
@@ -299,23 +305,23 @@ def get_library_papers():
         return Response("Library is unavailable", status=503, mimetype="text/plain")
 
 
-@library_bp.route("/library/papers/import", methods=["POST"])
+@library_bp.route("/library/papers/saved", methods=["POST"])
 @cross_origin()
-def import_library_papers():
+def post_library_papers_saved():
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
     try:
-        papers = _validate_import_papers(request.get_json(silent=True))
+        papers = _validate_bulk_save_papers(request.get_json(silent=True))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
     try:
-        imported_papers = import_user_papers(user_id=user_id, papers=papers)
+        saved_papers = save_user_papers(user_id=user_id, papers=papers)
     except UserPapersPersistenceError as error:
-        current_app.logger.error("Could not import library papers: %s", error)
+        current_app.logger.error("Could not bulk-save library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
-    return jsonify({"papers": [_save_response(paper) for paper in imported_papers]})
+    return jsonify({"papers": [_save_response(paper) for paper in saved_papers]})
 
 
 @library_bp.route("/library/papers/<path:paper_id>/saved", methods=["PUT"])

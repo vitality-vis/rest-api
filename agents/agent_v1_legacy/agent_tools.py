@@ -186,7 +186,7 @@ def metadata_search(filters: Union[str, dict], user_request: str = "", chat_id: 
         return "_(No matching papers found.)_"
 
     # Full ranked set for the frontend paper list (streamed as a hidden payload).
-    from service.session_state import get_session, save_session
+    from .session_state import get_session, save_session
     from agents.agent_v1_legacy.rag_core import CHAT_PREVIEW_LIMIT
 
     sess = get_session(chat_id) or {}
@@ -225,7 +225,7 @@ def mixed_search(query_text, filters, chat_id, top_k=None):
     """
     [PAPER SEARCH — list only] First run metadata search (filters), then re-rank those results by topic/semantic relevance to query_text. Use when the user wants papers that match both metadata (author, year, venue, etc.) and topic — or when they ask a question that combines topic + filters (e.g. "What do CHI papers say about usability?"); call mixed_search then answer from the results.
     """
-    from service.session_state import SESSIONS
+    from .session_state import SESSIONS
     from agents.agent_v1_legacy.rag_core import (
         CHAT_PREVIEW_LIMIT,
         _run_metadata_search,

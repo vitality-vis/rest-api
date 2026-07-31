@@ -25,7 +25,7 @@ from .agent_tools import ALL_AGENT_TOOLS
 from agents.agent_v1_legacy.intent_classifier import classify_intent, Intent
 from service.memory_manager import MemoryManager
 from agents.agent_v1_legacy.query_rewriter import rewrite_query
-from service.session_state import SESSIONS
+from .session_state import SESSIONS
 
 
 logging = get_logger()
