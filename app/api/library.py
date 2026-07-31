@@ -6,6 +6,7 @@ import json
 import math
 import tempfile
 from typing import BinaryIO
+from uuid import UUID, uuid4
 
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask_cors import cross_origin
@@ -29,6 +30,7 @@ from repositories.supabase.user_papers_repository import (
     UserPapersPersistenceError,
     clear_user_paper_file,
     get_user_paper,
+    import_user_papers,
     list_user_papers,
     save_user_paper,
     save_user_papers,
@@ -48,6 +50,9 @@ MAX_SOURCE_LENGTH = 2_000
 MAX_LIST_ITEMS = 500
 MAX_LIST_ITEM_LENGTH = 2_000
 MAX_BULK_SAVE_PAPERS = 100
+MAX_IMPORT_ITEMS = 100
+MAX_RAW_METADATA_BYTES = 512 * 1024
+MAX_RAW_FORMAT_LENGTH = 64
 PDF_MAGIC = b"%PDF-"
 READ_CHUNK_BYTES = 64 * 1024
 SPOOLED_PDF_MEMORY_BYTES = 8 * 1024 * 1024
@@ -228,6 +233,106 @@ def _validate_bulk_save_papers(value: object) -> list[tuple[str, dict[str, objec
     return validated
 
 
+def _required_import_text(value: object, field_name: str, maximum: int) -> str:
+    text = _bounded_text(value, field_name, maximum).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def _optional_import_text(value: object, field_name: str, maximum: int) -> str:
+    if value is None:
+        return ""
+    return _bounded_text(value, field_name, maximum).strip()
+
+
+def _optional_import_string_list(value: object, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    return [item.strip() for item in _string_list(value, field_name) if item.strip()]
+
+
+def _validate_user_import_id(value: object) -> str:
+    if not isinstance(value, str) or not value.startswith("user:"):
+        raise ValueError("Imported paper ID must use the user:<uuid> format")
+    raw_uuid = value.removeprefix("user:")
+    try:
+        parsed = UUID(raw_uuid)
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ValueError("Imported paper ID must use the user:<uuid> format") from error
+    if parsed.version != 4 or str(parsed) != raw_uuid:
+        raise ValueError("Imported paper ID must use the user:<uuid> format")
+    return value
+
+
+def _validate_import_raw(value: object) -> dict[str, object] | None:
+    """Validate a bounded source-payload envelope without interpreting it."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("raw must be an object")
+
+    format_name = value.get("format")
+    if (
+        not isinstance(format_name, str)
+        or not format_name.strip()
+        or len(format_name) > MAX_RAW_FORMAT_LENGTH
+    ):
+        raise ValueError("raw.format is invalid")
+    if "payload" not in value:
+        raise ValueError("raw.payload is required")
+
+    raw = {"format": format_name.strip(), "payload": value["payload"]}
+    parser_version = value.get("parser_version")
+    if parser_version is not None:
+        raw["parser_version"] = _bounded_text(
+            parser_version, "raw.parser_version", MAX_RAW_FORMAT_LENGTH
+        ).strip()
+
+    try:
+        encoded = json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ValueError("raw is not JSON serializable") from error
+    if len(encoded) > MAX_RAW_METADATA_BYTES:
+        raise ValueError("raw exceeds the 512 KiB limit")
+    return raw
+
+
+def _validate_user_import_item(value: object) -> tuple[str, dict[str, object], dict[str, object] | None]:
+    """Map one normalized import item into its immutable shelf snapshot."""
+    if not isinstance(value, dict):
+        raise ValueError("Import item must be an object")
+    paper = value.get("paper")
+    if not isinstance(paper, dict):
+        raise ValueError("paper must be an object")
+
+    requested_id = paper.get("ID")
+    paper_id = (
+        _validate_user_import_id(requested_id)
+        if requested_id is not None
+        else f"user:{uuid4()}"
+    )
+    doi = paper.get("doi")
+    if doi is not None:
+        doi = _bounded_text(doi, "doi", MAX_DOI_LENGTH).strip() or None
+
+    snapshot: dict[str, object] = {
+        "ID": paper_id,
+        "Title": _required_import_text(paper.get("title"), "title", MAX_TITLE_LENGTH),
+        "Abstract": _required_import_text(
+            paper.get("abstract"), "abstract", MAX_ABSTRACT_LENGTH
+        ),
+        "Authors": _optional_import_string_list(paper.get("authors"), "authors"),
+        "Keywords": _optional_import_string_list(paper.get("keywords"), "keywords"),
+        "Source": _optional_import_text(paper.get("source"), "source", MAX_SOURCE_LENGTH),
+        "Year": _nullable_integer(paper.get("year"), "year"),
+        "CitationCounts": None,
+        "doi": doi,
+        "umap": None,
+    }
+    return paper_id, snapshot, _validate_import_raw(value.get("raw"))
+
+
 def _parse_saved_only_query() -> bool:
     raw = request.args.get("saved")
     if raw is None:
@@ -322,6 +427,71 @@ def post_library_papers_saved():
         current_app.logger.error("Could not bulk-save library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return jsonify({"papers": [_save_response(paper) for paper in saved_papers]})
+
+
+@library_bp.route("/library/papers/import", methods=["POST"])
+@cross_origin()
+def post_library_papers_import():
+    """Save normalized user-supplied paper metadata to the personal shelf.
+
+    Each valid item receives a permanent ``user:`` ID and snapshot. This is
+    deliberately separate from the corpus ``/saved`` APIs: imported DOI-backed
+    papers must retain their own metadata rather than relying on catalog hydrate.
+    """
+    user_id, error_response = _require_authenticated_user_id()
+    if error_response is not None:
+        return error_response
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return jsonify({"error": "items must be an array"}), 400
+    items = payload["items"]
+    if not items or len(items) > MAX_IMPORT_ITEMS:
+        return jsonify(
+            {"error": f"items must contain between 1 and {MAX_IMPORT_ITEMS} items"}
+        ), 400
+
+    results: list[dict[str, object]] = []
+    valid_items: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(items):
+        try:
+            paper_id, snapshot, raw = _validate_user_import_item(item)
+            if paper_id in seen_ids:
+                raise ValueError("items must not contain duplicate user paper IDs")
+            seen_ids.add(paper_id)
+            valid_items.append(
+                {
+                    "index": index,
+                    "paper_id": paper_id,
+                    "metadata_snapshot": snapshot,
+                    "metadata_raw": raw,
+                }
+            )
+        except ValueError as error:
+            results.append({"index": index, "status": "invalid", "reason": str(error)})
+
+    if valid_items:
+        try:
+            persisted = import_user_papers(user_id=user_id, papers=valid_items)
+        except UserPapersPersistenceError as error:
+            current_app.logger.error("Could not import library papers: %s", error)
+            return Response("Library is unavailable", status=503, mimetype="text/plain")
+        if len(persisted) != len(valid_items):
+            current_app.logger.error("User paper import returned an unexpected row count")
+            return Response("Library is unavailable", status=503, mimetype="text/plain")
+
+        results.extend(
+            {
+                "index": item["index"],
+                "status": "imported",
+                "paper_id": item["paper_id"],
+                "paper": item["metadata_snapshot"],
+            }
+            for item in valid_items
+        )
+
+    return jsonify({"results": sorted(results, key=lambda result: int(result["index"]))})
 
 
 @library_bp.route("/library/papers/<path:paper_id>/saved", methods=["PUT"])

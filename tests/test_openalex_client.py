@@ -36,15 +36,47 @@ def test_summarize_work_projects_fields():
             "title": "Example",
             "publication_year": 2020,
             "cited_by_count": 7,
+            "authorships": [
+                {"author": {"display_name": "Ada Lovelace"}},
+                {"author": {"display_name": " Alan Turing "}},
+                {"author": {"display_name": ""}},
+            ],
+            "primary_location": {
+                "source": {"display_name": "Nature"},
+            },
+            "abstract_inverted_index": {
+                "Deep": [0],
+                "learning": [1],
+                "works": [2],
+            },
+            "keywords": [
+                {"display_name": "machine learning"},
+                {"display_name": "visualization"},
+            ],
         }
     )
-    assert summary == {
-        "openalex_id": "W42",
-        "title": "Example",
-        "year": 2020,
-        "doi": "10.1/abc",
-        "cited_by_count": 7,
-    }
+    assert summary["openalex_id"] == "W42"
+    assert summary["title"] == "Example"
+    assert summary["year"] == 2020
+    assert summary["doi"] == "10.1/abc"
+    assert summary["citation_count"] == 7
+    assert summary["abstract"] == "Deep learning works"
+    assert summary["authors"] == ["Ada Lovelace", "Alan Turing"]
+    assert summary["keywords"] == ["machine learning", "visualization"]
+    assert summary["source"] == "Nature"
+    assert isinstance(summary["raw"], dict)
+    assert summary["raw"]["id"] == "https://openalex.org/W42"
+
+
+def test_reconstruct_abstract_from_inverted_index():
+    from repositories.openalex import reconstruct_abstract
+
+    assert (
+        reconstruct_abstract({"Hello": [0], "world": [1], "!": [2]})
+        == "Hello world !"
+    )
+    assert reconstruct_abstract(None) is None
+    assert reconstruct_abstract({}) is None
 
 
 def test_get_openalex_api_key_requires_configuration():
@@ -126,6 +158,8 @@ def test_list_referenced_works_batches_and_preserves_order():
     params = session.get.call_args.kwargs["params"]
     assert params["filter"] == "openalex:W2|W3"
     assert params["api_key"] == "test-key"
+    assert "authorships" in params["select"]
+    assert "abstract_inverted_index" in params["select"]
 
 
 def test_list_citing_works_pages_until_limit(monkeypatch):

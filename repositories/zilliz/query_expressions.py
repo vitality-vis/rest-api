@@ -28,6 +28,28 @@ def ids_to_expr(ids: List[str]) -> str:
     return "paper_uid in [" + ", ".join(escaped) + "]"
 
 
+def dois_to_expr(dois: List[str]) -> str:
+    """Match papers whose ``doi`` or ``doi:``-prefixed ``paper_uid`` is in ``dois``.
+
+    Callers should pass bare, casefolded DOIs to match Vitality ingestion
+    (``paper_uid = doi:{doi.casefold()}``).
+    """
+    normalized: List[str] = []
+    seen = set()
+    for raw in dois:
+        doi = str(raw or "").strip().casefold().replace('"', "")
+        if not doi or doi in seen:
+            continue
+        seen.add(doi)
+        normalized.append(doi)
+    if not normalized:
+        return 'paper_uid == ""'
+
+    doi_values = ", ".join(f'"{doi}"' for doi in normalized)
+    uid_values = ", ".join(f'"doi:{doi}"' for doi in normalized)
+    return f"(doi in [{doi_values}] or paper_uid in [{uid_values}])"
+
+
 def escape_like(value: str) -> str:
     """Escape wildcard characters for a Milvus ``LIKE`` pattern."""
     escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

@@ -154,5 +154,5 @@ def get_paper_citations_endpoint():
 
     response = PaperCitationsResponse(**result)
     if hasattr(response, "model_dump"):
-        return jsonify(response.model_dump(exclude_none=True))
-    return jsonify(response.dict(exclude_none=True))
+        return jsonify(response.model_dump(by_alias=True, exclude_none=True))
+    return jsonify(response.dict(by_alias=True, exclude_none=True))

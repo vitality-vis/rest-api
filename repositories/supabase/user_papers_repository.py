@@ -111,6 +111,37 @@ def save_user_papers(
     return _json_list(response, "User paper bulk save returned an invalid response")
 
 
+def import_user_papers(
+    *, user_id: str, papers: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Upsert user-supplied papers with snapshots that always remain available.
+
+    ``paper_id`` is either assigned by the API or is a guest-generated user UUID.
+    The conflict target intentionally provides only retry/idempotency semantics; it
+    does not deduplicate papers based on their metadata.
+    """
+    response = _request(
+        "POST",
+        "user_papers",
+        params={"on_conflict": "user_id,paper_id"},
+        headers={"Prefer": "resolution=merge-duplicates,return=representation"},
+        json=[
+            {
+                "user_id": user_id,
+                "paper_id": paper["paper_id"],
+                "metadata_snapshot": paper["metadata_snapshot"],
+                "metadata_raw": paper.get("metadata_raw"),
+                "is_saved": True,
+                "origin": "user",
+            }
+            for paper in papers
+        ],
+    )
+    if response.status_code not in {200, 201}:
+        raise UserPapersPersistenceError("Could not import user papers")
+    return _json_list(response, "User paper import returned an invalid response")
+
+
 def unsave_user_paper(*, user_id: str, paper_id: str) -> None:
     """Clear saved state; delete the row only when it has no uploaded file."""
     paper = get_user_paper(user_id=user_id, paper_id=paper_id)
@@ -329,6 +360,7 @@ __all__ = [
     "delete_empty_user_paper",
     "delete_user_paper",
     "get_user_paper",
+    "import_user_papers",
     "list_user_papers",
     "save_user_paper",
     "save_user_papers",

@@ -54,16 +54,28 @@ def _assert_citation_item(item: dict, *, label: str) -> None:
     assert isinstance(item.get("openalex_id"), str) and item["openalex_id"], (
         f"{label} item missing openalex_id: {item!r}"
     )
-    if "title" in item:
-        assert item["title"] is None or isinstance(item["title"], str)
-    if "year" in item:
-        assert item["year"] is None or isinstance(item["year"], int)
+    assert isinstance(item.get("in_corpus"), bool), (
+        f"{label} item missing in_corpus bool: {item!r}"
+    )
+    if item.get("in_corpus"):
+        assert isinstance(item.get("ID"), str) and item["ID"], (
+            f"{label} in_corpus item missing ID: {item!r}"
+        )
+    assert isinstance(item.get("Title"), str), f"{label} missing Title"
+    assert isinstance(item.get("Abstract"), str), f"{label} missing Abstract"
+    assert isinstance(item.get("Authors"), list), f"{label} missing Authors"
+    assert isinstance(item.get("Keywords"), list), f"{label} missing Keywords"
+    assert isinstance(item.get("Source"), str), f"{label} missing Source"
+    if "Year" in item:
+        assert item["Year"] is None or isinstance(item["Year"], int)
     if "doi" in item:
         assert item["doi"] is None or isinstance(item["doi"], str)
-    if "cited_by_count" in item:
-        assert item["cited_by_count"] is None or isinstance(
-            item["cited_by_count"], int
+    if "CitationCounts" in item:
+        assert item["CitationCounts"] is None or isinstance(
+            item["CitationCounts"], int
         )
+    if "raw" in item and item["raw"] is not None:
+        assert isinstance(item["raw"], dict)
 
 
 def test_get_paper_citations_for_known_doi(
@@ -98,8 +110,8 @@ def test_get_paper_citations_for_known_doi(
     assert isinstance(references_group.get("total_hint"), int)
     assert isinstance(cited_by_group.get("total_hint"), int)
 
-    references = references_group.get("items")
-    cited_by = cited_by_group.get("items")
+    references = references_group.get("papers")
+    cited_by = cited_by_group.get("papers")
     assert isinstance(references, list)
     assert isinstance(cited_by, list)
     assert references_group["total_hint"] >= len(references)
@@ -120,6 +132,6 @@ def test_get_paper_citations_for_known_doi(
         f"cited_by={len(cited_by)}/{cited_by_group['total_hint']}"
     )
     for item in references[:3]:
-        print(f"  reference: {item.get('title')!r} ({item.get('year')})")
+        print(f"  reference: {item.get('Title')!r} ({item.get('Year')})")
     for item in cited_by[:3]:
-        print(f"  cited_by: {item.get('title')!r} ({item.get('year')})")
+        print(f"  cited_by: {item.get('Title')!r} ({item.get('Year')})")

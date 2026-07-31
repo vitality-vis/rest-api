@@ -15,7 +15,12 @@ MAX_PER_PAGE = 100
 # Keep OR-filter batches small enough for typical URL length limits.
 REFERENCE_BATCH_SIZE = 50
 
-WORK_SUMMARY_SELECT = "id,doi,title,publication_year,cited_by_count"
+# Fields needed to map an OpenAlex work onto our Paper / import metadata shape.
+# (Paper also has ID/umap/dblp_* which OpenAlex does not provide.)
+WORK_SUMMARY_SELECT = (
+    "id,doi,title,publication_year,cited_by_count,"
+    "authorships,primary_location,abstract_inverted_index,keywords"
+)
 SOURCE_WORK_SELECT = f"{WORK_SUMMARY_SELECT},referenced_works"
 
 
@@ -65,21 +70,119 @@ def normalize_openalex_id(work_id: str) -> str:
     return trimmed.lstrip("/")
 
 
-def summarize_work(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Project an OpenAlex work into the MVP citation-neighbor shape."""
+def reconstruct_abstract(inverted_index: Any) -> Optional[str]:
+    """Rebuild a plain-text abstract from OpenAlex ``abstract_inverted_index``."""
+    if not isinstance(inverted_index, Mapping) or not inverted_index:
+        return None
+
+    positioned: list[tuple[int, str]] = []
+    for token, positions in inverted_index.items():
+        if not isinstance(token, str) or not isinstance(positions, list):
+            continue
+        for position in positions:
+            if isinstance(position, int) and position >= 0:
+                positioned.append((position, token))
+
+    if not positioned:
+        return None
+
+    positioned.sort(key=lambda item: item[0])
+    abstract = " ".join(token for _, token in positioned).strip()
+    return abstract or None
+
+
+def extract_authors(authorships: Any) -> list[str]:
+    """Collect author display names from OpenAlex ``authorships``."""
+    if not isinstance(authorships, list):
+        return []
+
+    authors: list[str] = []
+    for authorship in authorships:
+        if not isinstance(authorship, Mapping):
+            continue
+        author = authorship.get("author")
+        if not isinstance(author, Mapping):
+            continue
+        name = author.get("display_name")
+        if isinstance(name, str):
+            trimmed = name.strip()
+            if trimmed:
+                authors.append(trimmed)
+    return authors
+
+
+def extract_source(primary_location: Any) -> Optional[str]:
+    """Read venue/source display name from ``primary_location.source``."""
+    if not isinstance(primary_location, Mapping):
+        return None
+    source = primary_location.get("source")
+    if not isinstance(source, Mapping):
+        return None
+    name = source.get("display_name")
+    if isinstance(name, str):
+        trimmed = name.strip()
+        if trimmed:
+            return trimmed
+    return None
+
+
+def extract_keywords(keywords: Any) -> list[str]:
+    """Collect keyword display names from OpenAlex ``keywords``."""
+    if not isinstance(keywords, list):
+        return []
+
+    names: list[str] = []
+    for item in keywords:
+        if isinstance(item, str):
+            trimmed = item.strip()
+            if trimmed:
+                names.append(trimmed)
+            continue
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("display_name")
+        if isinstance(name, str):
+            trimmed = name.strip()
+            if trimmed:
+                names.append(trimmed)
+    return names
+
+
+def work_to_paper(raw: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """Map one OpenAlex work into the same API paper shape as Zilliz papers.
+
+    Returns a dict suitable for ``PaperCitationItem`` / ``PaperResponse``
+    (field names, not aliases), plus ``openalex_id`` and ``raw``. Returns
+    ``None`` when the work has no usable OpenAlex id.
+    """
     openalex_id = normalize_openalex_id(str(raw.get("id") or ""))
-    doi = normalize_doi(str(raw.get("doi") or ""))
+    if not openalex_id:
+        return None
+
     title = raw.get("title")
     year = raw.get("publication_year")
     cited_by_count = raw.get("cited_by_count")
-    summary: dict[str, Any] = {
-        "openalex_id": openalex_id or None,
-        "title": title if isinstance(title, str) and title.strip() else None,
+    doi = normalize_doi(str(raw.get("doi") or ""))
+    source = extract_source(raw.get("primary_location"))
+
+    return {
+        # PaperResponse / PaperBase fields (same contract as getPapers).
+        "title": title.strip() if isinstance(title, str) and title.strip() else "",
+        "abstract": reconstruct_abstract(raw.get("abstract_inverted_index")) or "",
+        "authors": extract_authors(raw.get("authorships")),
+        "keywords": extract_keywords(raw.get("keywords")),
+        "source": source or "",
         "year": year if isinstance(year, int) else None,
+        "citation_count": cited_by_count if isinstance(cited_by_count, int) else None,
         "doi": doi or None,
-        "cited_by_count": cited_by_count if isinstance(cited_by_count, int) else None,
+        # Citation-only extras for later import.
+        "openalex_id": openalex_id,
+        "raw": dict(raw),
     }
-    return summary
+
+
+# Back-compat alias used by older tests / call sites.
+summarize_work = work_to_paper
 
 
 def resolve_work_by_doi(
@@ -117,7 +220,9 @@ def resolve_work_by_doi(
     if not isinstance(first, Mapping):
         return None
 
-    summary = summarize_work(first)
+    summary = work_to_paper(first)
+    if summary is None:
+        return None
     referenced = first.get("referenced_works") or []
     summary["referenced_works"] = [
         normalize_openalex_id(str(item))
@@ -192,8 +297,8 @@ def list_referenced_works(
         for raw in results:
             if not isinstance(raw, Mapping):
                 continue
-            summary = summarize_work(raw)
-            if summary.get("openalex_id"):
+            summary = work_to_paper(raw)
+            if summary is not None:
                 works_by_id[str(summary["openalex_id"])] = summary
 
     # Preserve the source paper's reference order.
@@ -238,8 +343,8 @@ def list_citing_works(
         for raw in results:
             if not isinstance(raw, Mapping):
                 continue
-            summary = summarize_work(raw)
-            if summary.get("openalex_id"):
+            summary = work_to_paper(raw)
+            if summary is not None:
                 collected.append(summary)
             if len(collected) >= safe_limit:
                 break

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
+from logger_config import get_logger
 from repositories.openalex import (
     OpenAlexConfigurationError,
     OpenAlexError,
@@ -13,6 +14,12 @@ from repositories.openalex import (
     normalize_doi,
     resolve_work_by_doi,
 )
+from repositories.zilliz.paper_repository import (
+    RepositoryUnavailableError,
+    find_corpus_papers_by_dois,
+)
+
+logging = get_logger()
 
 
 class PaperCitationsNotFoundError(RuntimeError):
@@ -28,7 +35,11 @@ class PaperCitationsProviderError(RuntimeError):
 
 
 def get_paper_citations(doi: str, limit: int = 50) -> Dict[str, Any]:
-    """Return references and citing works for one DOI from OpenAlex."""
+    """Return references and citing works for one DOI from OpenAlex.
+
+    Each neighbor is annotated with ``in_corpus`` after a Zilliz DOI gate.
+    Corpus matches also receive the Vitality ``paper_id`` (``ID``).
+    """
     normalized_doi = normalize_doi(doi)
     try:
         source = resolve_work_by_doi(normalized_doi)
@@ -50,6 +61,9 @@ def get_paper_citations(doi: str, limit: int = 50) -> Dict[str, Any]:
     except OpenAlexError as error:
         raise PaperCitationsProviderError(str(error)) from error
 
+    references = _annotate_corpus_membership(references)
+    cited_by = _annotate_corpus_membership(cited_by)
+
     return {
         "source": {
             "doi": normalized_doi,
@@ -57,10 +71,55 @@ def get_paper_citations(doi: str, limit: int = 50) -> Dict[str, Any]:
         },
         "references": {
             "total_hint": len(referenced_work_ids),
-            "items": references,
+            "papers": references,
         },
         "cited_by": {
-            "total_hint": max(0, int(source.get("cited_by_count") or 0)),
-            "items": cited_by,
+            "total_hint": max(0, int(source.get("citation_count") or 0)),
+            "papers": cited_by,
         },
     }
+
+
+def _annotate_corpus_membership(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Set ``in_corpus`` / ``paper_id`` on each citation via Zilliz DOI membership.
+
+    Papers without a DOI are marked ``in_corpus=False`` for now.
+    """
+    dois: List[str] = []
+    for paper in papers:
+        doi = paper.get("doi")
+        if isinstance(doi, str) and doi.strip():
+            dois.append(doi.strip())
+        else:
+            # TODO: Match citation neighbors without a DOI against the Zilliz
+            # corpus (e.g. by normalized title/year or OpenAlex ID once stored).
+            pass
+
+    corpus_by_doi: Dict[str, str] = {}
+    if dois:
+        try:
+            corpus_by_doi = find_corpus_papers_by_dois(dois)
+        except RepositoryUnavailableError as error:
+            # Citations should still return when Zilliz is down; treat as unknown
+            # / not in corpus rather than failing the whole OpenAlex response.
+            logging.warning(
+                "Skipping corpus DOI gate for citations: %s",
+                error,
+            )
+            corpus_by_doi = {}
+
+    annotated: List[Dict[str, Any]] = []
+    for paper in papers:
+        item = dict(paper)
+        doi = item.get("doi")
+        if isinstance(doi, str) and doi.strip():
+            paper_uid = corpus_by_doi.get(doi.strip().casefold())
+            if paper_uid:
+                item["in_corpus"] = True
+                item["paper_id"] = paper_uid
+            else:
+                item["in_corpus"] = False
+        else:
+            item["in_corpus"] = False
+        annotated.append(item)
+    return annotated

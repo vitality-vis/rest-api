@@ -9,8 +9,10 @@ from .client import (
     list_referenced_works,
     normalize_doi,
     normalize_openalex_id,
+    reconstruct_abstract,
     resolve_work_by_doi,
     summarize_work,
+    work_to_paper,
 )
 
 __all__ = [
@@ -22,6 +24,8 @@ __all__ = [
     "list_referenced_works",
     "normalize_doi",
     "normalize_openalex_id",
+    "reconstruct_abstract",
     "resolve_work_by_doi",
     "summarize_work",
+    "work_to_paper",
 ]

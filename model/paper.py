@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PaperFilters(BaseModel):
@@ -35,45 +35,6 @@ class SimilarPapersRequest(PaperFilters):
     limit: int = 25
 
 
-class PaperCitationsRequest(BaseModel):
-    """Request for one paper's OpenAlex citation neighbors."""
-
-    doi: str = Field(min_length=1)
-    limit: int = Field(default=50, ge=1, le=100)
-
-
-class PaperCitationItem(BaseModel):
-    """OpenAlex metadata for one reference or citing work."""
-
-    openalex_id: str
-    title: Optional[str] = None
-    year: Optional[int] = None
-    doi: Optional[str] = None
-    cited_by_count: Optional[int] = None
-
-
-class PaperCitationSource(BaseModel):
-    """Resolved identity of the paper whose citations were requested."""
-
-    doi: str
-    openalex_id: str
-
-
-class PaperCitationGroup(BaseModel):
-    """One citation direction with its OpenAlex total and returned items."""
-
-    total_hint: int = Field(ge=0)
-    items: List[PaperCitationItem] = Field(default_factory=list)
-
-
-class PaperCitationsResponse(BaseModel):
-    """Response returned by the ``/getPaperCitations`` endpoint."""
-
-    source: PaperCitationSource
-    references: PaperCitationGroup
-    cited_by: PaperCitationGroup
-
-
 class UmapCoordinates(BaseModel):
     """Current persisted 2D projection format."""
 
@@ -82,8 +43,14 @@ class UmapCoordinates(BaseModel):
     embedding_model: Optional[str] = None
 
 
-class PaperResponse(BaseModel):
-    """Paper payload returned by REST endpoints."""
+class PaperBase(BaseModel):
+    """Canonical paper metadata shared by API paper payloads.
+
+    Serialized with aliases (``Title``, ``Abstract``, …) to match the frontend
+    ``Paper`` contract. Subclasses add endpoint-specific fields.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     paper_id: Optional[str] = Field(default=None, alias="ID")
     title: str = Field(default="", alias="Title")
@@ -98,7 +65,54 @@ class PaperResponse(BaseModel):
     dblp_source: Optional[str] = None
     full_paper: Optional[bool] = None
     umap: Optional[UmapCoordinates] = None
+
+
+class PaperResponse(PaperBase):
+    """Paper payload returned by search / similar-paper endpoints."""
+
     score: Optional[float] = None
+
+
+class PaperCitationsRequest(BaseModel):
+    """Request for one paper's OpenAlex citation neighbors."""
+
+    doi: str = Field(min_length=1)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class PaperCitationItem(PaperResponse):
+    """Same paper payload as ``getPapers``, plus OpenAlex / corpus extras.
+
+    Wire format matches frontend ``Paper`` (via ``PaperBase`` aliases).
+    ``in_corpus`` is set by a Zilliz DOI gate before the response is returned.
+    ``openalex_id`` / ``raw`` are citation-specific.
+    """
+
+    openalex_id: str
+    in_corpus: bool = False
+    raw: Optional[Dict[str, Any]] = None
+
+
+class PaperCitationSource(BaseModel):
+    """Resolved identity of the paper whose citations were requested."""
+
+    doi: str
+    openalex_id: str
+
+
+class PaperCitationGroup(BaseModel):
+    """One citation direction: OpenAlex total hint + papers."""
+
+    total_hint: int = Field(ge=0)
+    papers: List[PaperCitationItem] = Field(default_factory=list)
+
+
+class PaperCitationsResponse(BaseModel):
+    """Response returned by the ``/getPaperCitations`` endpoint."""
+
+    source: PaperCitationSource
+    references: PaperCitationGroup
+    cited_by: PaperCitationGroup
 
 
 @dataclass

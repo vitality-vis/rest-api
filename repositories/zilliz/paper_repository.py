@@ -10,7 +10,11 @@ from logger_config import get_logger
 from model.paper import PaperFilters
 from repositories.zilliz.connection import ensure_collection_loaded, get_client
 from repositories.zilliz.mappers import SCALAR_FIELDS, search_hit_to_id_and_distance
-from repositories.zilliz.query_expressions import build_paper_query_expr, ids_to_expr
+from repositories.zilliz.query_expressions import (
+    build_paper_query_expr,
+    dois_to_expr,
+    ids_to_expr,
+)
 
 
 logging = get_logger()
@@ -108,6 +112,60 @@ def get_papers_by_ids(
     except Exception as error:
         logging.error("Error fetching papers by ID: %s", error, exc_info=True)
         raise RepositoryUnavailableError("Zilliz paper lookup failed.") from error
+
+
+_DOI_LOOKUP_BATCH_SIZE = 100
+
+
+def find_corpus_papers_by_dois(dois: List[str]) -> Dict[str, str]:
+    """Map casefolded DOIs to corpus ``paper_uid`` values found in Zilliz.
+
+    Vitality ingestion builds ``paper_uid`` as ``doi:{doi.casefold()}``
+    (see ``vitality2-dataset/script/upload_papers_to_zilliz.py``). Lookup
+    therefore always queries the casefolded bare DOI / ``doi:`` uid form.
+    """
+    unique: List[str] = []
+    seen = set()
+    for raw in dois:
+        doi = str(raw or "").strip().casefold()
+        if not doi or doi in seen:
+            continue
+        seen.add(doi)
+        unique.append(doi)
+    if not unique:
+        return {}
+
+    client = _client()
+    found: Dict[str, str] = {}
+    try:
+        for start in range(0, len(unique), _DOI_LOOKUP_BATCH_SIZE):
+            chunk = unique[start : start + _DOI_LOOKUP_BATCH_SIZE]
+            rows = client.query(
+                collection_name=config.PAPER_COLLECTION,
+                filter=dois_to_expr(chunk),
+                output_fields=["doi", "paper_uid"],
+                limit=len(chunk) + 100,
+            ) or []
+            for row in rows:
+                paper_uid = str(row.get("paper_uid") or "").strip()
+                if not paper_uid:
+                    continue
+                doi = str(row.get("doi") or "").strip().casefold()
+                if not doi:
+                    lowered = paper_uid.casefold()
+                    if lowered.startswith("doi:"):
+                        doi = paper_uid[4:].strip().casefold()
+                if doi and doi not in found:
+                    found[doi] = paper_uid
+    except Exception as error:
+        logging.error("Error looking up corpus DOIs: %s", error, exc_info=True)
+        raise RepositoryUnavailableError("Zilliz DOI lookup failed.") from error
+    return found
+
+
+def find_corpus_dois(dois: List[str]) -> set[str]:
+    """Return the subset of ``dois`` that exist in the Zilliz paper corpus."""
+    return set(find_corpus_papers_by_dois(dois))
 
 
 def get_embeddings_by_ids(paper_ids: List[str]) -> List[Dict[str, Any]]:
