@@ -25,6 +25,7 @@ from repositories.supabase.chat_repository import (
     load_completed_history,
     load_user_conversations,
     save_message,
+    set_conversation_closed,
 )
 from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
 from agents.agent_v1_legacy.rag_core import (
@@ -247,6 +248,7 @@ def import_guest_chats():
                 title=title.strip()[:200],
                 created_at=_require_timestamp(value.get("createdAt"), "conversation createdAt"),
                 updated_at=_require_timestamp(value.get("updatedAt"), "conversation updatedAt"),
+                is_closed=bool(value.get("closed", False)),
             )
             for message in messages:
                 imported_message = _importable_message(message)
@@ -298,6 +300,40 @@ def get_chat_conversations():
         return Response("Chat history is unavailable", status=503, mimetype="text/plain")
 
     return jsonify({"conversations": conversations})
+
+
+@chat_bp.route("/chat/conversations/<conversation_id>/closed", methods=["PUT"])
+@cross_origin()
+def update_chat_conversation_closed(conversation_id: str):
+    """Save whether an authenticated user's chat tab is hidden."""
+    try:
+        user_id = _get_authenticated_user_id()
+    except SupabaseConfigurationError:
+        return Response("Chat tab state is unavailable", status=503, mimetype="text/plain")
+    except SupabaseAuthenticationError:
+        return Response("Unauthorized", status=401, mimetype="text/plain")
+
+    if not user_id:
+        return Response("Unauthorized", status=401, mimetype="text/plain")
+
+    data = request.get_json(force=True) or {}
+    is_closed = data.get("is_closed")
+    if not isinstance(is_closed, bool):
+        return Response("is_closed must be a boolean", status=400, mimetype="text/plain")
+
+    try:
+        set_conversation_closed(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            is_closed=is_closed,
+        )
+    except ConversationOwnershipError:
+        return Response("Forbidden", status=403, mimetype="text/plain")
+    except ChatPersistenceError as error:
+        current_app.logger.error("Could not update chat tab state: %s", error)
+        return Response("Chat tab state is unavailable", status=503, mimetype="text/plain")
+
+    return Response(status=204)
 
 
 def _chat_response(

@@ -43,7 +43,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
         "chat_conversations",
         params={
             "user_id": f"eq.{_normalise_uuid(user_id)}",
-            "select": "id,title,created_at,updated_at",
+            "select": "id,title,is_closed,created_at,updated_at",
             "order": "updated_at.desc",
         },
     )
@@ -81,6 +81,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
             "title": conversation["title"],
             "created_at": conversation["created_at"],
             "updated_at": conversation["updated_at"],
+            "is_closed": conversation["is_closed"],
             "messages": _sort_messages(messages_by_conversation[conversation["id"]]),
         }
         for conversation in conversations
@@ -170,6 +171,7 @@ def ensure_conversation(
     title: str = "New chat",
     created_at: str | None = None,
     updated_at: str | None = None,
+    is_closed: bool = False,
 ) -> str:
     """Create a user-owned conversation, or prove the existing one is theirs."""
     conversation_id = _normalise_uuid(conversation_id)
@@ -195,6 +197,7 @@ def ensure_conversation(
             "id": conversation_id,
             "user_id": user_id,
             "title": title,
+            "is_closed": is_closed,
             **({"created_at": created_at} if created_at else {}),
             **({"updated_at": updated_at} if updated_at else {}),
         },
@@ -207,6 +210,23 @@ def ensure_conversation(
     if create_response.status_code == 409:
         return ensure_conversation(conversation_id=conversation_id, user_id=user_id)
     raise ChatPersistenceError("Could not create chat conversation")
+
+
+def set_conversation_closed(*, conversation_id: str, user_id: str, is_closed: bool) -> None:
+    """Persist the tab-visibility preference for one owned conversation."""
+    conversation_id = _normalise_uuid(conversation_id)
+    user_id = _normalise_uuid(user_id)
+    response = _request(
+        "PATCH",
+        "chat_conversations",
+        params={"id": f"eq.{conversation_id}", "user_id": f"eq.{user_id}"},
+        headers={"Prefer": "return=representation"},
+        json={"is_closed": is_closed},
+    )
+    if response.status_code not in {200, 204}:
+        raise ChatPersistenceError("Could not update chat tab state")
+    if response.status_code == 200 and not response.json():
+        raise ConversationOwnershipError("Chat conversation does not belong to this user")
 
 
 def save_message(
@@ -261,4 +281,5 @@ __all__ = [
     "load_completed_history",
     "load_user_conversations",
     "save_message",
+    "set_conversation_closed",
 ]
