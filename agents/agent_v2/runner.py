@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import AsyncIterator
 
 from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
@@ -11,6 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from .models import SearchV2Request, V2ChatRequest
 from .router import route
+from service.grounding import replace_numbered_citations
 from service.paper_qa import PaperQAError, answer as answer_selected_papers
 from .search_executor import FUSED_CANDIDATE_LIMIT, SearchCriteriaRequiredError, run_search
 from .logging import SearchV2Trace
@@ -58,26 +58,13 @@ def _paper_evidence(papers: list[dict], *, limit: int = 8) -> str:
     return "\n\n".join(records)
 
 
-def _replace_evidence_citations(answer: str, papers: list[dict], *, limit: int = 8) -> str:
-    """Resolve model-only ``[[n]]`` citations to stable frontend paper IDs."""
-    citation_ids = {
+def _citation_ids(papers: list[dict], *, limit: int = 8) -> dict[int, str]:
+    """Map the numbered answer-with-search evidence records to paper IDs."""
+    return {
         index: _paper_id(paper)
         for index, paper in enumerate(papers[:limit], start=1)
+        if _paper_id(paper)
     }
-
-    def marker(number: str) -> str:
-        paper_id = citation_ids.get(int(number))
-        return f"[[ID:{paper_id}]]" if paper_id else f"[[{number}]]"
-
-    def replace_group(match: re.Match[str]) -> str:
-        # Some model responses compact citations as ``[[1],[2],[4]]``.
-        return "".join(marker(number) for number in re.findall(r"\d+", match.group(1)))
-
-    def replace_single(match: re.Match[str]) -> str:
-        return marker(match.group(1))
-
-    answer = re.sub(r"\[\[(\d+(?:\]\s*,\s*\[\d+)+)\]\]", replace_group, answer)
-    return re.sub(r"\[\[(\d+)\]\]", replace_single, answer)
 
 
 def _answer_with_search(question: str, papers: list[dict]) -> str:
@@ -105,7 +92,7 @@ contains that detail. Give a concise, direct research-oriented answer.
     answer = str(content).strip()
     if not answer:
         return "I found relevant papers, but couldn't generate a grounded answer from them."
-    return _replace_evidence_citations(answer, papers)
+    return replace_numbered_citations(answer, _citation_ids(papers))
 
 
 async def run(request: V2ChatRequest) -> AsyncIterator[str]:

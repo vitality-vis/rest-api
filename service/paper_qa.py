@@ -19,6 +19,7 @@ from repositories.zilliz.paper_repository import (
     RepositoryUnavailableError,
     get_papers_by_ids,
 )
+from service.grounding import numbered_paper_ids, replace_numbered_citations
 
 
 class PaperQAError(RuntimeError):
@@ -31,7 +32,7 @@ SCOPE_WARNING_END = "[[/VITALITY_FILE_SEARCH_SCOPE_WARNING]]"
 
 def build_evidence_plan(
     *, user_id: str, paper_ids: list[str], use_file_search: bool
-) -> tuple[SynthesisExecutionPlan, str]:
+) -> tuple[SynthesisExecutionPlan, list[str]]:
     if not paper_ids:
         raise PaperQAError("Select at least one paper first.")
 
@@ -88,7 +89,23 @@ def build_evidence_plan(
         file_search_paper_ids=searchable,
         file_search_file_ids=searchable_file_ids,
     )
-    return plan, "\n\n".join(metadata)
+    return plan, metadata
+
+
+def _metadata_synthesis_prompt(*, question: str, metadata_records: list[str]) -> str:
+    numbered_records = "\n\n".join(
+        f"[{number}]\n{record}"
+        for number, record in enumerate(metadata_records, start=1)
+    )
+    return (
+        "Answer using only the selected-paper metadata below. Be explicit about uncertainty.\n"
+        "Cite every factual claim drawn from a paper using its evidence number as "
+        "[[n]]. Each citation must be its own token: for multiple sources, write "
+        "[[1]] [[2]], never [[1],[2]]. Do not cite a number outside the supplied "
+        "evidence records.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Selected-paper metadata:\n{numbered_records}"
+    )
 
 
 def _file_search_prompt(
@@ -136,7 +153,7 @@ def answer(
     use_file_search: bool = False,
     trace: SearchV2Trace | None = None,
 ) -> str:
-    plan, metadata = build_evidence_plan(
+    plan, metadata_records = build_evidence_plan(
         user_id=user_id,
         paper_ids=paper_ids,
         use_file_search=use_file_search,
@@ -148,7 +165,10 @@ def answer(
             use_file_search=plan.use_file_search,
         )
     if not plan.use_file_search:
-        input_text = f"Answer using only this selected-paper metadata. Be explicit about uncertainty.\n\nQuestion: {text}\n\n{metadata}"
+        input_text = _metadata_synthesis_prompt(
+            question=text,
+            metadata_records=metadata_records,
+        )
         if trace:
             trace.log_synthesis_payload(mode="metadata", input_text=input_text)
         try:
@@ -157,7 +177,9 @@ def answer(
             raise PaperQAError("Metadata synthesis failed. Please try again.") from error
         output = response_output_text(response)
         if output:
-            return output
+            return replace_numbered_citations(
+                output, numbered_paper_ids(plan.metadata_paper_ids)
+            )
         raise PaperQAError("Metadata synthesis returned no answer.")
     store = get_user_vector_store(user_id=user_id)
     if store is None or not isinstance(store.get("azure_vector_store_id"), str):
@@ -165,7 +187,7 @@ def answer(
     filters = {"type": "in", "key": "paper_id", "value": plan.file_search_paper_ids}
     input_text = _file_search_prompt(
         question=text,
-        metadata=metadata,
+        metadata="\n\n".join(metadata_records),
         allowed_file_ids=plan.file_search_file_ids,
     )
     if trace:
