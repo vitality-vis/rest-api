@@ -21,7 +21,7 @@ from service.grounding import (
 )
 from service.paper_registry import (
     LibraryPaperResolutionError,
-    resolve_library_papers,
+    resolve_selected_papers,
 )
 
 
@@ -40,7 +40,7 @@ def build_evidence_plan(
         raise PaperQAError("Select at least one paper first.")
 
     try:
-        resolved_papers = resolve_library_papers(user_id=user_id, paper_ids=paper_ids)
+        resolved_papers = resolve_selected_papers(user_id=user_id, paper_ids=paper_ids)
     except LibraryPaperResolutionError as error:
         raise PaperQAError(str(error)) from error
 
@@ -48,6 +48,8 @@ def build_evidence_plan(
     searchable_file_ids: list[str] = []
     for resolved_paper in resolved_papers:
         library_paper = resolved_paper.library_paper
+        if library_paper is None:
+            continue
         azure_file_id = library_paper.get("azure_file_id")
         if (
             library_paper.get("vs_file_status") == "completed"
