@@ -35,8 +35,10 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | --- | --- | --- | --- |
 | `GET` | `/library/papers` | required | All `user_papers` (incl. `origin`). `?saved=true` → only `is_saved`. |
 | `PUT` | `/library/papers/{paper_id}/saved` | required | JSON `Paper` metadata. Sets `is_saved=true`. |
-| `DELETE` | `/library/papers/{paper_id}/saved` | required | Unsave; deletes row only if no file. |
+| `DELETE` | `/library/papers/{paper_id}/saved` | required | Unsave. Corpus rows delete when no file; imported rows are retained. |
+| `DELETE` | `/library/papers/{paper_id}` | required | Permanently delete a user-imported paper and its uploaded full text. |
 | `POST` | `/library/papers/saved` | required | Body `{ papers: Paper[] }` (max 100). Bulk upsert as saved. |
+| `POST` | `/library/papers/unsave` | required | Body `{ paper_ids: string[] }` (max 100). Bulk Unsave using each row's origin/file rule. |
 | `POST` | `/library/papers/import` | required | Body `{ items: [{ paper, raw? }] }` (max 100). `paper.title` and `paper.abstract` are required. Each valid item is saved as an independent `origin=user` paper with a `user:` ID; response has per-item `imported` / `invalid` results. |
 | `PUT` | `/library/papers/{paper_id}/file` | required | multipart: `file` (PDF) + `metadata` (JSON `Paper`). |
 | `DELETE` | `/library/papers/{paper_id}/file` | required | Deletes Azure file, clears upload fields; drops unsaved empty rows. |

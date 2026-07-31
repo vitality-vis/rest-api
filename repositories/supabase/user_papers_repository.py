@@ -83,7 +83,23 @@ def get_user_papers_by_ids(*, user_id: str, paper_ids: list[str]) -> list[dict[s
 def save_user_paper(
     *, user_id: str, paper_id: str, metadata_snapshot: dict[str, object] | None
 ) -> tuple[dict[str, object], bool]:
-    """Upsert one paper and set is_saved = true; report whether the row was new."""
+    """Set a paper as saved without changing an existing imported row's origin."""
+    existing = get_user_paper(user_id=user_id, paper_id=paper_id)
+    if existing is not None and existing.get("origin") == "user":
+        response = _request(
+            "PATCH",
+            "user_papers",
+            params={"user_id": f"eq.{user_id}", "paper_id": f"eq.{paper_id}"},
+            headers={"Prefer": "return=representation"},
+            json={"is_saved": True},
+        )
+        if response.status_code not in {200, 204}:
+            raise UserPapersPersistenceError("Could not save imported paper")
+        records = _json_list(response, "Imported paper save returned an invalid response")
+        if len(records) != 1:
+            raise UserPapersPersistenceError("Imported paper save returned an invalid response")
+        return records[0], False
+
     response = _request(
         "POST",
         "user_papers",
@@ -110,7 +126,30 @@ def save_user_paper(
 def save_user_papers(
     *, user_id: str, papers: list[tuple[str, dict[str, object] | None]]
 ) -> list[dict[str, object]]:
-    """Idempotently upsert a batch of papers as saved for one user."""
+    """Idempotently save papers while preserving imported-row identity."""
+    existing = {
+        str(paper.get("paper_id")): paper
+        for paper in get_user_papers_by_ids(
+            user_id=user_id, paper_ids=[paper_id for paper_id, _ in papers]
+        )
+    }
+    imported = [
+        (paper_id, snapshot)
+        for paper_id, snapshot in papers
+        if existing.get(paper_id, {}).get("origin") == "user"
+    ]
+    corpus = [
+        (paper_id, snapshot)
+        for paper_id, snapshot in papers
+        if existing.get(paper_id, {}).get("origin") != "user"
+    ]
+    saved_imported = [
+        save_user_paper(user_id=user_id, paper_id=paper_id, metadata_snapshot=snapshot)[0]
+        for paper_id, snapshot in imported
+    ]
+    if not corpus:
+        return saved_imported
+
     response = _request(
         "POST",
         "user_papers",
@@ -124,12 +163,12 @@ def save_user_papers(
                 "is_saved": True,
                 "origin": "corpus",
             }
-            for paper_id, metadata_snapshot in papers
+            for paper_id, metadata_snapshot in corpus
         ],
     )
     if response.status_code not in {200, 201}:
         raise UserPapersPersistenceError("Could not save user papers")
-    return _json_list(response, "User paper bulk save returned an invalid response")
+    return saved_imported + _json_list(response, "User paper bulk save returned an invalid response")
 
 
 def import_user_papers(
@@ -164,12 +203,12 @@ def import_user_papers(
 
 
 def unsave_user_paper(*, user_id: str, paper_id: str) -> None:
-    """Clear saved state; delete the row only when it has no uploaded file."""
+    """Clear saved state, retaining imported rows and corpus rows with a file."""
     paper = get_user_paper(user_id=user_id, paper_id=paper_id)
     if paper is None:
         raise UserPaperNotFoundError("User paper does not exist")
 
-    if paper.get("azure_file_id"):
+    if paper.get("origin") == "user" or paper.get("azure_file_id"):
         response = _request(
             "PATCH",
             "user_papers",
@@ -189,6 +228,12 @@ def unsave_user_paper(*, user_id: str, paper_id: str) -> None:
         return
 
     delete_user_paper(user_id=user_id, paper_id=paper_id)
+
+
+def unsave_user_papers(*, user_id: str, paper_ids: list[str]) -> None:
+    """Apply the per-paper unsave rules in one authenticated API operation."""
+    for paper_id in paper_ids:
+        unsave_user_paper(user_id=user_id, paper_id=paper_id)
 
 
 def delete_user_paper(*, user_id: str, paper_id: str) -> None:
@@ -394,6 +439,7 @@ __all__ = [
     "save_user_paper",
     "save_user_papers",
     "unsave_user_paper",
+    "unsave_user_papers",
     "update_user_paper_index_state",
     "upsert_user_paper_file",
 ]

@@ -29,12 +29,14 @@ from repositories.supabase.user_papers_repository import (
     UserPaperNotFoundError,
     UserPapersPersistenceError,
     clear_user_paper_file,
+    delete_user_paper,
     get_user_paper,
     import_user_papers,
     list_user_papers,
     save_user_paper,
     save_user_papers,
     unsave_user_paper,
+    unsave_user_papers,
     upsert_user_paper_file,
 )
 from service.fulltext import LibraryIndexError, detach_user_paper_file, index_user_paper
@@ -457,6 +459,32 @@ def post_library_papers_saved():
     return jsonify({"papers": [_save_response(paper) for paper in saved_papers]})
 
 
+@library_bp.route("/library/papers/unsave", methods=["POST"])
+@cross_origin()
+def post_library_papers_unsave():
+    user_id, error_response = _require_authenticated_user_id()
+    if error_response is not None:
+        return error_response
+    payload = request.get_json(silent=True)
+    paper_ids = payload.get("paper_ids") if isinstance(payload, dict) else None
+    if not isinstance(paper_ids, list) or not paper_ids or len(paper_ids) > MAX_BULK_SAVE_PAPERS:
+        return jsonify({"error": f"paper_ids must contain between 1 and {MAX_BULK_SAVE_PAPERS} IDs"}), 400
+    try:
+        normalized_ids = [_validate_paper_id(_metadata_paper_id(paper_id)) for paper_id in paper_ids]
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    if len(set(normalized_ids)) != len(normalized_ids):
+        return jsonify({"error": "paper_ids must not contain duplicates"}), 400
+    try:
+        unsave_user_papers(user_id=user_id, paper_ids=normalized_ids)
+    except UserPaperNotFoundError:
+        return Response("Not found", status=404, mimetype="text/plain")
+    except UserPapersPersistenceError as error:
+        current_app.logger.error("Could not bulk-unsave library papers: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+    return jsonify({"paper_ids": normalized_ids})
+
+
 @library_bp.route("/library/papers/import", methods=["POST"])
 @cross_origin()
 def post_library_papers_import():
@@ -562,6 +590,42 @@ def delete_library_paper_saved(paper_id: str):
     except UserPapersPersistenceError as error:
         current_app.logger.error("Could not unsave library paper: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
+    return Response(status=204)
+
+
+@library_bp.route("/library/papers/<path:paper_id>", methods=["DELETE"])
+@cross_origin()
+def delete_imported_library_paper(paper_id: str):
+    """Permanently remove a user-imported paper and its optional full text."""
+    user_id, error_response = _require_authenticated_user_id()
+    if error_response is not None:
+        return error_response
+    try:
+        paper_id = _validate_paper_id(paper_id)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    try:
+        paper = get_user_paper(user_id=user_id, paper_id=paper_id)
+    except UserPapersPersistenceError as error:
+        current_app.logger.error("Could not load imported paper before delete: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+
+    if paper is None or paper.get("origin") != "user":
+        return Response("Not found", status=404, mimetype="text/plain")
+
+    azure_file_id = paper.get("azure_file_id")
+    try:
+        if isinstance(azure_file_id, str) and azure_file_id:
+            detach_user_paper_file(user_id=user_id, paper=paper)
+            delete_azure_file(file_id=azure_file_id)
+        delete_user_paper(user_id=user_id, paper_id=paper_id)
+    except AzureFilesConfigurationError:
+        return Response("Library file delete is unavailable", status=503, mimetype="text/plain")
+    except AzureFilesTransientError:
+        return Response("File storage is temporarily unavailable", status=503, mimetype="text/plain")
+    except (AzureFilesError, UserPapersPersistenceError) as error:
+        current_app.logger.error("Could not permanently delete imported paper %s: %s", paper_id, error)
+        return Response("Could not delete imported paper", status=502, mimetype="text/plain")
     return Response(status=204)
 
 
