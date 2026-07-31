@@ -11,7 +11,7 @@ from repositories.azure_openai.vector_stores import (
     AzureVectorStoresError,
     create_file_search_response,
     create_text_response,
-    response_file_citations,
+    response_file_citation_annotations,
     response_output_text,
 )
 from repositories.zilliz.mappers import paper_to_api_response
@@ -19,7 +19,12 @@ from repositories.zilliz.paper_repository import (
     RepositoryUnavailableError,
     get_papers_by_ids,
 )
-from service.grounding import numbered_paper_ids, replace_numbered_citations
+from service.grounding import (
+    apply_file_citations,
+    numbered_paper_ids,
+    replace_numbered_citations,
+    resolve_file_annotations,
+)
 
 
 class PaperQAError(RuntimeError):
@@ -88,6 +93,7 @@ def build_evidence_plan(
         metadata_paper_ids=paper_ids,
         file_search_paper_ids=searchable,
         file_search_file_ids=searchable_file_ids,
+        file_search_file_to_paper_id=dict(zip(searchable_file_ids, searchable)),
     )
     return plan, metadata
 
@@ -108,6 +114,13 @@ def _metadata_synthesis_prompt(*, question: str, metadata_records: list[str]) ->
     )
 
 
+def _numbered_metadata_records(metadata_records: list[str]) -> str:
+    return "\n\n".join(
+        f"[{number}]\n{record}"
+        for number, record in enumerate(metadata_records, start=1)
+    )
+
+
 def _file_search_prompt(
     *, question: str, metadata: str, allowed_file_ids: list[str]
 ) -> str:
@@ -122,6 +135,14 @@ def _file_search_prompt(
         "- Before finalizing, verify that every full-text claim and every citation comes "
         "from an allowed file. If the allowed evidence is insufficient, say so rather "
         "than using another file.\n\n"
+        "METADATA CITATION RULES:\n"
+        "- The selected-paper metadata records below are numbered.\n"
+        "- For a claim based on metadata rather than a retrieved PDF chunk, cite it as "
+        "[[n]] using that record's number.\n"
+        "- Do not use [[n]] for a full-text claim; File Search annotations are the "
+        "authoritative citations for those claims.\n"
+        "- Use only supplied metadata numbers. For multiple metadata sources, write "
+        "separate markers such as [[1]] [[2]].\n\n"
         f"Allowed Azure file IDs:\n{allowlist}\n\n"
         f"Question:\n{question}\n\n"
         f"Metadata for the selected papers:\n{metadata}"
@@ -187,7 +208,7 @@ def answer(
     filters = {"type": "in", "key": "paper_id", "value": plan.file_search_paper_ids}
     input_text = _file_search_prompt(
         question=text,
-        metadata="\n\n".join(metadata_records),
+        metadata=_numbered_metadata_records(metadata_records),
         allowed_file_ids=plan.file_search_file_ids,
     )
     if trace:
@@ -206,18 +227,22 @@ def answer(
         raise PaperQAError("Full-text search failed. Please try again.") from error
     output = response_output_text(response)
     if output:
-        citations = response_file_citations(response)
-        cited_file_ids = sorted({citation["file_id"] for citation in citations})
-        allowed_file_ids = set(plan.file_search_file_ids)
-        unexpected_file_ids = sorted(
-            file_id for file_id in cited_file_ids if file_id not in allowed_file_ids
+        annotations = response_file_citation_annotations(response)
+        resolved_annotations, unexpected_file_ids = resolve_file_annotations(
+            annotations, plan.file_search_file_to_paper_id
         )
+        cited_file_ids = sorted({annotation["file_id"] for annotation in annotations})
+        allowed_file_ids = sorted(plan.file_search_file_to_paper_id)
         if trace:
             trace.log_synthesis_scope_check(
-                allowed_file_ids=sorted(allowed_file_ids),
+                allowed_file_ids=allowed_file_ids,
                 cited_file_ids=cited_file_ids,
                 unexpected_file_ids=unexpected_file_ids,
             )
+        output = apply_file_citations(output, resolved_annotations)
+        output = replace_numbered_citations(
+            output, numbered_paper_ids(plan.metadata_paper_ids)
+        )
         if unexpected_file_ids:
             return _append_scope_warning(output, unexpected_file_ids)
         return output

@@ -11,7 +11,7 @@ from repositories.supabase.client import get_supabase_settings, service_role_hea
 
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
 _SHELF_COLUMNS = (
-    "id,user_id,paper_id,metadata_snapshot,is_saved,azure_file_id,uploaded_filename,"
+    "id,user_id,paper_id,metadata_snapshot,is_saved,origin,azure_file_id,uploaded_filename,"
     "uploaded_bytes,uploaded_at,vs_file_status,vs_file_id,"
     "vs_indexed_at,vs_last_error,created_at,updated_at"
 )
@@ -73,6 +73,7 @@ def save_user_paper(
             "paper_id": paper_id,
             "metadata_snapshot": metadata_snapshot,
             "is_saved": True,
+            "origin": "corpus",
         },
     )
     # PostgREST returns 201 on insert and 200 when merge-duplicates updates.
@@ -100,6 +101,7 @@ def save_user_papers(
                 "paper_id": paper_id,
                 "metadata_snapshot": metadata_snapshot,
                 "is_saved": True,
+                "origin": "corpus",
             }
             for paper_id, metadata_snapshot in papers
         ],
@@ -192,6 +194,7 @@ def upsert_user_paper_file(
                 "user_id": user_id,
                 "paper_id": paper_id,
                 "is_saved": False,
+                "origin": "corpus",
                 **file_fields,
             },
         )

@@ -205,21 +205,27 @@ def response_output_text(response: dict[str, Any]) -> str | None:
     return "\n".join(texts) or None
 
 
-def response_file_citations(response: dict[str, Any]) -> list[dict[str, str]]:
-    """Return valid file citations attached to assistant output text."""
-    citations: list[dict[str, str]] = []
+def response_file_citation_annotations(response: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return File Search annotations with their source text-block context.
+
+    Annotation fields are preserved for the grounding layer, which decides how
+    to map or render them.  This adapter deliberately does not apply any
+    selected-paper policy.
+    """
+    citations: list[dict[str, Any]] = []
     output = response.get("output")
     if not isinstance(output, list):
         return citations
-    for item in output:
+    for output_index, item in enumerate(output):
         if not isinstance(item, dict) or item.get("type") != "message":
             continue
         content = item.get("content")
         if not isinstance(content, list):
             continue
-        for block in content:
+        for content_index, block in enumerate(content):
             if not isinstance(block, dict) or block.get("type") != "output_text":
                 continue
+            output_text = block.get("text")
             annotations = block.get("annotations")
             if not isinstance(annotations, list):
                 continue
@@ -229,11 +235,25 @@ def response_file_citations(response: dict[str, Any]) -> list[dict[str, str]]:
                 file_id = annotation.get("file_id")
                 if not isinstance(file_id, str) or not file_id:
                     continue
-                citation = {"file_id": file_id}
-                filename = annotation.get("filename")
-                if isinstance(filename, str) and filename:
-                    citation["filename"] = filename
+                citation = dict(annotation)
+                citation["output_index"] = output_index
+                citation["content_index"] = content_index
+                if isinstance(output_text, str):
+                    citation["output_text"] = output_text
                 citations.append(citation)
+    return citations
+
+
+def response_file_citations(response: dict[str, Any]) -> list[dict[str, str]]:
+    """Return the legacy compact projection of File Search annotations."""
+    citations: list[dict[str, str]] = []
+    for annotation in response_file_citation_annotations(response):
+        file_id = annotation["file_id"]
+        citation = {"file_id": file_id}
+        filename = annotation.get("filename")
+        if isinstance(filename, str) and filename:
+            citation["filename"] = filename
+        citations.append(citation)
     return citations
 
 
@@ -304,6 +324,7 @@ __all__ = [
     "get_azure_vector_stores_settings",
     "get_vector_store_file",
     "poll_file_until_terminal",
+    "response_file_citation_annotations",
     "response_file_citations",
     "response_output_text",
 ]

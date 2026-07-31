@@ -100,3 +100,4 @@ class SynthesisExecutionPlan(BaseModel):
     metadata_paper_ids: list[str] = Field(default_factory=list)
     file_search_paper_ids: list[str] = Field(default_factory=list)
     file_search_file_ids: list[str] = Field(default_factory=list)
+    file_search_file_to_paper_id: dict[str, str] = Field(default_factory=dict)

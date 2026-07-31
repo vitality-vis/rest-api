@@ -33,7 +33,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/library/papers` | required | All `user_papers`. `?saved=true` → only `is_saved`. |
+| `GET` | `/library/papers` | required | All `user_papers` (incl. `origin`). `?saved=true` → only `is_saved`. |
 | `PUT` | `/library/papers/{paper_id}/saved` | required | JSON `Paper` metadata. Sets `is_saved=true`. |
 | `DELETE` | `/library/papers/{paper_id}/saved` | required | Unsave; deletes row only if no file. |
 | `POST` | `/library/papers/saved` | required | Body `{ papers: Paper[] }` (max 100). Bulk upsert as saved. |
