@@ -5,7 +5,6 @@ import json
 
 from agents.agent_v2.logging import SearchV2Trace
 from agents.agent_v2.models import SynthesisExecutionPlan
-from repositories.supabase.user_papers_repository import get_user_paper
 from repositories.supabase.user_vector_stores_repository import get_user_vector_store
 from repositories.azure_openai.vector_stores import (
     AzureVectorStoresError,
@@ -14,16 +13,15 @@ from repositories.azure_openai.vector_stores import (
     response_file_citation_annotations,
     response_output_text,
 )
-from repositories.zilliz.mappers import paper_to_api_response
-from repositories.zilliz.paper_repository import (
-    RepositoryUnavailableError,
-    get_papers_by_ids,
-)
 from service.grounding import (
     apply_file_citations,
     numbered_paper_ids,
     replace_numbered_citations,
     resolve_file_annotations,
+)
+from service.paper_registry import (
+    LibraryPaperResolutionError,
+    resolve_library_papers,
 )
 
 
@@ -41,37 +39,28 @@ def build_evidence_plan(
     if not paper_ids:
         raise PaperQAError("Select at least one paper first.")
 
+    try:
+        resolved_papers = resolve_library_papers(user_id=user_id, paper_ids=paper_ids)
+    except LibraryPaperResolutionError as error:
+        raise PaperQAError(str(error)) from error
+
     searchable: list[str] = []
     searchable_file_ids: list[str] = []
-    for paper_id in paper_ids:
-        paper = get_user_paper(user_id=user_id, paper_id=paper_id)
-        if paper is None:
-            raise PaperQAError("One or more selected papers are unavailable.")
-        azure_file_id = paper.get("azure_file_id")
+    for resolved_paper in resolved_papers:
+        library_paper = resolved_paper.library_paper
+        azure_file_id = library_paper.get("azure_file_id")
         if (
-            paper.get("vs_file_status") == "completed"
+            library_paper.get("vs_file_status") == "completed"
             and isinstance(azure_file_id, str)
             and azure_file_id
         ):
-            searchable.append(paper_id)
+            searchable.append(resolved_paper.paper_id)
             searchable_file_ids.append(azure_file_id)
 
-    try:
-        catalog_records = get_papers_by_ids(paper_ids)
-    except RepositoryUnavailableError as error:
-        raise PaperQAError("Selected paper metadata is temporarily unavailable.") from error
-    catalog_by_id = {
-        str(record.get("paper_uid")): paper_to_api_response(record)
-        for record in catalog_records
-        if record.get("paper_uid") is not None
-    }
-    missing_ids = [paper_id for paper_id in paper_ids if paper_id not in catalog_by_id]
-    if missing_ids:
-        raise PaperQAError("One or more selected papers are unavailable in the paper catalog.")
-
     metadata: list[str] = []
-    for paper_id in paper_ids:
-        paper = catalog_by_id[paper_id]
+    for resolved_paper in resolved_papers:
+        paper_id = resolved_paper.paper_id
+        paper = resolved_paper.metadata
         metadata.append(
             "\n".join(
                 [

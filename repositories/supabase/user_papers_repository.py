@@ -26,11 +26,11 @@ class UserPaperNotFoundError(UserPapersPersistenceError):
 
 
 def list_user_papers(*, user_id: str, saved_only: bool = False) -> list[dict[str, object]]:
-    """Return library papers for one verified user, newest first."""
+    """Return library papers for one verified user, oldest first."""
     params: dict[str, str] = {
         "user_id": f"eq.{user_id}",
         "select": _SHELF_COLUMNS,
-        "order": "created_at.desc",
+        "order": "created_at.asc",
     }
     if saved_only:
         params["is_saved"] = "eq.true"
@@ -57,6 +57,27 @@ def get_user_paper(*, user_id: str, paper_id: str) -> dict[str, object] | None:
         raise UserPapersPersistenceError("Could not load user paper")
     records = _json_list(response, "User paper returned an invalid response")
     return records[0] if records else None
+
+
+def get_user_papers_by_ids(*, user_id: str, paper_ids: list[str]) -> list[dict[str, object]]:
+    """Return library rows matching the supplied IDs for one verified user."""
+    unique_ids = list(dict.fromkeys(paper_ids))
+    if not unique_ids:
+        return []
+    escaped_ids = [paper_id.replace("\\", "\\\\").replace('"', '\\"') for paper_id in unique_ids]
+    paper_id_filter = "in.(" + ",".join(f'"{paper_id}"' for paper_id in escaped_ids) + ")"
+    response = _request(
+        "GET",
+        "user_papers",
+        params={
+            "user_id": f"eq.{user_id}",
+            "paper_id": paper_id_filter,
+            "select": _SHELF_COLUMNS,
+        },
+    )
+    if response.status_code != 200:
+        raise UserPapersPersistenceError("Could not load user papers")
+    return _json_list(response, "User papers returned an invalid response")
 
 
 def save_user_paper(
@@ -367,6 +388,7 @@ __all__ = [
     "delete_empty_user_paper",
     "delete_user_paper",
     "get_user_paper",
+    "get_user_papers_by_ids",
     "import_user_papers",
     "list_user_papers",
     "save_user_paper",

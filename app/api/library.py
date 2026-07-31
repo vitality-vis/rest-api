@@ -38,6 +38,7 @@ from repositories.supabase.user_papers_repository import (
     upsert_user_paper_file,
 )
 from service.fulltext import LibraryIndexError, detach_user_paper_file, index_user_paper
+from service.paper_registry import LibraryPaperResolutionError, resolve_library_rows
 
 
 library_bp = Blueprint("library", __name__)
@@ -299,7 +300,7 @@ def _validate_import_raw(value: object) -> dict[str, object] | None:
 
 
 def _validate_user_import_item(value: object) -> tuple[str, dict[str, object], dict[str, object] | None]:
-    """Map one normalized import item into its immutable shelf snapshot."""
+    """Map one normalized import item into its immutable library snapshot."""
     if not isinstance(value, dict):
         raise ValueError("Import item must be an object")
     paper = value.get("paper")
@@ -404,10 +405,37 @@ def get_library_papers():
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     try:
-        return jsonify({"papers": list_user_papers(user_id=user_id, saved_only=saved_only)})
+        library_papers = list_user_papers(user_id=user_id, saved_only=saved_only)
     except UserPapersPersistenceError as error:
         current_app.logger.error("Could not load library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
+    try:
+        resolved_papers = resolve_library_rows(library_papers=library_papers)
+    except LibraryPaperResolutionError as error:
+        current_app.logger.error("Could not resolve library papers: %s", error)
+        return Response("Library metadata is unavailable", status=503, mimetype="text/plain")
+
+    return jsonify(
+        {
+            "papers": [
+                {
+                    "paper_id": paper.paper_id,
+                    "origin": paper.origin,
+                    "metadata": paper.metadata,
+                    "is_saved": paper.library_paper.get("is_saved"),
+                    "azure_file_id": paper.library_paper.get("azure_file_id"),
+                    "uploaded_filename": paper.library_paper.get("uploaded_filename"),
+                    "uploaded_bytes": paper.library_paper.get("uploaded_bytes"),
+                    "uploaded_at": paper.library_paper.get("uploaded_at"),
+                    "vs_file_status": paper.library_paper.get("vs_file_status"),
+                    "vs_last_error": paper.library_paper.get("vs_last_error"),
+                    "created_at": paper.library_paper.get("created_at"),
+                    "updated_at": paper.library_paper.get("updated_at"),
+                }
+                for paper in resolved_papers
+            ]
+        }
+    )
 
 
 @library_bp.route("/library/papers/saved", methods=["POST"])
@@ -432,7 +460,7 @@ def post_library_papers_saved():
 @library_bp.route("/library/papers/import", methods=["POST"])
 @cross_origin()
 def post_library_papers_import():
-    """Save normalized user-supplied paper metadata to the personal shelf.
+    """Save normalized user-supplied paper metadata to the personal library.
 
     Each valid item receives a permanent ``user:`` ID and snapshot. This is
     deliberately separate from the corpus ``/saved`` APIs: imported DOI-backed
