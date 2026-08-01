@@ -117,13 +117,13 @@ def build_paper_query_expr(
             if term:
                 parts.append(f'{field} like "%{escape_like(term)}%"')
 
-    def like_any(field: str, values):
+    def equals_any(field: str, values):
         if not values:
             return
         if isinstance(values, str):
             values = [values]
         matches = [
-            f'{field} like "%{escape_like(value)}%"'
+            f'{field} == "{escape_like(value)}"'
             for value in values
             if str(value).strip()
         ]
@@ -152,7 +152,9 @@ def build_paper_query_expr(
 
     like_all("title", filters.title)
     like_all("abstract", filters.abstract)
-    like_any("source", filters.source)
+    # Source values are selected from the venue/source facet and must match the
+    # complete field: filtering for "CHI" must not also include "TOCHI".
+    equals_any("source", filters.source)
     array_contains_any("authors", filters.author)
     array_contains_any("keywords", filters.keyword)
 
