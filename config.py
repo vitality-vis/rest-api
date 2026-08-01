@@ -56,6 +56,13 @@ meta_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/meta_data.json')
 umap_data_file_path = os.path.join(PROJ_ROOT_DIR, 'data/umap_data.json')
 cache_fingerprint_file_path = os.path.join(PROJ_ROOT_DIR, 'data/cache_fingerprint.json')
 
+# Built Vite frontend served by Flask. Deploy with:
+#   rsync -a --delete frontend-vitality2-study/dist/ rest-api/static/dist/
+# Override with FRONTEND_DIST_DIR if needed.
+_DEFAULT_FRONTEND_DIST = os.path.join(PROJ_ROOT_DIR, "static", "dist")
+FRONTEND_DIST_DIR = os.path.abspath(
+    os.environ.get("FRONTEND_DIST_DIR", _DEFAULT_FRONTEND_DIST)
+)
 # Raw JSON data file (with embeddings). Use the file you want to load into Zilliz.
 raw_json_datafile = os.path.join(PROJ_ROOT_DIR, 'data/VitaLITy-2.0.0.json')
 

@@ -31,7 +31,11 @@ def get_rag_agent():
     return None  # Use agent_runner.get_or_create_chat_session(chat_id)["agent"] for chat agent
 
 # ===== Flask + SocketIO Init =====
-app = Flask(__name__, static_folder='./build', static_url_path='/')
+app = Flask(
+    __name__,
+    static_folder=config.FRONTEND_DIST_DIR,
+    static_url_path="/",
+)
 app.register_blueprint(bootstrap_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(papers_bp)
