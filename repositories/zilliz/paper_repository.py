@@ -19,6 +19,9 @@ from repositories.zilliz.query_expressions import (
 
 logging = get_logger()
 
+# Zilliz caps the number of query vectors (nq) in a single search request at 10.
+MAX_QUERY_VECTORS_PER_SEARCH = 10
+
 
 class InvalidRetrievalScoreError(RuntimeError):
     """Raised when Zilliz returns an unusable relevance score."""
@@ -361,19 +364,29 @@ def search_by_vectors(
         f"({metadata_expression}) and has_embedding == true "
         f'and embedding_model == "{config.PAPER_EMBEDDING_MODEL}"'
     )
-    try:
-        results = client.search(
-            collection_name=config.PAPER_COLLECTION,
-            data=vectors,
-            anns_field=config.PAPER_VECTOR_FIELD,
-            search_params={"metric_type": config.PAPER_VECTOR_METRIC, "params": {}},
-            filter=expression,
-            limit=min(max(int(candidate_limit), 1), 120),
-            output_fields=["paper_uid"],
-        ) or []
-    except Exception as error:
-        logging.error("Zilliz bulk vector search failed: %s", error, exc_info=True)
-        raise RepositoryUnavailableError("Zilliz bulk vector search failed.") from error
+    results: List[List[Any]] = []
+    for start in range(0, len(vectors), MAX_QUERY_VECTORS_PER_SEARCH):
+        vector_batch = vectors[start:start + MAX_QUERY_VECTORS_PER_SEARCH]
+        try:
+            batch_results = client.search(
+                collection_name=config.PAPER_COLLECTION,
+                data=vector_batch,
+                anns_field=config.PAPER_VECTOR_FIELD,
+                search_params={"metric_type": config.PAPER_VECTOR_METRIC, "params": {}},
+                filter=expression,
+                limit=min(max(int(candidate_limit), 1), 120),
+                output_fields=["paper_uid"],
+            ) or []
+        except Exception as error:
+            logging.error(
+                "Zilliz bulk vector search failed for vectors %d-%d: %s",
+                start + 1,
+                start + len(vector_batch),
+                error,
+                exc_info=True,
+            )
+            raise RepositoryUnavailableError("Zilliz bulk vector search failed.") from error
+        results.extend(batch_results)
 
     ranked_results: List[List[RepositoryVectorHit]] = []
     for raw_hits in results:
