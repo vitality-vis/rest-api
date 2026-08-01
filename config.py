@@ -8,8 +8,17 @@ PROJ_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 
 
 def load_project_environment():
-    """Load this project's optional .env without overriding real environment values."""
-    return load_dotenv(os.path.join(PROJ_ROOT_DIR, ".env"), override=False)
+    """Load this project's optional .env without overriding real environment values.
+
+    Under systemd, prefer EnvironmentFile= in the unit. That is read by PID 1
+    before the service drops privileges, so the process may not be able to open
+    .env itself — in that case skip quietly and use the already-injected env.
+    """
+    env_path = os.path.join(PROJ_ROOT_DIR, ".env")
+    try:
+        return load_dotenv(env_path, override=False)
+    except OSError:
+        return False
 
 
 # Configuration values below are intentionally captured only after the project

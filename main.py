@@ -184,6 +184,20 @@ def chat_stream_simple():
 def index():
     return app.send_static_file('index.html')
 
+
+@app.errorhandler(404)
+def spa_fallback(error):
+    """Serve the SPA shell for unknown GET paths (client-side routes)."""
+    if request.method == "GET":
+        static_path = os.path.join(app.static_folder or "", request.path.lstrip("/"))
+        if request.path != "/" and os.path.isfile(static_path):
+            return app.send_static_file(request.path.lstrip("/"))
+        accept = request.accept_mimetypes
+        if accept.accept_html or "text/html" in str(request.accept_mimetypes):
+            return app.send_static_file("index.html")
+    return jsonify({"message": "Not found"}), 404
+
+
 # === Start the Flask server ===
 # if __name__ == "__main__":
 #     port = int(os.environ.get('PORT', 3000))
