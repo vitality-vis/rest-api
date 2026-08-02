@@ -105,15 +105,14 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
     decision = route(request, trace=trace)
     if decision.route == "synthesis":
-        if not request.user_id:
-            yield "Sign in to ask about selected papers."
-            return
         try:
             yield answer_selected_papers(
                 user_id=request.user_id,
                 paper_ids=[str(item) for item in request.selected_paper_ids or []],
                 text=request.text,
-                use_file_search=decision.use_file_search,
+                # Guest requests may use public corpus metadata, but never a
+                # user vector store or uploaded full-text file.
+                use_file_search=bool(request.user_id) and decision.use_file_search,
                 trace=trace,
             )
         except PaperQAError as error:

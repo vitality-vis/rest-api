@@ -34,7 +34,7 @@ SCOPE_WARNING_END = "[[/VITALITY_FILE_SEARCH_SCOPE_WARNING]]"
 
 
 def build_evidence_plan(
-    *, user_id: str, paper_ids: list[str], use_file_search: bool
+    *, user_id: str | None, paper_ids: list[str], use_file_search: bool
 ) -> tuple[SynthesisExecutionPlan, list[str]]:
     if not paper_ids:
         raise PaperQAError("Select at least one paper first.")
@@ -159,7 +159,7 @@ def _append_scope_warning(output: str, unexpected_file_ids: list[str]) -> str:
 
 def answer(
     *,
-    user_id: str,
+    user_id: str | None,
     paper_ids: list[str],
     text: str,
     use_file_search: bool = False,

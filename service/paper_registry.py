@@ -228,13 +228,15 @@ def resolve_papers(
 
 
 def resolve_selected_papers(
-    *, user_id: str, paper_ids: list[str]
+    *, user_id: str | None, paper_ids: list[str]
 ) -> list[ResolvedLibraryPaper]:
-    """Strictly resolve selected papers from the library, then the corpus.
+    """Strictly resolve selected papers from the caller's library, then the corpus.
 
     A selected corpus paper does not need to have been saved first.  Only
     library-backed papers can contribute a full-text file; public corpus papers
-    return ``library_paper=None`` and are therefore metadata-only evidence.
+    return ``library_paper=None`` and are therefore metadata-only evidence.  A
+    guest caller has no library access, so it can resolve only public corpus
+    papers and can never reach uploaded full text.
     Unlike :func:`resolve_papers`, this is strict: every requested ID must be
     resolved so the QA evidence order always matches the user's selection.
     """
