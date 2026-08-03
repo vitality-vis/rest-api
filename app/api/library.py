@@ -488,7 +488,7 @@ def post_library_papers_unsave():
 @library_bp.route("/library/papers/import", methods=["POST"])
 @cross_origin()
 def post_library_papers_import():
-    """Save normalized user-supplied paper metadata to the personal library.
+    """Import normalized user-supplied paper metadata to the personal library.
 
     Each valid item receives a permanent ``user:`` ID and snapshot. This is
     deliberately separate from the corpus ``/saved`` APIs: imported DOI-backed
@@ -502,6 +502,9 @@ def post_library_papers_import():
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         return jsonify({"error": "items must be an array"}), 400
     items = payload["items"]
+    also_save = payload.get("also_save", True)
+    if not isinstance(also_save, bool):
+        return jsonify({"error": "also_save must be a boolean"}), 400
     if not items or len(items) > MAX_IMPORT_ITEMS:
         return jsonify(
             {"error": f"items must contain between 1 and {MAX_IMPORT_ITEMS} items"}
@@ -529,7 +532,9 @@ def post_library_papers_import():
 
     if valid_items:
         try:
-            persisted = import_user_papers(user_id=user_id, papers=valid_items)
+            persisted = import_user_papers(
+                user_id=user_id, papers=valid_items, is_saved=also_save
+            )
         except UserPapersPersistenceError as error:
             current_app.logger.error("Could not import library papers: %s", error)
             return Response("Library is unavailable", status=503, mimetype="text/plain")

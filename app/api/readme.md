@@ -39,7 +39,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | `DELETE` | `/library/papers/{paper_id}` | required | Permanently delete a user-imported paper and its uploaded full text. |
 | `POST` | `/library/papers/saved` | required | Body `{ papers: Paper[] }` (max 100). Bulk upsert as saved. |
 | `POST` | `/library/papers/unsave` | required | Body `{ paper_ids: string[] }` (max 100). Bulk Unsave using each row's origin/file rule. |
-| `POST` | `/library/papers/import` | required | Body `{ items: [{ paper, raw? }] }` (max 100). `paper.title` and `paper.abstract` are required. Each valid item is saved as an independent `origin=user` paper with a `user:` ID; response has per-item `imported` / `invalid` results. |
+| `POST` | `/library/papers/import` | required | Body `{ items: [{ paper, raw? }], also_save?: boolean }` (max 100). `paper.title` and `paper.abstract` are required. Each valid item is stored as an independent `origin=user` paper with a `user:` ID; `also_save` defaults to `true`; response has per-item `imported` / `invalid` results. |
 | `PUT` | `/library/papers/{paper_id}/file` | required | multipart: `file` (PDF) + `metadata` (JSON `Paper`). |
 | `DELETE` | `/library/papers/{paper_id}/file` | required | Deletes Azure file, clears upload fields; drops unsaved empty rows. |
 

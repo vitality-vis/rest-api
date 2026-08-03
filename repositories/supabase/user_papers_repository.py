@@ -172,13 +172,14 @@ def save_user_papers(
 
 
 def import_user_papers(
-    *, user_id: str, papers: list[dict[str, object]]
+    *, user_id: str, papers: list[dict[str, object]], is_saved: bool = True
 ) -> list[dict[str, object]]:
     """Upsert user-supplied papers with snapshots that always remain available.
 
     ``paper_id`` is either assigned by the API or is a guest-generated user UUID.
     The conflict target intentionally provides only retry/idempotency semantics; it
-    does not deduplicate papers based on their metadata.
+    does not deduplicate papers based on their metadata. ``is_saved`` controls
+    whether a newly imported paper also appears on the Saved shelf.
     """
     response = _request(
         "POST",
@@ -191,7 +192,7 @@ def import_user_papers(
                 "paper_id": paper["paper_id"],
                 "metadata_snapshot": paper["metadata_snapshot"],
                 "metadata_raw": paper.get("metadata_raw"),
-                "is_saved": True,
+                "is_saved": is_saved,
                 "origin": "user",
             }
             for paper in papers
