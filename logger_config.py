@@ -3,13 +3,30 @@ Centralized logging configuration for VitaLITy2
 Sends logs to both terminal (console) and Google Cloud Platform
 """
 
-import os
+import copy
 import logging
 import sys
+from collections.abc import Mapping
 from typing import Optional
 
 # Global logger instance
 _logger: Optional[logging.Logger] = None
+
+
+class _ProvenanceConsoleFormatter(logging.Formatter):
+    """Keep provenance payloads out of terminal output without changing Cloud payloads."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not getattr(record, "provenance_event", False):
+            return super().format(record)
+
+        payload = record.msg if isinstance(record.msg, Mapping) else None
+        if not isinstance(payload, Mapping):
+            return super().format(record)
+        console_record = copy.copy(record)
+        console_record.msg = payload.get("message", "Socket Event")
+        console_record.args = ()
+        return super().format(console_record)
 
 
 def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Logger:
@@ -42,11 +59,10 @@ def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Lo
     # Create console handler (for terminal output)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
+    console_handler.setFormatter(_ProvenanceConsoleFormatter(
         '%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
     logger.addHandler(console_handler)
 
     # Add Google Cloud Logging handler if enabled

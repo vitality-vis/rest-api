@@ -1,5 +1,4 @@
 import os
-import json
 from datetime import datetime
 import argparse
 
@@ -52,6 +51,7 @@ Compress(app)
 socketio = SocketIO(app, cors_allowed_origins=[
     'http://localhost:8080',  # User study dev server
     'http://localhost:8081', # standalone
+    'http://localhost:5173', # rebuild Vite dev server
     'https://vitality.mathcs.emory.edu'  # Production  server
 ])
 
@@ -76,46 +76,39 @@ def handle_disconnect():
     logger.info(f'[{timestamp}] WebSocket Client disconnected: {request.sid}')
 
 
-##############insertion#######################
 @socketio.on('log_event')
-def handle_log_event(data, callback=None):
+def handle_log_event(data):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
-        print("PYTHON SERVER - Received log_event!")
+        if not isinstance(data, dict):
+            raise ValueError("event must be an object")
 
-        # Extract event details
-        event_name = data.get("eventName", "unknown_event")
-        user_id = data.get("userId")
+        # The rebuild sends a single provenance envelope. Keep this Socket.IO
+        # channel and its Google Cloud Logging destination compatible with the
+        # legacy study logger.
+        event_id = data.get("eventId")
         session_id = data.get("sessionId")
-        study_id = data.get("studyId")
+        action = data.get("action")
         event_data = data.get("eventData")
+        if not all(isinstance(value, str) and value for value in (event_id, session_id, action)):
+            raise ValueError("eventId, sessionId, and action are required")
+        if not isinstance(event_data, dict):
+            raise ValueError("eventData must be an object")
 
         # Log detailed information to TERMINAL and GCP (automatically sent to both)
-        logger.info(
-            f"[{timestamp}] Socket Event - "
-            f"Event: {event_name} | "
-            f"User ID: {user_id} | "
-            f"Session ID: {session_id} | "
-            f"Study ID: {study_id} | "
-            f"Data: {json.dumps(event_data)}"
-        )
+        overview = f"Socket Event - Actor Type: {data.get('actorType', 'unknown')} | Action: {action}"
+        # CloudLoggingHandler recognises a mapping message and writes it
+        # directly as jsonPayload.
+        logger.info({"message": overview, **data}, extra={"provenance_event": True})
 
-        # Send acknowledgment to client
-        if callback:
-            callback({"status": "success", "timestamp": timestamp})
+        # Returning from a Flask-SocketIO handler is the acknowledgement sent
+        # to the callback passed to socket.emit on the client.
+        return {"status": "success", "timestamp": timestamp}
 
-    except KeyError as e:
-        logger.error(f"[{timestamp}] Couldn't process the following: {e}")
-        logger.info(f"Raw data received: {data}")
-        # Send error acknowledgment
-        if callback:
-            callback({"status": "error", "message": f"KeyError: {str(e)}"})
     except Exception as e:
         logger.error(f"[{timestamp}] An error occured during logging event: {e}")
         logger.info(f"Raw data received: {data}")
-        # Send error acknowledgment
-        if callback:
-            callback({"status": "error", "message": str(e)})
+        return {"status": "error", "message": str(e)}
 
 # === Route: Download selected papers in BibTeX format ===
 @app.route('/checkoutPapers', methods=['POST'])
