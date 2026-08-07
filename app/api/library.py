@@ -27,6 +27,7 @@ from repositories.supabase.auth import (
 )
 from repositories.supabase.user_papers_repository import (
     UserPaperNotFoundError,
+    UserPaperNotSavedError,
     UserPapersPersistenceError,
     clear_user_paper_file,
     delete_user_paper,
@@ -37,6 +38,7 @@ from repositories.supabase.user_papers_repository import (
     save_user_papers,
     unsave_user_paper,
     unsave_user_papers,
+    update_user_paper_tags,
     upsert_user_paper_file,
 )
 from service.fulltext import LibraryIndexError, detach_user_paper_file, index_user_paper
@@ -56,6 +58,8 @@ MAX_BULK_SAVE_PAPERS = 100
 MAX_IMPORT_ITEMS = 100
 MAX_RAW_METADATA_BYTES = 512 * 1024
 MAX_RAW_FORMAT_LENGTH = 64
+MAX_PAPER_TAGS = 20
+MAX_PAPER_TAG_LENGTH = 64
 PDF_MAGIC = b"%PDF-"
 READ_CHUNK_BYTES = 64 * 1024
 SPOOLED_PDF_MEMORY_BYTES = 8 * 1024 * 1024
@@ -93,6 +97,27 @@ def _string_list(value: object, field_name: str) -> list[str]:
     if not isinstance(value, list) or len(value) > MAX_LIST_ITEMS:
         raise ValueError(f"{field_name} is invalid")
     return [_bounded_text(item, field_name, MAX_LIST_ITEM_LENGTH) for item in value]
+
+
+def _validate_tags(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > MAX_PAPER_TAGS:
+        raise ValueError(f"tags must contain at most {MAX_PAPER_TAGS} items")
+
+    tags: list[str] = []
+    normalized_tags: set[str] = set()
+    for value_item in value:
+        if not isinstance(value_item, str):
+            raise ValueError("tags must contain strings")
+        tag = value_item.strip()
+        if not tag or len(tag) > MAX_PAPER_TAG_LENGTH:
+            raise ValueError(
+                f"each tag must contain between 1 and {MAX_PAPER_TAG_LENGTH} characters"
+            )
+        normalized_tag = tag.casefold()
+        if normalized_tag not in normalized_tags:
+            normalized_tags.add(normalized_tag)
+            tags.append(tag)
+    return tags
 
 
 def _nullable_integer(value: object, field_name: str) -> int | None:
@@ -425,6 +450,7 @@ def get_library_papers():
                     "origin": paper.origin,
                     "metadata": paper.metadata,
                     "is_saved": paper.library_paper.get("is_saved"),
+                    "tags": paper.library_paper.get("tags") or [],
                     "azure_file_id": paper.library_paper.get("azure_file_id"),
                     "uploaded_filename": paper.library_paper.get("uploaded_filename"),
                     "uploaded_bytes": paper.library_paper.get("uploaded_bytes"),
@@ -596,6 +622,37 @@ def delete_library_paper_saved(paper_id: str):
         current_app.logger.error("Could not unsave library paper: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return Response(status=204)
+
+
+@library_bp.route("/library/papers/<path:paper_id>/tags", methods=["PUT"])
+@cross_origin()
+def put_library_paper_tags(paper_id: str):
+    """Replace the complete tag set for one paper on the Saved shelf."""
+    user_id, error_response = _require_authenticated_user_id()
+    if error_response is not None:
+        return error_response
+    payload = request.get_json(silent=True)
+    try:
+        paper_id = _validate_paper_id(paper_id)
+        tags = _validate_tags(payload.get("tags") if isinstance(payload, dict) else None)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    try:
+        paper = update_user_paper_tags(user_id=user_id, paper_id=paper_id, tags=tags)
+    except UserPaperNotFoundError:
+        return Response("Not found", status=404, mimetype="text/plain")
+    except UserPaperNotSavedError:
+        return Response("Paper must be saved before applying tags", status=409, mimetype="text/plain")
+    except UserPapersPersistenceError as error:
+        current_app.logger.error("Could not update tags for library paper: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
+    return jsonify(
+        {
+            "paper_id": paper.get("paper_id"),
+            "tags": paper.get("tags") or [],
+        }
+    )
 
 
 @library_bp.route("/library/papers/<path:paper_id>", methods=["DELETE"])

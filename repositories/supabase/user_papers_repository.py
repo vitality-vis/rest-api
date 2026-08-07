@@ -11,7 +11,7 @@ from repositories.supabase.client import get_supabase_settings, service_role_hea
 
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
 _SHELF_COLUMNS = (
-    "id,user_id,paper_id,metadata_snapshot,is_saved,origin,azure_file_id,uploaded_filename,"
+    "id,user_id,paper_id,metadata_snapshot,is_saved,tags,origin,azure_file_id,uploaded_filename,"
     "uploaded_bytes,uploaded_at,vs_file_status,vs_file_id,"
     "vs_indexed_at,vs_last_error,created_at,updated_at"
 )
@@ -23,6 +23,10 @@ class UserPapersPersistenceError(RuntimeError):
 
 class UserPaperNotFoundError(UserPapersPersistenceError):
     """Raised when a paper is not on the verified user's shelf."""
+
+
+class UserPaperNotSavedError(UserPapersPersistenceError):
+    """Raised when an operation requires a paper to be on the Saved shelf."""
 
 
 def list_user_papers(*, user_id: str, saved_only: bool = False) -> list[dict[str, object]]:
@@ -203,6 +207,33 @@ def import_user_papers(
     return _json_list(response, "User paper import returned an invalid response")
 
 
+def update_user_paper_tags(
+    *, user_id: str, paper_id: str, tags: list[str]
+) -> dict[str, object]:
+    """Replace a saved paper's complete user-defined tag set."""
+    paper = get_user_paper(user_id=user_id, paper_id=paper_id)
+    if paper is None:
+        raise UserPaperNotFoundError("User paper does not exist")
+    if not paper.get("is_saved"):
+        raise UserPaperNotSavedError("User paper is not saved")
+
+    response = _request(
+        "PATCH",
+        "user_papers",
+        params={"user_id": f"eq.{user_id}", "paper_id": f"eq.{paper_id}"},
+        headers={"Prefer": "return=representation"},
+        json={"tags": tags},
+    )
+    if response.status_code not in {200, 204}:
+        raise UserPapersPersistenceError("Could not update user paper tags")
+    if response.status_code == 204 or not response.content:
+        raise UserPaperNotFoundError("User paper does not exist")
+    records = _json_list(response, "User paper tags update returned an invalid response")
+    if len(records) != 1:
+        raise UserPaperNotFoundError("User paper does not exist")
+    return records[0]
+
+
 def unsave_user_paper(*, user_id: str, paper_id: str) -> None:
     """Clear saved state, retaining imported rows and corpus rows with a file."""
     paper = get_user_paper(user_id=user_id, paper_id=paper_id)
@@ -218,7 +249,7 @@ def unsave_user_paper(*, user_id: str, paper_id: str) -> None:
                 "paper_id": f"eq.{paper_id}",
             },
             headers={"Prefer": "return=representation"},
-            json={"is_saved": False},
+            json={"is_saved": False, "tags": []},
         )
         if response.status_code not in {200, 204}:
             raise UserPapersPersistenceError("Could not unsave user paper")
@@ -429,6 +460,7 @@ def _json_list(response: requests.Response, error_message: str) -> list[dict[str
 
 __all__ = [
     "UserPaperNotFoundError",
+    "UserPaperNotSavedError",
     "UserPapersPersistenceError",
     "clear_user_paper_file",
     "delete_empty_user_paper",
@@ -441,6 +473,7 @@ __all__ = [
     "save_user_papers",
     "unsave_user_paper",
     "unsave_user_papers",
+    "update_user_paper_tags",
     "update_user_paper_index_state",
     "upsert_user_paper_file",
 ]
