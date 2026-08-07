@@ -78,6 +78,8 @@ class PaperCitationsRequest(BaseModel):
 
     doi: str = Field(min_length=1)
     limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=10_000)
+    direction: Optional[Literal["references", "cited_by"]] = None
 
 
 class PaperCitationItem(PaperResponse):
@@ -104,6 +106,7 @@ class PaperCitationGroup(BaseModel):
     """One citation direction: OpenAlex total hint + papers."""
 
     total_hint: int = Field(ge=0)
+    has_more: bool = False
     papers: List[PaperCitationItem] = Field(default_factory=list)
 
 

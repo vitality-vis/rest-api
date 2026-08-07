@@ -178,6 +178,8 @@ def get_paper_citations_endpoint():
         query = PaperCitationsRequest(
             doi=raw_doi.strip() if isinstance(raw_doi, str) else raw_doi,
             limit=input_payload.get("limit", 50),
+            offset=input_payload.get("offset", 0),
+            direction=input_payload.get("direction"),
         )
     except ValidationError as error:
         return jsonify(
@@ -185,7 +187,12 @@ def get_paper_citations_endpoint():
         ), 400
 
     try:
-        result = get_paper_citations(query.doi, query.limit)
+        result = get_paper_citations(
+            query.doi,
+            query.limit,
+            query.offset,
+            query.direction,
+        )
     except PaperCitationsNotFoundError:
         return jsonify({"error": "Paper was not found in OpenAlex"}), 404
     except PaperCitationsUnavailableError:

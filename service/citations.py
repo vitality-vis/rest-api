@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Optional
 
 from logger_config import get_logger
 from repositories.openalex import (
@@ -34,11 +34,17 @@ class PaperCitationsProviderError(RuntimeError):
     """Raised when OpenAlex rejects or returns an invalid request."""
 
 
-def get_paper_citations(doi: str, limit: int = 50) -> Dict[str, Any]:
+def get_paper_citations(
+    doi: str,
+    limit: int = 50,
+    offset: int = 0,
+    direction: Optional[Literal["references", "cited_by"]] = None,
+) -> Dict[str, Any]:
     """Return references and citing works for one DOI from OpenAlex.
 
     Each neighbor is annotated with ``in_corpus`` after a Zilliz DOI gate.
     Corpus matches also receive the Vitality ``paper_id`` (``ID``).
+    When ``direction`` is specified, only that citation direction is fetched.
     """
     normalized_doi = normalize_doi(doi)
     try:
@@ -50,12 +56,23 @@ def get_paper_citations(doi: str, limit: int = 50) -> Dict[str, Any]:
 
         openalex_id = str(source["openalex_id"])
         referenced_work_ids = source.get("referenced_works") or []
-        references = list_referenced_works(
-            openalex_id,
-            limit,
-            referenced_work_ids=referenced_work_ids,
+        references_total = len(referenced_work_ids)
+        cited_by_total = max(0, int(source.get("citation_count") or 0))
+        references = (
+            list_referenced_works(
+                openalex_id,
+                limit,
+                offset=offset,
+                referenced_work_ids=referenced_work_ids,
+            )
+            if direction in (None, "references")
+            else []
         )
-        cited_by = list_citing_works(openalex_id, limit)
+        cited_by = (
+            list_citing_works(openalex_id, limit, offset=offset)
+            if direction in (None, "cited_by")
+            else []
+        )
     except (OpenAlexConfigurationError, OpenAlexTransientError) as error:
         raise PaperCitationsUnavailableError(str(error)) from error
     except OpenAlexError as error:
@@ -70,11 +87,21 @@ def get_paper_citations(doi: str, limit: int = 50) -> Dict[str, Any]:
             "openalex_id": openalex_id,
         },
         "references": {
-            "total_hint": len(referenced_work_ids),
+            "total_hint": references_total,
+            "has_more": (
+                offset + len(references) < references_total
+                if direction in (None, "references")
+                else False
+            ),
             "papers": references,
         },
         "cited_by": {
-            "total_hint": max(0, int(source.get("citation_count") or 0)),
+            "total_hint": cited_by_total,
+            "has_more": (
+                offset + len(cited_by) < cited_by_total
+                if direction in (None, "cited_by")
+                else False
+            ),
             "papers": cited_by,
         },
     }

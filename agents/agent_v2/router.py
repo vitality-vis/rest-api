@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .models import ChatRequestContext, RouteDecision, SearchIntent, V2ChatRequest
 from .logging import SearchV2Trace
@@ -70,18 +70,14 @@ Selected papers available: {has_selected_papers}
 Selected paper IDs: {selected_paper_ids}
 </SELECTED_PAPER_CONTEXT>
 
-<RECENT_CONVERSATION>
-{recent_history}
-</RECENT_CONVERSATION>
 """
 
 
-def _recent_history(history: list[dict[str, str]] | None) -> str:
-    if not history:
-        return "(No prior conversation.)"
-    lines: list[str] = []
+def _history_messages(history: list[dict[str, str]] | None) -> list[HumanMessage | AIMessage]:
+    """Convert bounded prior turns to native provider chat messages."""
+    messages: list[HumanMessage | AIMessage] = []
     remaining = 6_000
-    for turn in history[-6:]:
+    for turn in (history or [])[-6:]:
         role, content = turn.get("role"), turn.get("content")
         if role not in {"user", "assistant"} or not isinstance(content, str):
             continue
@@ -94,9 +90,9 @@ def _recent_history(history: list[dict[str, str]] | None) -> str:
         if not content or remaining <= 0:
             continue
         content = content[: min(1_000, remaining)]
-        lines.append(f"{role.upper()}: {content}")
+        messages.append(HumanMessage(content=content) if role == "user" else AIMessage(content=content))
         remaining -= len(content)
-    return "\n".join(lines) or "(No prior conversation.)"
+    return messages
 
 
 def _validate_decision(data: dict[str, Any]) -> RouteDecision:
@@ -139,14 +135,18 @@ def route(request: V2ChatRequest, *, trace: SearchV2Trace) -> RouteDecision:
             _ROUTER_PROMPT
             .replace("{has_selected_papers}", "yes" if context.selected_paper_ids else "no")
             .replace("{selected_paper_ids}", ", ".join(context.selected_paper_ids) or "(none)")
-            .replace("{recent_history}", _recent_history(request.history))
         )
         current_context = json.dumps(request.context or {}, ensure_ascii=False, separators=(",", ":"))
-        router_prompt = (
-            f"{prompt}\n<CURRENT_USER_CONTEXT>\n{current_context}\n</CURRENT_USER_CONTEXT>\n"
+        current_message = (
+            f"<CURRENT_USER_CONTEXT>\n{current_context}\n</CURRENT_USER_CONTEXT>\n"
             f"<CURRENT_USER_MESSAGE>\n{request.text}\n</CURRENT_USER_MESSAGE>"
         )
-        raw = get_azure_llm().invoke([HumanMessage(content=router_prompt)]).content
+        router_prompt = f"{prompt}\n\n{current_message}"
+        raw = get_azure_llm().invoke([
+            SystemMessage(content=prompt),
+            *_history_messages(request.history),
+            HumanMessage(content=current_message),
+        ]).content
         clean = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
         decision = _validate_decision(json.loads(clean))
     except Exception:

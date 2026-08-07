@@ -236,6 +236,7 @@ def list_referenced_works(
     work_id: str,
     limit: int,
     *,
+    offset: int = 0,
     referenced_work_ids: Optional[Sequence[str]] = None,
     api_key: Optional[str] = None,
     session: Optional[requests.Session] = None,
@@ -272,7 +273,8 @@ def list_referenced_works(
             if isinstance(item, str) and normalize_openalex_id(item)
         ]
 
-    ids = ids[:safe_limit]
+    safe_offset = max(0, int(offset or 0))
+    ids = ids[safe_offset : safe_offset + safe_limit]
     if not ids:
         return []
 
@@ -309,6 +311,7 @@ def list_citing_works(
     work_id: str,
     limit: int,
     *,
+    offset: int = 0,
     api_key: Optional[str] = None,
     session: Optional[requests.Session] = None,
     timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
@@ -319,16 +322,16 @@ def list_citing_works(
     if safe_limit <= 0 or not normalized_id:
         return []
 
+    safe_offset = max(0, int(offset or 0))
     collected: list[dict[str, Any]] = []
-    page = 1
+    page = safe_offset // MAX_PER_PAGE + 1
+    page_offset = safe_offset % MAX_PER_PAGE
     while len(collected) < safe_limit:
-        remaining = safe_limit - len(collected)
-        per_page = min(MAX_PER_PAGE, remaining)
         payload = _get_json(
             "/works",
             params={
                 "filter": f"cites:{normalized_id}",
-                "per-page": per_page,
+                "per-page": MAX_PER_PAGE,
                 "page": page,
                 "select": WORK_SUMMARY_SELECT,
             },
@@ -340,7 +343,7 @@ def list_citing_works(
         if not isinstance(results, list) or not results:
             break
 
-        for raw in results:
+        for raw in results[page_offset:]:
             if not isinstance(raw, Mapping):
                 continue
             summary = work_to_paper(raw)
@@ -349,9 +352,10 @@ def list_citing_works(
             if len(collected) >= safe_limit:
                 break
 
-        if len(results) < per_page:
+        if len(results) < MAX_PER_PAGE:
             break
         page += 1
+        page_offset = 0
 
     return collected
 
