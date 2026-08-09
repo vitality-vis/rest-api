@@ -5,10 +5,11 @@ import json
 import re
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 from service.llm import get_llm
 
+from .chat_history import history_messages
 from .models import ChatRequestContext, RouteDecision, RouteDecisionOutput, SearchIntent, V2ChatRequest
 from .logging import SearchV2Trace
 
@@ -126,28 +127,6 @@ _CURRENT_TURN_MARKER = "<CURRENT_USER_CONTEXT>"
 _ROUTER_PROMPT = _ROUTER_PROMPT.replace("{output_schema}", _route_decision_schema_json())
 
 
-def _history_messages(history: list[dict[str, str]] | None) -> list[HumanMessage | AIMessage]:
-    """Convert bounded prior turns to native provider chat messages."""
-    messages: list[HumanMessage | AIMessage] = []
-    remaining = 6_000
-    for turn in (history or [])[-6:]:
-        role, content = turn.get("role"), turn.get("content")
-        if role not in {"user", "assistant"} or not isinstance(content, str):
-            continue
-        content = re.sub(r"\[\[VITALITY_PAPERS_JSON\]\][\s\S]*?\[\[/VITALITY_PAPERS_JSON\]\]", "", content)
-        content = re.sub(
-            r"\[\[VITALITY_FILE_SEARCH_SCOPE_WARNING\]\][\s\S]*?\[\[/VITALITY_FILE_SEARCH_SCOPE_WARNING\]\]",
-            "",
-            content,
-        ).strip()
-        if not content or remaining <= 0:
-            continue
-        content = content[: min(1_000, remaining)]
-        messages.append(HumanMessage(content=content) if role == "user" else AIMessage(content=content))
-        remaining -= len(content)
-    return messages
-
-
 def _validate_decision(data: dict[str, Any]) -> RouteDecision:
     if hasattr(RouteDecision, "model_validate"):
         return RouteDecision.model_validate(data)
@@ -206,7 +185,7 @@ def route(
         system_prompt, _, current_turn = router_prompt.partition(_CURRENT_TURN_MARKER)
         raw = llm.invoke([
             SystemMessage(content=system_prompt.strip()),
-            *_history_messages(request.history),
+            *history_messages(request.history),
             HumanMessage(content=f"{_CURRENT_TURN_MARKER}{current_turn}".strip()),
         ]).content
         clean = re.sub(r"```(?:json)?|```", "", str(raw)).strip()

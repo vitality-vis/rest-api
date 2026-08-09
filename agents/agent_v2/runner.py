@@ -1,10 +1,9 @@
-"""Experimental chat-v2 runner: paper finding uses v2, everything else falls back."""
+"""Chat-v2 runner for talk, clarification, search, and synthesis turns."""
 from __future__ import annotations
 
 import json
 from typing import AsyncIterator
 
-from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
 from agents.agent_v1_legacy.rag_core import PAPERS_PAYLOAD_END, PAPERS_PAYLOAD_START
 from langchain_core.messages import HumanMessage
 
@@ -16,9 +15,15 @@ from service.llm import get_llm
 from service.paper_qa import PaperQAError, answer as answer_selected_papers
 from .search_executor import FUSED_CANDIDATE_LIMIT, SearchCriteriaRequiredError, run_search
 from .logging import SearchV2Trace
+from .talk_responder import respond as respond_to_talk
 
 
 CHAT_RESULT_LIMIT = FUSED_CANDIDATE_LIMIT
+DEFAULT_CLARIFICATION = "Could you clarify what you would like me to help with?"
+ROUTER_FAILURE_CLARIFICATION = (
+    "I couldn't reliably determine whether you want a general response or a "
+    "research-grounded answer. Which would you prefer?"
+)
 
 
 def _paper_id(paper: dict) -> str | None:
@@ -104,6 +109,16 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     )
     effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
     decision = route(request, trace=trace)
+    if decision.route == "talk":
+        if decision.decision_status != "model_decision":
+            yield ROUTER_FAILURE_CLARIFICATION
+            return
+        async for chunk in respond_to_talk(request):
+            yield chunk
+        return
+    if decision.route == "clarify":
+        yield decision.clarification_question or DEFAULT_CLARIFICATION
+        return
     if decision.route == "synthesis":
         try:
             yield answer_selected_papers(
@@ -118,19 +133,8 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
         except PaperQAError as error:
             yield str(error)
         return
-    if decision.route != "search" or decision.search_intent is None:
-        legacy_request = AgentRequest(
-            text=request.text,
-            chat_id=request.chat_id,
-            history=request.history,
-            selected_paper_ids=request.selected_paper_ids,
-            effort=request.effort,
-            trace_id=request.trace_id,
-            user_message_id=request.user_message_id,
-            assistant_message_id=request.assistant_message_id,
-        )
-        async for chunk in run_search_v1_legacy(legacy_request):
-            yield chunk
+    if decision.search_intent is None:
+        yield ROUTER_FAILURE_CLARIFICATION
         return
 
     # Chat sends the full bounded ranked list to the paper panel.
