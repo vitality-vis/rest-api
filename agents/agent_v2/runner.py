@@ -9,6 +9,7 @@ from agents.agent_v1_legacy.rag_core import PAPERS_PAYLOAD_END, PAPERS_PAYLOAD_S
 from langchain_core.messages import HumanMessage
 
 from .models import SearchV2Request, V2ChatRequest
+from .query_planner import plan_medium_retrieval
 from .router import route
 from service.grounding import replace_numbered_citations
 from service.llm import get_llm
@@ -138,6 +139,22 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     topic = decision.search_intent.topic.strip() if decision.search_intent.topic else ""
     use_resolved_topic = bool(topic and topic.casefold() not in request.text.casefold())
     retrieval_query = topic if use_resolved_topic else request.text
+    if effort == "medium":
+        planner_outcome = plan_medium_retrieval(
+            user_request=request.text,
+            retrieval_query=retrieval_query,
+            intent=decision.search_intent,
+        )
+        trace.log_medium_retrieval_plan(
+            status=planner_outcome.status,
+            raw_tool_calls=planner_outcome.raw_tool_calls,
+            plan=planner_outcome.plan,
+            duplicate_calls_removed=planner_outcome.duplicate_calls_removed,
+            calls_added_by_validator=planner_outcome.calls_added_by_validator,
+            calls_removed_by_validator=planner_outcome.calls_removed_by_validator,
+            error_type=planner_outcome.error_type,
+            error_message=planner_outcome.error_message,
+        )
     try:
         result = run_search(
             SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),

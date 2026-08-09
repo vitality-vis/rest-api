@@ -7,10 +7,12 @@ from uuid import uuid4
 
 from logger_config import log_structured
 
+from .models import RetrievalPlan
+
 
 @dataclass(frozen=True)
 class SearchV2Trace:
-    """Own the response trace ID and emit the sole search-v2 log event."""
+    """Own the response trace ID used by search-v2 structured events."""
 
     trace_id: str
     chat_id: str | None = None
@@ -87,6 +89,70 @@ class SearchV2Trace:
                     "metadata_paper_ids": metadata_paper_ids,
                     "file_search_paper_ids": file_search_paper_ids,
                     "use_file_search": use_file_search,
+                }
+            ),
+        )
+
+    def log_retrieval_execution(
+        self,
+        *,
+        plan: RetrievalPlan,
+        retrieval_counts: dict[str, int],
+        retrieval_failures: dict[str, str],
+        rerank_status: Literal["skipped", "complete", "failed"],
+        status: Literal["complete", "partial", "failed"],
+    ) -> None:
+        """Record the validated plan and each retrieval arm's outcome."""
+        actions = [
+            action.model_dump() if hasattr(action, "model_dump") else action.dict()
+            for action in plan.actions
+        ]
+        log_structured(
+            "search_v2.retrieval_execution",
+            self._with_ids(
+                {
+                    "plan_source": plan.source,
+                    "actions": actions,
+                    "retrieval_counts": retrieval_counts,
+                    "retrieval_failures": retrieval_failures,
+                    "rerank_status": rerank_status,
+                    "status": status,
+                }
+            ),
+        )
+
+    def log_medium_retrieval_plan(
+        self,
+        *,
+        status: str,
+        raw_tool_calls: list[dict[str, Any]],
+        plan: RetrievalPlan | None,
+        duplicate_calls_removed: int,
+        calls_added_by_validator: int,
+        calls_removed_by_validator: int,
+        error_type: str | None,
+        error_message: str | None,
+    ) -> None:
+        """Record a shadow medium plan without changing retrieval behavior."""
+        actions = None
+        if plan is not None:
+            actions = [
+                action.model_dump() if hasattr(action, "model_dump") else action.dict()
+                for action in plan.actions
+            ]
+        log_structured(
+            "search_v2.medium_retrieval_plan",
+            self._with_ids(
+                {
+                    "status": status,
+                    "raw_tool_calls": raw_tool_calls,
+                    "validated_actions": actions,
+                    "duplicate_calls_removed": duplicate_calls_removed,
+                    "calls_added_by_validator": calls_added_by_validator,
+                    "calls_removed_by_validator": calls_removed_by_validator,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "execution_mode": "shadow",
                 }
             ),
         )

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -27,12 +27,51 @@ class SearchIntent(BaseModel):
     min_citations: int | None = None
 
 
+RetrievalTool = Literal["bm25", "vector", "exact_terms", "metadata"]
+RetrievalPlanSource = Literal["low", "medium"]
+
+
+class BM25RetrievalAction(BaseModel):
+    tool: Literal["bm25"] = "bm25"
+    query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
+
+
+class VectorRetrievalAction(BaseModel):
+    tool: Literal["vector"] = "vector"
+    query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
+
+
+class ExactTermsRetrievalAction(BaseModel):
+    tool: Literal["exact_terms"] = "exact_terms"
+    terms: list[str] = Field(min_length=1, max_length=5)
+
+
+class MetadataRetrievalAction(BaseModel):
+    tool: Literal["metadata"] = "metadata"
+
+
+RetrievalAction = Annotated[
+    BM25RetrievalAction
+    | VectorRetrievalAction
+    | ExactTermsRetrievalAction
+    | MetadataRetrievalAction,
+    Field(discriminator="tool"),
+]
+
+
+class RetrievalPlan(BaseModel):
+    source: RetrievalPlanSource
+    actions: list[RetrievalAction] = Field(min_length=1, max_length=6)
+    rerank_query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
+
+
 class SearchV2Paper(BaseModel):
     paper: dict
     retrieval_sources: list[str] = Field(default_factory=list)
     retrieval_ranks: dict[str, int] = Field(default_factory=dict)
     rrf_score: float | None = None
     rerank_score: float | None = None
+    exact_match: bool = False
 
 
 class SearchV2Response(BaseModel):
