@@ -46,10 +46,19 @@ class SearchV2Trace:
     def log_decision(
         self,
         *,
-        decision: Literal["talk", "answer_with_search", "search", "synthesis", "clarify"],
+        decision: Literal["talk", "search", "synthesis", "clarify"],
         search_intent: dict[str, Any] | None,
         query: str,
         effort: Literal["low", "medium", "high"],
+        response_mode: Literal["papers", "grounded_answer"] | None = None,
+        decision_status: Literal[
+            "explicit_mode",
+            "model_decision",
+            "json_parse_failed",
+            "validation_failed",
+            "router_error",
+            "incomplete_search_decision",
+        ] = "model_decision",
         router_prompt: str | None = None,
     ) -> None:
         data: dict[str, Any] = {
@@ -57,6 +66,8 @@ class SearchV2Trace:
             "search_intent": search_intent,
             "query": query,
             "effort": effort,
+            "response_mode": response_mode,
+            "decision_status": decision_status,
         }
         if router_prompt is not None:
             data["router_prompt"] = router_prompt

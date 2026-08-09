@@ -17,7 +17,6 @@ class SearchV2Request(BaseModel):
 
 
 class SearchIntent(BaseModel):
-    retrieval_target: Literal["topic", "metadata_browse"]
     topic: str | None = None
     title: str | None = None
     paper_ids: list[str] = Field(default_factory=list)
@@ -26,7 +25,6 @@ class SearchIntent(BaseModel):
     min_year: int | None = None
     max_year: int | None = None
     min_citations: int | None = None
-    criteria: list[str] = Field(default_factory=list)
 
 
 class SearchV2Paper(BaseModel):
@@ -68,7 +66,16 @@ class V2ChatRequest:
     user_id: str | None = None
 
 
-RouteKind = Literal["talk", "answer_with_search", "search", "synthesis", "clarify"]
+RouteKind = Literal["talk", "search", "synthesis", "clarify"]
+ResponseMode = Literal["papers", "grounded_answer"]
+RouterDecisionStatus = Literal[
+    "explicit_mode",
+    "model_decision",
+    "json_parse_failed",
+    "validation_failed",
+    "router_error",
+    "incomplete_search_decision",
+]
 
 
 class ChatRequestContext(BaseModel):
@@ -78,13 +85,20 @@ class ChatRequestContext(BaseModel):
     requested_mode: Literal["auto", "synthesis"] = "auto"
 
 
-class RouteDecision(BaseModel):
-    """The top-level routing decision for a v2 chat turn."""
+class RouteDecisionOutput(BaseModel):
+    """Fields the router LLM is asked to return."""
 
     route: RouteKind
+    response_mode: ResponseMode | None = None
     search_intent: SearchIntent | None = None
     clarification_question: str | None = None
     use_file_search: bool = False
+
+
+class RouteDecision(RouteDecisionOutput):
+    """Routing decision for a v2 chat turn, plus internal status."""
+
+    decision_status: RouterDecisionStatus = "model_decision"
 
 
 class SynthesisExecutionPlan(BaseModel):

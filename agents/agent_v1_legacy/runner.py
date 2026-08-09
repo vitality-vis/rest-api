@@ -7,48 +7,28 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
-import config  # Loads the project .env before the LLM is configured.
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.schema import Document
 from langchain.schema import HumanMessage, AIMessage
-from langchain_openai import AzureChatOpenAI
 
 from agents import agent
 from logger_config import get_logger
 from .agent_tools import ALL_AGENT_TOOLS
 from agents.agent_v1_legacy.intent_classifier import classify_intent, Intent
 from service.memory_manager import MemoryManager
+from service.llm import get_llm
 from agents.agent_v1_legacy.query_rewriter import rewrite_query
 from .session_state import SESSIONS
 
 
 logging = get_logger()
 
-class NoStopAzureChatOpenAI(AzureChatOpenAI):
-    """AzureChatOpenAI that strips/ignores 'stop' for models that don't support it."""
-    def _generate(self, messages, stop=None, **kwargs):
-        return super()._generate(messages, stop=None, **kwargs)
-
-    def generate(self, messages, stop=None, **kwargs):
-        return super().generate(messages, stop=None, **kwargs)
-
-    def generate_prompt(self, prompts, stop=None, **kwargs):
-        return super().generate_prompt(prompts, stop=None, **kwargs)
-
-llm = NoStopAzureChatOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    temperature=1,  # GPT-5 only supports temperature=1
-    streaming=True,
-)
+llm = get_llm(streaming=True)
 
 DEFAULT_EMPTY_CONTEXT_MSG = "No documents retrieved."
 
@@ -68,7 +48,7 @@ def get_or_create_chat_session(chat_id):
     # -----------------------------
     # 1. Create ONE LLM for the session
     # -----------------------------
-    llm = get_azure_llm()   # NoStopAzureChatOpenAI
+    llm = get_llm()
 
     # -----------------------------
     # 2. Wrap tools per chat
@@ -219,15 +199,6 @@ def is_structured_context(text: str) -> bool:
 
     return False
 
-
-def get_azure_llm():
-    return NoStopAzureChatOpenAI(
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        temperature=1,  # GPT-5 only supports temperature=1
-    )
 
 def debug(msg: str) -> None:
     """Log a debug message (use logging for production)."""
@@ -718,7 +689,7 @@ async def run_two_stage_rag_stream(
         session = get_or_create_chat_session(chat_id)
     except Exception as e:
         logging.warning("[run_two_stage_rag_stream] session creation failed: %s", e)
-        llm = get_azure_llm()
+        llm = get_llm()
         async for chunk in _fallback_direct_answer(llm, user_input, mem=None, session=None):
             yield chunk
         return

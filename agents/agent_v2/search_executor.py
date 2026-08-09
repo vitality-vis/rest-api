@@ -43,7 +43,7 @@ def _policy(intent: SearchIntent) -> str:
         raise SearchCriteriaRequiredError(
             "Please provide a research topic or at least one filter such as title, author, venue, year, or paper ID."
         )
-    if intent.retrieval_target == "metadata_browse" and not intent.topic:
+    if not intent.topic:
         return "filter"
     return "hybrid"
 

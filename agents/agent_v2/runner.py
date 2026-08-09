@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage
 from .models import SearchV2Request, V2ChatRequest
 from .router import route
 from service.grounding import replace_numbered_citations
+from service.llm import get_llm
 from service.paper_qa import PaperQAError, answer as answer_selected_papers
 from .search_executor import FUSED_CANDIDATE_LIMIT, SearchCriteriaRequiredError, run_search
 from .logging import SearchV2Trace
@@ -67,7 +68,7 @@ def _citation_ids(papers: list[dict], *, limit: int = 8) -> dict[int, str]:
     }
 
 
-def _answer_with_search(question: str, papers: list[dict]) -> str:
+def _answer_from_search(question: str, papers: list[dict]) -> str:
     """Synthesize an answer from v2 retrieval results without invoking v1."""
     evidence = _paper_evidence(papers)
     prompt = f"""Answer the user's question using only the retrieved-paper evidence below.
@@ -86,9 +87,7 @@ contains that detail. Give a concise, direct research-oriented answer.
 <RETRIEVED_PAPERS>
 {evidence}
 </RETRIEVED_PAPERS>"""
-    from agents.agent_v1_legacy.runner import get_azure_llm
-
-    content = get_azure_llm().invoke([HumanMessage(content=prompt)]).content
+    content = get_llm().invoke([HumanMessage(content=prompt)]).content
     answer = str(content).strip()
     if not answer:
         return "I found relevant papers, but couldn't generate a grounded answer from them."
@@ -118,7 +117,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
         except PaperQAError as error:
             yield str(error)
         return
-    if decision.route not in {"search", "answer_with_search"} or decision.search_intent is None:
+    if decision.route != "search" or decision.search_intent is None:
         legacy_request = AgentRequest(
             text=request.text,
             chat_id=request.chat_id,
@@ -153,8 +152,8 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
         paper_id = _paper_id(item.paper)
         if paper_id:
             ids.append(paper_id)
-    if decision.route == "answer_with_search" and result.papers:
-        yield _answer_with_search(request.text, [item.paper for item in result.papers])
+    if decision.response_mode == "grounded_answer" and result.papers:
+        yield _answer_from_search(request.text, [item.paper for item in result.papers])
         if ids:
             yield "\n\n"
             yield _papers_payload(ids, policy=result.policy, effort=effort)
