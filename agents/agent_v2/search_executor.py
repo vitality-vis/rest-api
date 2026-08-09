@@ -211,18 +211,70 @@ def run_search(
     request: SearchV2Request,
     *,
     intent: SearchIntent,
+    plan: RetrievalPlan | None = None,
+    medium_fallback_reason: str | None = None,
     enable_cross_encoder: bool | None = None,
     trace: SearchV2Trace | None = None,
 ) -> SearchV2Response:
-    """Build the current low-effort plan and execute it through shared tools."""
+    """Execute a supplied medium plan or the deterministic low plan."""
+    requested_plan_source = (
+        plan.source
+        if plan is not None
+        else "medium" if medium_fallback_reason else "low"
+    )
+    fallback_reason = medium_fallback_reason
     try:
-        plan = build_low_retrieval_plan(request.query, intent)
-        return execute_retrieval_plan(
-            plan,
+        selected_plan = plan or build_low_retrieval_plan(request.query, intent)
+    except RetrievalPlanValidationError as error:
+        raise SearchCriteriaRequiredError(str(error)) from error
+
+    if fallback_reason and trace is not None:
+        trace.log_retrieval_fallback(
+            requested_plan_source="medium",
+            executed_plan_source="low",
+            reason=fallback_reason,
+        )
+
+    try:
+        response = execute_retrieval_plan(
+            selected_plan,
             request=request,
             intent=intent,
             enable_cross_encoder=enable_cross_encoder,
             trace=trace,
         )
-    except RetrievalPlanValidationError as error:
-        raise SearchCriteriaRequiredError(str(error)) from error
+    except (RetrievalPlanValidationError, SearchUnavailableError) as error:
+        if selected_plan.source != "medium":
+            if isinstance(error, RetrievalPlanValidationError):
+                raise SearchCriteriaRequiredError(str(error)) from error
+            raise
+        fallback_reason = (
+            "medium_plan_validation_failed"
+            if isinstance(error, RetrievalPlanValidationError)
+            else "all_medium_actions_failed"
+        )
+        if trace is not None:
+            trace.log_retrieval_fallback(
+                requested_plan_source="medium",
+                executed_plan_source="low",
+                reason=fallback_reason,
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
+        try:
+            low_plan = build_low_retrieval_plan(request.query, intent)
+            response = execute_retrieval_plan(
+                low_plan,
+                request=request,
+                intent=intent,
+                enable_cross_encoder=enable_cross_encoder,
+                trace=trace,
+            )
+        except RetrievalPlanValidationError as low_error:
+            raise SearchCriteriaRequiredError(str(low_error)) from low_error
+
+    response.diagnostics["requested_plan_source"] = requested_plan_source
+    response.diagnostics["executed_plan_source"] = response.diagnostics.get("plan_source")
+    if fallback_reason:
+        response.diagnostics["fallback_reason"] = fallback_reason
+    return response

@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 
 
 MAX_SEARCH_QUERY_LENGTH = 10_000
+MAX_RETRIEVAL_CALLS = 8
+MAX_CALLS_BY_TOOL = {
+    "bm25": 3,
+    "vector": 3,
+    "exact_terms": 1,
+    "metadata": 1,
+}
+MAX_EXACT_TERMS = 5
 
 
 class SearchV2Request(BaseModel):
@@ -43,7 +51,7 @@ class VectorRetrievalAction(BaseModel):
 
 class ExactTermsRetrievalAction(BaseModel):
     tool: Literal["exact_terms"] = "exact_terms"
-    terms: list[str] = Field(min_length=1, max_length=5)
+    terms: list[str] = Field(min_length=1, max_length=MAX_EXACT_TERMS)
 
 
 class MetadataRetrievalAction(BaseModel):
@@ -61,7 +69,7 @@ RetrievalAction = Annotated[
 
 class RetrievalPlan(BaseModel):
     source: RetrievalPlanSource
-    actions: list[RetrievalAction] = Field(min_length=1, max_length=6)
+    actions: list[RetrievalAction] = Field(min_length=1, max_length=MAX_RETRIEVAL_CALLS)
     rerank_query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
 
 

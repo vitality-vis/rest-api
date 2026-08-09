@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from .models import (
     BM25RetrievalAction,
     ExactTermsRetrievalAction,
+    MAX_CALLS_BY_TOOL,
+    MAX_EXACT_TERMS,
+    MAX_RETRIEVAL_CALLS,
     MAX_SEARCH_QUERY_LENGTH,
     MetadataRetrievalAction,
     RetrievalAction,
@@ -18,14 +21,6 @@ from .models import (
     VectorRetrievalAction,
 )
 
-
-MAX_RETRIEVAL_CALLS = 6
-MAX_CALLS_BY_TOOL = {
-    "bm25": 2,
-    "vector": 2,
-    "exact_terms": 1,
-    "metadata": 1,
-}
 MAX_EXACT_TERM_LENGTH = 200
 ExactToolTerm = Annotated[
     str,
@@ -64,8 +59,11 @@ class SearchExactTermsToolInput(BaseModel):
 
     terms: list[ExactToolTerm] = Field(
         min_length=1,
-        max_length=5,
-        description="One to five literal terms using case-insensitive contiguous-substring AND semantics.",
+        max_length=MAX_EXACT_TERMS,
+        description=(
+            f"One to {MAX_EXACT_TERMS} literal terms using case-insensitive "
+            "contiguous-substring AND semantics."
+        ),
     )
 
 

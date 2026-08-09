@@ -139,6 +139,8 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     topic = decision.search_intent.topic.strip() if decision.search_intent.topic else ""
     use_resolved_topic = bool(topic and topic.casefold() not in request.text.casefold())
     retrieval_query = topic if use_resolved_topic else request.text
+    retrieval_plan = None
+    medium_fallback_reason = None
     if effort == "medium":
         planner_outcome = plan_medium_retrieval(
             user_request=request.text,
@@ -154,11 +156,22 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
             calls_removed_by_validator=planner_outcome.calls_removed_by_validator,
             error_type=planner_outcome.error_type,
             error_message=planner_outcome.error_message,
+            execution_mode="active",
         )
+        if planner_outcome.status == "complete" and planner_outcome.plan is not None:
+            retrieval_plan = planner_outcome.plan
+        else:
+            medium_fallback_reason = (
+                planner_outcome.status
+                if planner_outcome.status != "complete"
+                else "missing_medium_plan"
+            )
     try:
         result = run_search(
             SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),
             intent=decision.search_intent,
+            plan=retrieval_plan,
+            medium_fallback_reason=medium_fallback_reason,
             trace=trace,
         )
     except SearchCriteriaRequiredError as error:

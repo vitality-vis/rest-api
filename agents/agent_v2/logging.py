@@ -132,8 +132,9 @@ class SearchV2Trace:
         calls_removed_by_validator: int,
         error_type: str | None,
         error_message: str | None,
+        execution_mode: Literal["shadow", "active"],
     ) -> None:
-        """Record a shadow medium plan without changing retrieval behavior."""
+        """Record a medium planner outcome and whether it may be executed."""
         actions = None
         if plan is not None:
             actions = [
@@ -152,7 +153,30 @@ class SearchV2Trace:
                     "calls_removed_by_validator": calls_removed_by_validator,
                     "error_type": error_type,
                     "error_message": error_message,
-                    "execution_mode": "shadow",
+                    "execution_mode": execution_mode,
+                }
+            ),
+        )
+
+    def log_retrieval_fallback(
+        self,
+        *,
+        requested_plan_source: Literal["medium"],
+        executed_plan_source: Literal["low"],
+        reason: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Record why a requested medium search executed the low plan."""
+        log_structured(
+            "search_v2.retrieval_fallback",
+            self._with_ids(
+                {
+                    "requested_plan_source": requested_plan_source,
+                    "executed_plan_source": executed_plan_source,
+                    "reason": reason,
+                    "error_type": error_type,
+                    "error_message": error_message[:500] if error_message is not None else None,
                 }
             ),
         )
