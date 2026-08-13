@@ -51,8 +51,9 @@ Then edit `.env` and fill in your own values:
 # Azure OpenAI (LLM)
 AZURE_OPENAI_ENDPOINT=https://your-endpoint.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2025-04-01-preview
-AZURE_OPENAI_DEPLOYMENT=your-chat-deployment-name
 AZURE_OPENAI_API_KEY=your-api-key
+AZURE_OPENAI_AVAILABLE_MODELS={"gpt-5-mini":"gpt-5-mini","gpt-5.6-luna":"gpt-5.6-luna","gpt-5.6-terra":"gpt-5.6-terra"}
+AZURE_OPENAI_DEFAULT_MODEL=gpt-5.6-luna
 
 # Azure OpenAI Embeddings (optional – used when embedding type "ada" is selected)
 AZURE_OPENAI_EMBED_DEPLOYMENT=text-embedding-3-small

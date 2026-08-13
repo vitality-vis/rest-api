@@ -106,6 +106,7 @@ class V2ChatRequest:
     selected_paper_ids: list[str] | None = None
     context: dict[str, object] | None = None
     effort: str = "low"
+    model: str | None = None
     trace_id: str | None = None
     user_message_id: str | None = None
     assistant_message_id: str | None = None

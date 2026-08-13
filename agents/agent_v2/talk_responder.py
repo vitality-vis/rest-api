@@ -25,7 +25,7 @@ internal routing details, tool syntax, or Vitality machine-payload markers.
 
 async def respond(request: V2ChatRequest) -> AsyncIterator[str]:
     """Stream one non-retrieval response using v2-owned conversation history."""
-    llm = get_llm(streaming=True)
+    llm = get_llm(model=request.model, streaming=True)
     messages = [
         SystemMessage(content=_TALK_PROMPT),
         *history_messages(request.history),

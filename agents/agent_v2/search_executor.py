@@ -21,16 +21,28 @@ from .search_tools import (
     RetrievalPlanValidationError,
     build_low_retrieval_plan,
     build_search_request,
+    is_primary_query_action,
     validate_retrieval_plan,
 )
 
 
 RRF_K = 60
-CANDIDATE_LIMIT = 50
+# Primary (original-query) arms keep a fuller list; rewrite arms stay smaller so
+# extra medium formulations add recall without flooding the fused pool.
+PRIMARY_CANDIDATE_LIMIT = 50
+REWRITE_CANDIDATE_LIMIT = 30
+UNRANKED_CANDIDATE_LIMIT = 50
 FUSED_CANDIDATE_LIMIT = 100
+# Original-query hybrid arms dominate RRF; rewrite arms are down-weighted and
+# normalized only among other rewrite arms of the same tool family.
+PRIMARY_ARM_WEIGHT = 1.0
+REWRITE_ARM_WEIGHT = 0.4
 # Server-side experiment switch. Keep false until benchmark evidence supports enabling it.
 DEFAULT_ENABLE_CROSS_ENCODER = False
 # DEFAULT_ENABLE_CROSS_ENCODER = True
+
+# Back-compat alias used by the chat runner for the panel list size.
+CANDIDATE_LIMIT = PRIMARY_CANDIDATE_LIMIT
 
 
 class SearchCriteriaRequiredError(ValueError):
@@ -62,9 +74,25 @@ def _source_names(plan: RetrievalPlan) -> list[str]:
     return names
 
 
+def _candidate_limit_for_action(action: RetrievalAction, *, primary_query: str) -> int:
+    if action.tool in {"bm25", "vector"}:
+        if is_primary_query_action(action, primary_query):
+            return PRIMARY_CANDIDATE_LIMIT
+        return REWRITE_CANDIDATE_LIMIT
+    return UNRANKED_CANDIDATE_LIMIT
+
+
 def _execute_actions(plan: RetrievalPlan, intent: SearchIntent) -> tuple[list[_ActionResult], dict]:
     source_names = _source_names(plan)
-    requests = [build_search_request(action, intent=intent, limit=CANDIDATE_LIMIT) for action in plan.actions]
+    primary_query = plan.rerank_query.strip()
+    requests = [
+        build_search_request(
+            action,
+            intent=intent,
+            limit=_candidate_limit_for_action(action, primary_query=primary_query),
+        )
+        for action in plan.actions
+    ]
     results: list[_ActionResult] = []
     failures: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=len(requests)) as executor:
@@ -80,6 +108,10 @@ def _execute_actions(plan: RetrievalPlan, intent: SearchIntent) -> tuple[list[_A
     diagnostics = {
         "retrieval_failures": failures,
         "retrieval_counts": {result.source: len(result.papers) for result in results},
+        "primary_arm_weight": PRIMARY_ARM_WEIGHT,
+        "rewrite_arm_weight": REWRITE_ARM_WEIGHT,
+        "primary_candidate_limit": PRIMARY_CANDIDATE_LIMIT,
+        "rewrite_candidate_limit": REWRITE_CANDIDATE_LIMIT,
     }
     return results, diagnostics
 
@@ -95,22 +127,43 @@ def _get_or_create(merged: dict[str, SearchV2Paper], paper: dict) -> SearchV2Pap
     return item
 
 
-def _merge_results(results: list[_ActionResult]) -> list[SearchV2Paper]:
+def _rrf_arm_weight(action: RetrievalAction, *, primary_query: str, rewrite_family_counts: Counter[str]) -> float:
+    """Weight one ranked arm for RRF.
+
+    Primary (original-query) arms keep full weight and are not diluted by rewrite
+    siblings. Rewrite arms share REWRITE_ARM_WEIGHT within their tool family.
+    """
+    if is_primary_query_action(action, primary_query):
+        return PRIMARY_ARM_WEIGHT
+    family_count = float(rewrite_family_counts[action.tool] or 1.0)
+    return REWRITE_ARM_WEIGHT / family_count
+
+
+def _merge_results(results: list[_ActionResult], *, primary_query: str) -> list[SearchV2Paper]:
     ranked_results = [result for result in results if result.ranked]
     unranked_results = [result for result in results if not result.ranked]
     merged: dict[str, SearchV2Paper] = {}
+    primary_query = primary_query.strip()
 
     if ranked_results:
-        successful_calls_by_family = Counter(result.action.tool for result in ranked_results)
+        rewrite_family_counts = Counter(
+            result.action.tool
+            for result in ranked_results
+            if not is_primary_query_action(result.action, primary_query)
+        )
         for result in ranked_results:
-            family_normalizer = float(successful_calls_by_family[result.action.tool])
+            weight = _rrf_arm_weight(
+                result.action,
+                primary_query=primary_query,
+                rewrite_family_counts=rewrite_family_counts,
+            )
             for rank, paper in enumerate(result.papers, start=1):
                 item = _get_or_create(merged, paper)
                 if item is None:
                     continue
                 item.retrieval_sources.append(result.source)
                 item.retrieval_ranks[result.source] = rank
-                item.rrf_score = (item.rrf_score or 0) + 1.0 / family_normalizer / (RRF_K + rank)
+                item.rrf_score = (item.rrf_score or 0) + weight / (RRF_K + rank)
 
         for result in unranked_results:
             for position, paper in enumerate(result.papers, start=1):
@@ -162,7 +215,7 @@ def execute_retrieval_plan(
                 status="failed",
             )
         raise
-    candidates = _merge_results(action_results)
+    candidates = _merge_results(action_results, primary_query=validated_plan.rerank_query)
     use_cross_encoder = DEFAULT_ENABLE_CROSS_ENCODER if enable_cross_encoder is None else enable_cross_encoder
     rerank_status = "skipped"
     if use_cross_encoder and candidates:

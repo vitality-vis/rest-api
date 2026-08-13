@@ -21,16 +21,17 @@ class _NoStopAzureChatOpenAI(AzureChatOpenAI):
         return super().generate_prompt(prompts, stop=None, **kwargs)
 
 
-def get_llm(*, streaming: bool = False) -> BaseChatModel:
+def get_llm(*, model: str | None = None, streaming: bool = False) -> BaseChatModel:
     """Create the chat model used by the application.
 
-    Callers depend on this provider-neutral entry point. Provider-specific
-    configuration remains private to this module until another provider is
-    actually needed.
+    ``model`` is a logical key from ``AZURE_OPENAI_AVAILABLE_MODELS``. When
+    omitted, ``AZURE_OPENAI_DEFAULT_MODEL`` is used. Callers depend on this
+    provider-neutral entry point; provider-specific configuration stays here.
     """
+    deployment = config.resolve_chat_deployment(model)
     return _NoStopAzureChatOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        azure_deployment=deployment,
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         temperature=1,  # GPT-5 only supports temperature=1

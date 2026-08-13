@@ -356,6 +356,20 @@ def _chat_response(
     message_created_at = data.get("message_created_at")
     effort = data.get("effort", "low")
     effort = effort if effort in {"low", "medium", "high"} else "low"
+    raw_model = data.get("model")
+    if raw_model is None or raw_model == "":
+        model = None
+    elif isinstance(raw_model, str) and raw_model.strip():
+        model = raw_model.strip()
+    else:
+        return Response("model must be a non-empty string", status=400, mimetype="text/plain")
+    if model is not None:
+        import config as app_config
+
+        try:
+            model = app_config.resolve_chat_model(model)
+        except ValueError as error:
+            return Response(str(error), status=400, mimetype="text/plain")
     user_message_id = str(user_message_id) if user_message_id is not None else None
     assistant_message_id = str(assistant_message_id) if assistant_message_id is not None else None
     message_created_at = str(message_created_at) if message_created_at is not None else None
@@ -429,6 +443,7 @@ def _chat_response(
                 selected_paper_ids=paper_ids,
                 context=message_context,
                 effort=effort,
+                model=model,
                 trace_id=trace_id,
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
@@ -441,6 +456,7 @@ def _chat_response(
                 chat_id=chat_id,
                 history=history,
                 effort=effort,
+                model=model,
                 trace_id=trace_id,
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,

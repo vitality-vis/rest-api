@@ -28,18 +28,24 @@ from .session_state import SESSIONS
 
 logging = get_logger()
 
-llm = get_llm(streaming=True)
-
 DEFAULT_EMPTY_CONTEXT_MSG = "No documents retrieved."
 
 
-def get_or_create_chat_session(chat_id):
+def get_or_create_chat_session(chat_id, *, model: str | None = None):
     """Create or return a per-chat session with a single LLM (no generator)."""
+    import config as app_config
 
-    if chat_id in SESSIONS:
-        return SESSIONS[chat_id]
+    model_key = app_config.resolve_chat_model(model)
+    session_key = f"{chat_id}::{model_key}"
 
-    logging.info("[AgentRunner] Creating new chat session for chat_id=%s", chat_id)
+    if session_key in SESSIONS:
+        return SESSIONS[session_key]
+
+    logging.info(
+        "[AgentRunner] Creating new chat session for chat_id=%s model=%s",
+        chat_id,
+        model_key,
+    )
 
     from langchain.tools import Tool
     import inspect
@@ -48,7 +54,7 @@ def get_or_create_chat_session(chat_id):
     # -----------------------------
     # 1. Create ONE LLM for the session
     # -----------------------------
-    llm = get_llm()
+    llm = get_llm(model=model_key)
 
     # -----------------------------
     # 2. Wrap tools per chat
@@ -173,14 +179,15 @@ def get_or_create_chat_session(chat_id):
     # -----------------------------
     # 4. Store session
     # -----------------------------
-    SESSIONS[chat_id] = {
+    SESSIONS[session_key] = {
         "llm": llm,
         "agent": agent,
         "mem": MemoryManager(),
         "_turn_docs": [],
+        "model": model_key,
     }
 
-    return SESSIONS[chat_id]
+    return SESSIONS[session_key]
  # 
 def is_structured_context(text: str) -> bool:
     if not text or len(text.strip()) < 30:
@@ -683,13 +690,14 @@ async def run_two_stage_rag_stream(
     selected_paper_ids: list = None,
     selected_paper_titles: list = None,
     history=None,
+    model: str | None = None,
 ):
     session = None
     try:
-        session = get_or_create_chat_session(chat_id)
+        session = get_or_create_chat_session(chat_id, model=model)
     except Exception as e:
         logging.warning("[run_two_stage_rag_stream] session creation failed: %s", e)
-        llm = get_llm()
+        llm = get_llm(model=model)
         async for chunk in _fallback_direct_answer(llm, user_input, mem=None, session=None):
             yield chunk
         return
@@ -871,6 +879,7 @@ class AgentRequest:
     selected_paper_ids: Optional[list] = None
     selected_paper_titles: Optional[list] = None
     effort: str = "low"
+    model: str | None = None
     trace_id: str | None = None
     user_message_id: str | None = None
     assistant_message_id: str | None = None
@@ -885,6 +894,7 @@ async def run(request: AgentRequest) -> AsyncIterator[str]:
         selected_paper_ids=request.selected_paper_ids,
         selected_paper_titles=request.selected_paper_titles,
         history=request.history,
+        model=request.model,
     ):
         yield chunk
 

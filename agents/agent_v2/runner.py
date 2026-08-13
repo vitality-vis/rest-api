@@ -74,7 +74,7 @@ def _citation_ids(papers: list[dict], *, limit: int = 8) -> dict[int, str]:
     }
 
 
-def _answer_from_search(question: str, papers: list[dict]) -> str:
+def _answer_from_search(question: str, papers: list[dict], *, model: str | None = None) -> str:
     """Synthesize an answer from v2 retrieval results without invoking v1."""
     evidence = _paper_evidence(papers)
     prompt = f"""Answer the user's question using only the retrieved-paper evidence below.
@@ -93,7 +93,7 @@ contains that detail. Give a concise, direct research-oriented answer.
 <RETRIEVED_PAPERS>
 {evidence}
 </RETRIEVED_PAPERS>"""
-    content = get_llm().invoke([HumanMessage(content=prompt)]).content
+    content = get_llm(model=model).invoke([HumanMessage(content=prompt)]).content
     answer = str(content).strip()
     if not answer:
         return "I found relevant papers, but couldn't generate a grounded answer from them."
@@ -128,6 +128,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
                 # Guest requests may use public corpus metadata, but never a
                 # user vector store or uploaded full-text file.
                 use_file_search=bool(request.user_id) and decision.use_file_search,
+                model=request.model,
                 trace=trace,
             )
         except PaperQAError as error:
@@ -150,6 +151,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
             user_request=request.text,
             retrieval_query=retrieval_query,
             intent=decision.search_intent,
+            llm=get_llm(model=request.model),
         )
         trace.log_medium_retrieval_plan(
             status=planner_outcome.status,
@@ -187,7 +189,11 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
         if paper_id:
             ids.append(paper_id)
     if decision.response_mode == "grounded_answer" and result.papers:
-        yield _answer_from_search(request.text, [item.paper for item in result.papers])
+        yield _answer_from_search(
+            request.text,
+            [item.paper for item in result.papers],
+            model=request.model,
+        )
         if ids:
             yield "\n\n"
             yield _papers_payload(ids, policy=result.policy, effort=effort)

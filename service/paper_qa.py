@@ -10,6 +10,7 @@ from repositories.azure_openai.vector_stores import (
     AzureVectorStoresError,
     create_file_search_response,
     create_text_response,
+    get_azure_vector_stores_settings,
     response_file_citation_annotations,
     response_output_text,
 )
@@ -163,6 +164,7 @@ def answer(
     paper_ids: list[str],
     text: str,
     use_file_search: bool = False,
+    model: str | None = None,
     trace: SearchV2Trace | None = None,
 ) -> str:
     plan, metadata_records = build_evidence_plan(
@@ -176,6 +178,7 @@ def answer(
             file_search_paper_ids=plan.file_search_paper_ids,
             use_file_search=plan.use_file_search,
         )
+    settings = get_azure_vector_stores_settings(model=model)
     if not plan.use_file_search:
         input_text = _metadata_synthesis_prompt(
             question=text,
@@ -184,7 +187,7 @@ def answer(
         if trace:
             trace.log_synthesis_payload(mode="metadata", input_text=input_text)
         try:
-            response = create_text_response(input_text=input_text)
+            response = create_text_response(input_text=input_text, settings=settings)
         except AzureVectorStoresError as error:
             raise PaperQAError("Metadata synthesis failed. Please try again.") from error
         output = response_output_text(response)
@@ -213,6 +216,7 @@ def answer(
         response = create_file_search_response(
             input_text=input_text,
             vector_store_id=store["azure_vector_store_id"], filters=filters,
+            settings=settings,
         )
     except AzureVectorStoresError as error:
         raise PaperQAError("Full-text search failed. Please try again.") from error

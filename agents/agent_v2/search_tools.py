@@ -185,6 +185,57 @@ def retrieval_action_signature(action: RetrievalAction) -> tuple:
     return (normalized.tool,)
 
 
+def _action_query(action: RetrievalAction) -> str | None:
+    if isinstance(action, (BM25RetrievalAction, VectorRetrievalAction)):
+        return action.query
+    return None
+
+
+def is_primary_query_action(action: RetrievalAction, primary_query: str) -> bool:
+    """True when a ranked action uses the plan's original (anchor) query."""
+    query = _action_query(action)
+    return query is not None and query.casefold() == primary_query.casefold()
+
+
+def _fit_actions_to_budget(actions: list[RetrievalAction], *, primary_query: str) -> list[RetrievalAction]:
+    """Keep primary BM25/vector arms; drop rewrite/extra arms when over budget."""
+    primary_ranked = [
+        action
+        for action in actions
+        if action.tool in {"bm25", "vector"} and is_primary_query_action(action, primary_query)
+    ]
+    rewrite_ranked = [
+        action
+        for action in actions
+        if action.tool in {"bm25", "vector"} and not is_primary_query_action(action, primary_query)
+    ]
+    other = [action for action in actions if action.tool not in {"bm25", "vector"}]
+
+    selected: list[RetrievalAction] = []
+    counts: Counter[str] = Counter()
+
+    def _try_add(action: RetrievalAction) -> bool:
+        tool = action.tool
+        if counts[tool] >= MAX_CALLS_BY_TOOL[tool]:
+            return False
+        if len(selected) >= MAX_RETRIEVAL_CALLS:
+            return False
+        selected.append(action)
+        counts[tool] += 1
+        return True
+
+    for action in primary_ranked:
+        if not _try_add(action):
+            raise RetrievalPlanValidationError(
+                "Primary query BM25/vector arms exceed the retrieval call budget."
+            )
+    for action in rewrite_ranked:
+        _try_add(action)
+    for action in other:
+        _try_add(action)
+    return selected
+
+
 def validate_retrieval_plan(plan: RetrievalPlan, *, intent: SearchIntent) -> RetrievalPlan:
     """Normalize, de-duplicate, and enforce server-owned retrieval budgets."""
     normalized_actions: list[RetrievalAction] = []
@@ -207,10 +258,19 @@ def validate_retrieval_plan(plan: RetrievalPlan, *, intent: SearchIntent) -> Ret
         fallback_query = plan.rerank_query.strip()
         if not fallback_query:
             raise RetrievalPlanValidationError("A topical retrieval plan requires a non-empty fallback query.")
-        if "bm25" not in ranked_tools:
-            normalized_actions.append(BM25RetrievalAction(query=fallback_query))
-        if "vector" not in ranked_tools:
-            normalized_actions.append(VectorRetrievalAction(query=fallback_query))
+        # Always anchor topical plans on the original query hybrid pair.
+        for primary in (
+            BM25RetrievalAction(query=fallback_query),
+            VectorRetrievalAction(query=fallback_query),
+        ):
+            key = retrieval_action_signature(primary)
+            if key not in seen:
+                normalized_actions.append(primary)
+                seen.add(key)
+        normalized_actions = _fit_actions_to_budget(
+            normalized_actions,
+            primary_query=fallback_query,
+        )
 
     if not normalized_actions:
         raise RetrievalPlanValidationError("The retrieval plan contains no executable actions.")

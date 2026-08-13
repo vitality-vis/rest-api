@@ -185,7 +185,7 @@ def route(
     router_prompt: str | None = None
     try:
         if llm is None:
-            llm = get_llm()
+            llm = get_llm(model=request.model)
 
         router_prompt = (
             _ROUTER_PROMPT

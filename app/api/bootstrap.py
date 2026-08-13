@@ -15,7 +15,13 @@ bootstrap_bp = Blueprint("bootstrap", __name__)
 @cross_origin()
 def get_public_config():
     """Return non-sensitive runtime settings needed by the browser."""
-    return jsonify({"libraryPdfMaxBytes": config.LIBRARY_PDF_MAX_BYTES})
+    return jsonify(
+        {
+            "libraryPdfMaxBytes": config.LIBRARY_PDF_MAX_BYTES,
+            "availableModels": list(config.AZURE_OPENAI_AVAILABLE_MODELS.keys()),
+            "defaultModel": config.AZURE_OPENAI_DEFAULT_MODEL or None,
+        }
+    )
 
 
 @bootstrap_bp.route("/getUmapPoints", methods=["GET"])

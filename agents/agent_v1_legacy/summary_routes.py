@@ -25,9 +25,11 @@ legacy_summary_bp = Blueprint("legacy_summary", __name__)
 
 def _legacy_llm() -> AzureChatOpenAI:
     """Construct the model used exclusively by the retired summary routes."""
+    import config as app_config
+
     return AzureChatOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        azure_deployment=app_config.resolve_chat_deployment(),
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         temperature=1,

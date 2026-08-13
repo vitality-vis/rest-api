@@ -1,4 +1,4 @@
-
+import json
 import os
 
 from dotenv import load_dotenv
@@ -80,6 +80,73 @@ ZILLIZ_TOKEN = os.environ.get("ZILLIZ_TOKEN", "")
 # === OpenAlex (citation neighbors; free API key required) ===
 # Key: https://openalex.org/settings/api — free daily credit, not a paid plan.
 OPENALEX_API_KEY = os.environ.get("OPENALEX_API_KEY", "").strip()
+
+
+# === Azure OpenAI chat models ===
+# Logical keys (API `model` param) map to Azure deployment names.
+def _parse_available_chat_models() -> dict[str, str]:
+    raw = (os.environ.get("AZURE_OPENAI_AVAILABLE_MODELS") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                "AZURE_OPENAI_AVAILABLE_MODELS must be a JSON object of "
+                '{ "model_key": "azure_deployment_name", ... }'
+            ) from error
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError(
+                "AZURE_OPENAI_AVAILABLE_MODELS must be a non-empty JSON object"
+            )
+        models: dict[str, str] = {}
+        for key, deployment in parsed.items():
+            model_key = str(key).strip()
+            deployment_name = str(deployment).strip()
+            if not model_key or not deployment_name:
+                raise ValueError(
+                    "AZURE_OPENAI_AVAILABLE_MODELS entries must be non-empty strings"
+                )
+            models[model_key] = deployment_name
+        return models
+
+    # Backward compatible: a single AZURE_OPENAI_DEPLOYMENT becomes the only model.
+    deployment = (os.environ.get("AZURE_OPENAI_DEPLOYMENT") or "").strip()
+    if deployment:
+        return {deployment: deployment}
+    return {}
+
+
+AZURE_OPENAI_AVAILABLE_MODELS = _parse_available_chat_models()
+_raw_default_model = (os.environ.get("AZURE_OPENAI_DEFAULT_MODEL") or "").strip()
+if _raw_default_model:
+    if (
+        AZURE_OPENAI_AVAILABLE_MODELS
+        and _raw_default_model not in AZURE_OPENAI_AVAILABLE_MODELS
+    ):
+        raise ValueError(
+            f"AZURE_OPENAI_DEFAULT_MODEL={_raw_default_model!r} is not a key in "
+            "AZURE_OPENAI_AVAILABLE_MODELS"
+        )
+    AZURE_OPENAI_DEFAULT_MODEL = _raw_default_model
+else:
+    AZURE_OPENAI_DEFAULT_MODEL = next(iter(AZURE_OPENAI_AVAILABLE_MODELS), "")
+
+
+def resolve_chat_model(model: str | None = None) -> str:
+    """Return a validated logical chat-model key (request override or default)."""
+    key = (model or "").strip() or AZURE_OPENAI_DEFAULT_MODEL
+    if not key:
+        raise ValueError("No chat model is configured")
+    if key not in AZURE_OPENAI_AVAILABLE_MODELS:
+        available = ", ".join(AZURE_OPENAI_AVAILABLE_MODELS) or "(none)"
+        raise ValueError(f"Unknown model {key!r}. Available: {available}")
+    return key
+
+
+def resolve_chat_deployment(model: str | None = None) -> str:
+    """Map a logical chat-model key to its Azure deployment name."""
+    return AZURE_OPENAI_AVAILABLE_MODELS[resolve_chat_model(model)]
+
 
 # === Zilliz paper collection schema ===
 PAPER_COLLECTION = "paper_prod"

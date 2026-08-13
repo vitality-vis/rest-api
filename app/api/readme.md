@@ -6,7 +6,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| `GET` | `/getPublicConfig` | none | Public, non-sensitive browser runtime settings such as the PDF size limit. |
+| `GET` | `/getPublicConfig` | none | Public, non-sensitive browser runtime settings: PDF size limit, `availableModels`, `defaultModel`. |
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | `POST` | `/chat/import` | required | Body `{ conversations: [...] }`. Idempotent guest→cloud import. |
 | `GET` | `/chat/conversations` | required | User's cloud chat history. |
 | `PUT` | `/chat/conversations/{id}/closed` | required | Body `{ is_closed: boolean }`; saves the tab visibility state. |
-| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`. `context` is a non-visible JSON object attached to this user message. Streams the legacy assistant response; persists when authenticated. |
+| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`/`model`. `model` is a key from `AZURE_OPENAI_AVAILABLE_MODELS` (default: `AZURE_OPENAI_DEFAULT_MODEL`). `context` is a non-visible JSON object attached to this user message. Streams the legacy assistant response; persists when authenticated. |
 | `POST` | `/chat/v2` | optional | Same body as `/chat`, with a 10,000-character message limit. `agent_v2` owns talk, clarification, paper search, and selected-paper synthesis. |
 
 ## `library.py`

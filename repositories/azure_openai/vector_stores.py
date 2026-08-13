@@ -43,15 +43,24 @@ class AzureVectorStoresSettings:
     timeout_seconds: float
 
 
-def get_azure_vector_stores_settings() -> AzureVectorStoresSettings:
+def get_azure_vector_stores_settings(
+    *, model: str | None = None
+) -> AzureVectorStoresSettings:
     """Load settings for the Azure File Search capability.
 
-    Reuses the chat endpoint, key, and deployment. API version and timeout are
-    fixed for the ``/openai/v1`` Vector Store / File Search contract.
+    Reuses the chat endpoint and key. The Responses ``model`` field is the
+    Azure deployment for the selected logical chat model (request override or
+    ``AZURE_OPENAI_DEFAULT_MODEL``). API version and timeout are fixed for the
+    ``/openai/v1`` Vector Store / File Search contract.
     """
+    import config as app_config
+
     endpoint = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
     api_key = os.getenv("AZURE_OPENAI_API_KEY") or ""
-    deployment = (os.getenv("AZURE_OPENAI_DEPLOYMENT") or "").strip()
+    try:
+        deployment = app_config.resolve_chat_deployment(model)
+    except ValueError as error:
+        raise AzureVectorStoresConfigurationError(str(error)) from error
     if not endpoint or not api_key or not deployment:
         raise AzureVectorStoresConfigurationError("Azure OpenAI File Search is not configured")
     return AzureVectorStoresSettings(
