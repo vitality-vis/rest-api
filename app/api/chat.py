@@ -364,7 +364,12 @@ def _chat_response(
     paper_ids: list[str] = []
     if use_v2_request:
         requested_mode = data.get("mode", "auto")
-        requested_mode = requested_mode if requested_mode in {"auto", "synthesis"} else "auto"
+        if requested_mode not in {"auto", "chat", "search", "synthesis"}:
+            return Response(
+                "mode must be one of: auto, chat, search, synthesis",
+                status=400,
+                mimetype="text/plain",
+            )
         paper_ids = data.get("paper_ids", [])
         if not isinstance(paper_ids, list) or not all(isinstance(item, str) and item for item in paper_ids):
             return Response("paper_ids must be an array of strings", status=400, mimetype="text/plain")

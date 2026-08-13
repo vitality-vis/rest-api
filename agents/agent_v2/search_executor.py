@@ -29,8 +29,8 @@ RRF_K = 60
 CANDIDATE_LIMIT = 50
 FUSED_CANDIDATE_LIMIT = 100
 # Server-side experiment switch. Keep false until benchmark evidence supports enabling it.
-# DEFAULT_ENABLE_CROSS_ENCODER = False
-DEFAULT_ENABLE_CROSS_ENCODER = True
+DEFAULT_ENABLE_CROSS_ENCODER = False
+# DEFAULT_ENABLE_CROSS_ENCODER = True
 
 
 class SearchCriteriaRequiredError(ValueError):

@@ -49,6 +49,11 @@ Selected papers available: {has_selected_papers}
 Selected paper IDs: {selected_paper_ids}
 </SELECTED_PAPER_CONTEXT>
 
+<REQUESTED_MODE>
+{requested_mode}
+{requested_mode_instruction}
+</REQUESTED_MODE>
+
 ## ROUTES
 
 Choose one route:
@@ -148,8 +153,18 @@ def route(
     """Route one chat turn, optionally using an injected LLM for evaluation."""
     context = ChatRequestContext(
         selected_paper_ids=[str(item) for item in request.selected_paper_ids or []],
-        requested_mode="synthesis" if request.requested_mode == "synthesis" else "auto",
+        requested_mode=request.requested_mode,
     )
+    if context.requested_mode == "chat":
+        decision = RouteDecision(route="talk", decision_status="explicit_mode")
+        trace.log_decision(
+            decision=decision.route,
+            search_intent=None,
+            query=request.text,
+            effort=request.effort,
+            decision_status=decision.decision_status,
+        )
+        return decision
     if context.requested_mode == "synthesis":
         # This explicit UI mode bypasses the LLM router. Mirror the single-paper
         # preference in the prompt; build_evidence_plan safely falls back to
@@ -176,6 +191,13 @@ def route(
             _ROUTER_PROMPT
             .replace("{has_selected_papers}", "yes" if context.selected_paper_ids else "no")
             .replace("{selected_paper_ids}", ", ".join(context.selected_paper_ids) or "(none)")
+            .replace("{requested_mode}", context.requested_mode)
+            .replace(
+                "{requested_mode_instruction}",
+                "The user explicitly selected Search. Choose the search route and extract the complete structured search_intent from the message; use response_mode papers."
+                if context.requested_mode == "search"
+                else "",
+            )
             .replace(
                 "{current_user_context}",
                 json.dumps(request.context or {}, ensure_ascii=False, separators=(",", ":")),
@@ -197,6 +219,15 @@ def route(
         decision = RouteDecision(route="talk", decision_status="validation_failed")
     except Exception:
         decision = RouteDecision(route="talk", decision_status="router_error")
+
+    if context.requested_mode == "search":
+        # Explicit search still uses the classifier to extract structured intent,
+        # but the client-selected route and paper-list response are authoritative.
+        decision.route = "search"
+        decision.response_mode = "papers"
+        if decision.search_intent is None:
+            decision.search_intent = SearchIntent(topic=request.text)
+        decision.use_file_search = False
 
     if decision.route != "search":
         decision.search_intent = None

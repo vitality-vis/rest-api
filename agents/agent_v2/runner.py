@@ -110,7 +110,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
     decision = route(request, trace=trace)
     if decision.route == "talk":
-        if decision.decision_status != "model_decision":
+        if decision.decision_status not in {"model_decision", "explicit_mode"}:
             yield ROUTER_FAILURE_CLARIFICATION
             return
         async for chunk in respond_to_talk(request):

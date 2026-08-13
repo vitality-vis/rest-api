@@ -109,7 +109,7 @@ class V2ChatRequest:
     trace_id: str | None = None
     user_message_id: str | None = None
     assistant_message_id: str | None = None
-    requested_mode: Literal["auto", "synthesis"] = "auto"
+    requested_mode: Literal["auto", "chat", "search", "synthesis"] = "auto"
     user_id: str | None = None
 
 
@@ -129,7 +129,7 @@ class ChatRequestContext(BaseModel):
     """Structured client context; IDs are validated again by the handler."""
 
     selected_paper_ids: list[str] = Field(default_factory=list)
-    requested_mode: Literal["auto", "synthesis"] = "auto"
+    requested_mode: Literal["auto", "chat", "search", "synthesis"] = "auto"
 
 
 class RouteDecisionOutput(BaseModel):
