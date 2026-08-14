@@ -8,6 +8,10 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import AzureChatOpenAI
 
 
+# Bound every synchronous and streaming provider call.
+LLM_REQUEST_TIMEOUT_SECONDS = 120.0
+
+
 class _NoStopAzureChatOpenAI(AzureChatOpenAI):
     """Azure chat model that ignores stop sequences unsupported by GPT-5."""
 
@@ -36,4 +40,6 @@ def get_llm(*, model: str | None = None, streaming: bool = False) -> BaseChatMod
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         temperature=1,  # GPT-5 only supports temperature=1
         streaming=streaming,
+        timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+        max_retries=1,
     )

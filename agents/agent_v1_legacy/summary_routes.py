@@ -2,16 +2,14 @@
 from __future__ import annotations
 
 import json
-import os
 import traceback
 from collections.abc import Iterator
 from typing import Any
 
 from flask import Blueprint, Response, request
 from flask_cors import cross_origin
-from langchain_openai import AzureChatOpenAI
-
 from prompt import LITERATURE_REVIEW_PROMPT, SUMMARIZE_PROMPT
+from service.llm import get_llm
 from service import zilliz
 
 from .grounded_writer import (
@@ -23,18 +21,9 @@ from .grounded_writer import (
 legacy_summary_bp = Blueprint("legacy_summary", __name__)
 
 
-def _legacy_llm() -> AzureChatOpenAI:
+def _legacy_llm():
     """Construct the model used exclusively by the retired summary routes."""
-    import config as app_config
-
-    return AzureChatOpenAI(
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        azure_deployment=app_config.resolve_chat_deployment(),
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-        temperature=1,
-        streaming=True,
-    )
+    return get_llm(streaming=True)
 
 
 def _stream_with_citations(

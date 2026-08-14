@@ -17,7 +17,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET`/`POST` | `/getPapers` | no | Query via args (GET) or JSON (POST). Params: `search_query`, `title`, `abstract`, `author`, `source`, `keyword`, year/citation ranges, `id_list`, `offset`, `limit` (max 100). |
+| `GET`/`POST` | `/getPapers` | no | Query via args (GET) or JSON (POST). Params: `search_query`, `search_mode` (`exact`, `bm25`, or `vector`), optional `embedding_model`, `title`, `abstract`, `author`, `source`, `keyword`, year/citation ranges, `id_list`, `offset`, `limit` (max 100). |
 
 ## `chat.py`
 

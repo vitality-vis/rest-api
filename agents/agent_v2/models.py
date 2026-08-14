@@ -1,7 +1,7 @@
 """Public and internal DTOs for agent v2 and its search capability."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
@@ -22,6 +22,23 @@ class SearchV2Request(BaseModel):
     query: str = Field(min_length=1, max_length=MAX_SEARCH_QUERY_LENGTH)
     effort: Literal["low", "medium", "high"] = "low"
     result_limit: int = Field(default=10, ge=1, le=100)
+
+
+class LLMRerankConfig(BaseModel):
+    """Internal benchmark-only configuration for medium-effort LLM reranking."""
+
+    enabled: bool = False
+    screening_fields: Literal["title", "title_abstract"] = "title_abstract"
+    candidate_limit: int = Field(default=40, ge=1, le=100)
+    batch_size: int = Field(default=20, ge=1, le=50)
+    # Default benchmark mode is score-only: retain every scored candidate.
+    # Set to 0 explicitly to filter the -1 (clearly irrelevant) class.
+    min_score: float = -1.0
+    min_keep: int = Field(default=10, ge=0, le=100)
+
+
+class AdvancedSearchConfig(BaseModel):
+    llm_rerank: LLMRerankConfig = Field(default_factory=LLMRerankConfig)
 
 
 class SearchIntent(BaseModel):
@@ -112,6 +129,7 @@ class V2ChatRequest:
     assistant_message_id: str | None = None
     requested_mode: Literal["auto", "chat", "search", "synthesis"] = "auto"
     user_id: str | None = None
+    advanced: AdvancedSearchConfig = field(default_factory=AdvancedSearchConfig)
 
 
 RouteKind = Literal["talk", "search", "synthesis", "clarify"]

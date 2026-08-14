@@ -376,7 +376,14 @@ def _chat_response(
     message_context = _normalise_context(data.get("context"))
     requested_mode = "auto"
     paper_ids: list[str] = []
+    advanced = None
     if use_v2_request:
+        from agents.agent_v2.models import AdvancedSearchConfig
+
+        try:
+            advanced = AdvancedSearchConfig.model_validate(data.get("advanced") or {})
+        except Exception as error:
+            return Response(f"advanced configuration is invalid: {error}", status=400, mimetype="text/plain")
         requested_mode = data.get("mode", "auto")
         if requested_mode not in {"auto", "chat", "search", "synthesis"}:
             return Response(
@@ -449,6 +456,7 @@ def _chat_response(
                 assistant_message_id=assistant_message_id,
                 requested_mode=requested_mode,
                 user_id=user_id,
+                advanced=advanced,
             )
         else:
             agent_request = AgentRequest(

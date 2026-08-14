@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from service.search import SearchUnavailableError, search
 
 from .logging import SearchV2Trace
+from .llm_reranker import score_batch
 from .models import (
     RetrievalAction,
     RetrievalPlan,
@@ -15,6 +16,7 @@ from .models import (
     SearchV2Paper,
     SearchV2Request,
     SearchV2Response,
+    LLMRerankConfig,
 )
 from .reranker import paper_id, rerank
 from .search_tools import (
@@ -27,16 +29,16 @@ from .search_tools import (
 
 
 RRF_K = 60
-# Primary (original-query) arms keep a fuller list; rewrite arms stay smaller so
-# extra medium formulations add recall without flooding the fused pool.
+# Same per-arm depth for primary and rewrite: rewrite-only golds need enough
+# slots to survive fusion into the top-100 / recall@80 window.
 PRIMARY_CANDIDATE_LIMIT = 50
-REWRITE_CANDIDATE_LIMIT = 30
+REWRITE_CANDIDATE_LIMIT = 50
 UNRANKED_CANDIDATE_LIMIT = 50
 FUSED_CANDIDATE_LIMIT = 100
-# Original-query hybrid arms dominate RRF; rewrite arms are down-weighted and
-# normalized only among other rewrite arms of the same tool family.
+# Original-query hybrid arms still dominate, but rewrite arms keep enough weight
+# that unique rewrite hits are less likely to sink past rank ~80.
 PRIMARY_ARM_WEIGHT = 1.0
-REWRITE_ARM_WEIGHT = 0.4
+REWRITE_ARM_WEIGHT = 0.65
 # Server-side experiment switch. Keep false until benchmark evidence supports enabling it.
 DEFAULT_ENABLE_CROSS_ENCODER = False
 # DEFAULT_ENABLE_CROSS_ENCODER = True
@@ -200,6 +202,8 @@ def execute_retrieval_plan(
     intent: SearchIntent,
     enable_cross_encoder: bool | None = None,
     trace: SearchV2Trace | None = None,
+    llm_rerank: LLMRerankConfig | None = None,
+    model: str | None = None,
 ) -> SearchV2Response:
     """Validate and execute a low- or medium-generated retrieval plan."""
     validated_plan = validate_retrieval_plan(plan, intent=intent)
@@ -216,6 +220,41 @@ def execute_retrieval_plan(
             )
         raise
     candidates = _merge_results(action_results, primary_query=validated_plan.rerank_query)
+    if request.effort == "medium" and llm_rerank is not None and llm_rerank.enabled and candidates:
+        candidate_pool = candidates[:llm_rerank.candidate_limit]
+        untouched_tail = candidates[llm_rerank.candidate_limit:]
+        try:
+            scores: dict[str, float] = {}
+            for start in range(0, len(candidate_pool), llm_rerank.batch_size):
+                batch = candidate_pool[start : start + llm_rerank.batch_size]
+                scores.update(
+                    score_batch(
+                        validated_plan.rerank_query,
+                        [item.paper for item in batch],
+                        model=model,
+                        screening_fields=llm_rerank.screening_fields,
+                    )
+                )
+            candidate_pool.sort(key=lambda item: (-scores[paper_id(item.paper)], paper_id(item.paper)))
+            kept = [item for item in candidate_pool if scores[paper_id(item.paper)] >= llm_rerank.min_score]
+            if len(kept) < llm_rerank.min_keep:
+                kept.extend(item for item in candidate_pool if item not in kept)
+            # Only the head is reranked. Preserve the remaining fused candidates
+            # after it so enabling rerank does not silently reduce recall depth.
+            candidates = (kept + untouched_tail)[:request.result_limit]
+            diagnostics["llm_rerank"] = {
+                "status": "complete",
+                "scored": len(scores),
+                "reranked_head": len(candidate_pool),
+                "kept_head": len(kept),
+                "returned": len(candidates),
+                "screening_fields": llm_rerank.screening_fields,
+            }
+        except Exception as error:
+            # Fail open: keep the fused ranking so the search still returns papers.
+            # TODO: Log llm_rerank failures on the search-v2 retrieval trace so
+            # benchmark runs can tell reranked lists from RRF fallbacks.
+            diagnostics["llm_rerank"] = {"status": "failed", "error": str(error)}
     use_cross_encoder = DEFAULT_ENABLE_CROSS_ENCODER if enable_cross_encoder is None else enable_cross_encoder
     rerank_status = "skipped"
     if use_cross_encoder and candidates:
@@ -269,6 +308,8 @@ def run_search(
     medium_fallback_reason: str | None = None,
     enable_cross_encoder: bool | None = None,
     trace: SearchV2Trace | None = None,
+    llm_rerank: LLMRerankConfig | None = None,
+    model: str | None = None,
 ) -> SearchV2Response:
     """Execute a supplied medium plan or the deterministic low plan."""
     requested_plan_source = (
@@ -296,6 +337,8 @@ def run_search(
             intent=intent,
             enable_cross_encoder=enable_cross_encoder,
             trace=trace,
+            llm_rerank=llm_rerank,
+            model=model,
         )
     except (RetrievalPlanValidationError, SearchUnavailableError) as error:
         if selected_plan.source != "medium":
@@ -323,6 +366,8 @@ def run_search(
                 intent=intent,
                 enable_cross_encoder=enable_cross_encoder,
                 trace=trace,
+                llm_rerank=llm_rerank,
+                model=model,
             )
         except RetrievalPlanValidationError as low_error:
             raise SearchCriteriaRequiredError(str(low_error)) from low_error

@@ -179,6 +179,8 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
             plan=retrieval_plan,
             medium_fallback_reason=medium_fallback_reason,
             trace=trace,
+            llm_rerank=request.advanced.llm_rerank,
+            model=request.model,
         )
     except SearchCriteriaRequiredError as error:
         yield str(error)
