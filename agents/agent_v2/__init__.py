@@ -1,4 +1,4 @@
-"""Plan-based paper search pipeline shared by low and medium effort."""
+"""Paper search pipeline for deterministic, planned, and agentic effort levels."""
 
 from .models import SearchIntent, SearchV2Request, SearchV2Response
 from .search_executor import run_search

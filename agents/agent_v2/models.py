@@ -37,8 +37,19 @@ class LLMRerankConfig(BaseModel):
     min_keep: int = Field(default=10, ge=0, le=100)
 
 
+class HighTitleRerankConfig(BaseModel):
+    """Optional final title-only soft rerank for high-effort results."""
+
+    enabled: bool = False
+    candidate_limit: int = Field(default=100, ge=1, le=100)
+    batch_size: int = Field(default=20, ge=1, le=50)
+    max_parallel_batches: int = Field(default=5, ge=1, le=10)
+    weight: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
 class AdvancedSearchConfig(BaseModel):
     llm_rerank: LLMRerankConfig = Field(default_factory=LLMRerankConfig)
+    high_title_rerank: HighTitleRerankConfig = Field(default_factory=HighTitleRerankConfig)
 
 
 class SearchIntent(BaseModel):
@@ -53,7 +64,7 @@ class SearchIntent(BaseModel):
 
 
 RetrievalTool = Literal["bm25", "vector", "exact_terms", "metadata"]
-RetrievalPlanSource = Literal["low", "medium"]
+RetrievalPlanSource = Literal["low", "medium", "high"]
 
 
 class BM25RetrievalAction(BaseModel):
@@ -96,6 +107,7 @@ class SearchV2Paper(BaseModel):
     retrieval_ranks: dict[str, int] = Field(default_factory=dict)
     rrf_score: float | None = None
     rerank_score: float | None = None
+    ranking_signals: dict[str, float] = Field(default_factory=dict)
     exact_match: bool = False
 
 

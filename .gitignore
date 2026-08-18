@@ -11,6 +11,7 @@ data.db
 .env
 # config.py
 __pycache__/
+.local-artifacts/
 
 # Google Cloud credentials - NEVER commit these!
 *-key.json

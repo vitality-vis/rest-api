@@ -161,8 +161,8 @@ class SearchV2Trace:
     def log_retrieval_fallback(
         self,
         *,
-        requested_plan_source: Literal["medium"],
-        executed_plan_source: Literal["low"],
+        requested_plan_source: Literal["medium", "high"],
+        executed_plan_source: Literal["low", "medium"],
         reason: str,
         error_type: str | None = None,
         error_message: str | None = None,
@@ -177,6 +177,27 @@ class SearchV2Trace:
                     "reason": reason,
                     "error_type": error_type,
                     "error_message": error_message[:500] if error_message is not None else None,
+                }
+            ),
+        )
+
+    def log_high_agent_step(
+        self,
+        *,
+        node: str,
+        round_number: int,
+        tool_calls_used: int,
+        data: dict[str, Any],
+    ) -> None:
+        """Record bounded high-effort state transitions without hidden reasoning."""
+        log_structured(
+            "search_v2.high_agent_step",
+            self._with_ids(
+                {
+                    "node": node,
+                    "round_number": round_number,
+                    "tool_calls_used": tool_calls_used,
+                    **data,
                 }
             ),
         )

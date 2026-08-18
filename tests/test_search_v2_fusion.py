@@ -1,6 +1,9 @@
 """Unit tests for search-v2 primary-query anchoring and fusion weights."""
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from agents.agent_v2.models import (
     BM25RetrievalAction,
     ExactTermsRetrievalAction,
@@ -9,10 +12,13 @@ from agents.agent_v2.models import (
     VectorRetrievalAction,
 )
 from agents.agent_v2.search_executor import (
+    PRIMARY_CANDIDATE_LIMIT,
     PRIMARY_ARM_WEIGHT,
+    REWRITE_CANDIDATE_LIMIT,
     REWRITE_ARM_WEIGHT,
     RRF_K,
     _ActionResult,
+    _candidate_limit_for_action,
     _merge_results,
     _rrf_arm_weight,
 )
@@ -62,6 +68,27 @@ def test_low_plan_unchanged_shape():
         ("bm25", "privacy cameras"),
         ("vector", "privacy cameras"),
     ]
+
+
+def test_shared_plan_budget_and_candidate_depth_remain_legacy_compatible():
+    primary = BM25RetrievalAction(query="privacy cameras")
+    rewrite = VectorRetrievalAction(query="camera privacy practices")
+    assert PRIMARY_CANDIDATE_LIMIT == 50
+    assert REWRITE_CANDIDATE_LIMIT == 50
+    assert _candidate_limit_for_action(primary, primary_query="privacy cameras") == 50
+    assert _candidate_limit_for_action(rewrite, primary_query="privacy cameras") == 50
+    assert _candidate_limit_for_action(
+        rewrite,
+        primary_query="privacy cameras",
+        ranked_candidate_limit=100,
+    ) == 100
+
+    with pytest.raises(ValidationError):
+        RetrievalPlan(
+            source="medium",
+            rerank_query="privacy cameras",
+            actions=[BM25RetrievalAction(query=f"rewrite {index}") for index in range(9)],
+        )
 
 
 def test_rrf_primary_not_diluted_by_rewrite_family():

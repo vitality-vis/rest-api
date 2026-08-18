@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Protocol
 
 from service.search import SearchUnavailableError, search
 
@@ -62,7 +63,12 @@ class _ActionResult:
         return self.action.tool in {"bm25", "vector"}
 
 
-def _source_names(plan: RetrievalPlan) -> list[str]:
+class _ExecutablePlan(Protocol):
+    actions: list[RetrievalAction]
+    rerank_query: str
+
+
+def _source_names(plan: _ExecutablePlan) -> list[str]:
     """Keep low provenance stable while making repeated tools unambiguous."""
     totals = Counter(action.tool for action in plan.actions)
     seen: Counter[str] = Counter()
@@ -76,22 +82,41 @@ def _source_names(plan: RetrievalPlan) -> list[str]:
     return names
 
 
-def _candidate_limit_for_action(action: RetrievalAction, *, primary_query: str) -> int:
+def _candidate_limit_for_action(
+    action: RetrievalAction,
+    *,
+    primary_query: str,
+    ranked_candidate_limit: int | None = None,
+) -> int:
     if action.tool in {"bm25", "vector"}:
+        if ranked_candidate_limit is not None:
+            return ranked_candidate_limit
         if is_primary_query_action(action, primary_query):
             return PRIMARY_CANDIDATE_LIMIT
         return REWRITE_CANDIDATE_LIMIT
     return UNRANKED_CANDIDATE_LIMIT
 
 
-def _execute_actions(plan: RetrievalPlan, intent: SearchIntent) -> tuple[list[_ActionResult], dict]:
+def _execute_actions(
+    plan: _ExecutablePlan,
+    intent: SearchIntent,
+    *,
+    source_prefix: str | None = None,
+    ranked_candidate_limit: int | None = None,
+) -> tuple[list[_ActionResult], dict]:
     source_names = _source_names(plan)
+    if source_prefix:
+        source_names = [f"{source_prefix}.{source}" for source in source_names]
     primary_query = plan.rerank_query.strip()
     requests = [
         build_search_request(
             action,
             intent=intent,
-            limit=_candidate_limit_for_action(action, primary_query=primary_query),
+            limit=_candidate_limit_for_action(
+                action,
+                primary_query=primary_query,
+                ranked_candidate_limit=ranked_candidate_limit,
+            ),
         )
         for action in plan.actions
     ]
@@ -112,8 +137,8 @@ def _execute_actions(plan: RetrievalPlan, intent: SearchIntent) -> tuple[list[_A
         "retrieval_counts": {result.source: len(result.papers) for result in results},
         "primary_arm_weight": PRIMARY_ARM_WEIGHT,
         "rewrite_arm_weight": REWRITE_ARM_WEIGHT,
-        "primary_candidate_limit": PRIMARY_CANDIDATE_LIMIT,
-        "rewrite_candidate_limit": REWRITE_CANDIDATE_LIMIT,
+        "primary_candidate_limit": ranked_candidate_limit or PRIMARY_CANDIDATE_LIMIT,
+        "rewrite_candidate_limit": ranked_candidate_limit or REWRITE_CANDIDATE_LIMIT,
     }
     return results, diagnostics
 
@@ -141,7 +166,12 @@ def _rrf_arm_weight(action: RetrievalAction, *, primary_query: str, rewrite_fami
     return REWRITE_ARM_WEIGHT / family_count
 
 
-def _merge_results(results: list[_ActionResult], *, primary_query: str) -> list[SearchV2Paper]:
+def _merge_results(
+    results: list[_ActionResult],
+    *,
+    primary_query: str,
+    fused_limit: int = FUSED_CANDIDATE_LIMIT,
+) -> list[SearchV2Paper]:
     ranked_results = [result for result in results if result.ranked]
     unranked_results = [result for result in results if not result.ranked]
     merged: dict[str, SearchV2Paper] = {}
@@ -180,7 +210,7 @@ def _merge_results(results: list[_ActionResult], *, primary_query: str) -> list[
         return sorted(
             merged.values(),
             key=lambda item: (-(item.rrf_score or 0), -int(item.exact_match), paper_id(item.paper)),
-        )[:FUSED_CANDIDATE_LIMIT]
+        )[:fused_limit]
 
     for result in unranked_results:
         for position, paper in enumerate(result.papers, start=1):
@@ -192,7 +222,7 @@ def _merge_results(results: list[_ActionResult], *, primary_query: str) -> list[
             item.retrieval_ranks[result.source] = position
             if result.action.tool == "exact_terms":
                 item.exact_match = True
-    return list(merged.values())[:FUSED_CANDIDATE_LIMIT]
+    return list(merged.values())[:fused_limit]
 
 
 def execute_retrieval_plan(
@@ -205,7 +235,7 @@ def execute_retrieval_plan(
     llm_rerank: LLMRerankConfig | None = None,
     model: str | None = None,
 ) -> SearchV2Response:
-    """Validate and execute a low- or medium-generated retrieval plan."""
+    """Validate and execute a generated retrieval plan."""
     validated_plan = validate_retrieval_plan(plan, intent=intent)
     try:
         action_results, diagnostics = _execute_actions(validated_plan, intent)

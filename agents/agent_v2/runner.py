@@ -144,9 +144,60 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     topic = decision.search_intent.topic.strip() if decision.search_intent.topic else ""
     use_resolved_topic = bool(topic and topic.casefold() not in request.text.casefold())
     retrieval_query = topic if use_resolved_topic else request.text
+    search_request = SearchV2Request(
+        query=retrieval_query,
+        effort=effort,
+        result_limit=CHAT_RESULT_LIMIT,
+    )
     retrieval_plan = None
     medium_fallback_reason = None
-    if effort == "medium":
+    result = None
+    if effort == "high":
+        from .high_react import HighSearchError, run_high_search
+
+        try:
+            result = run_high_search(
+                search_request,
+                user_request=request.text,
+                intent=decision.search_intent,
+                llm=get_llm(model=request.model),
+                trace=trace,
+                title_rerank=request.advanced.high_title_rerank,
+            )
+        except HighSearchError as error:
+            trace.log_retrieval_fallback(
+                requested_plan_source="high",
+                executed_plan_source="medium",
+                reason="high_agent_failed",
+                error_type=type(error).__name__,
+                error_message=str(error),
+            )
+            planner_outcome = plan_medium_retrieval(
+                user_request=request.text,
+                retrieval_query=retrieval_query,
+                intent=decision.search_intent,
+                llm=get_llm(model=request.model),
+            )
+            trace.log_medium_retrieval_plan(
+                status=planner_outcome.status,
+                raw_tool_calls=planner_outcome.raw_tool_calls,
+                plan=planner_outcome.plan,
+                duplicate_calls_removed=planner_outcome.duplicate_calls_removed,
+                calls_added_by_validator=planner_outcome.calls_added_by_validator,
+                calls_removed_by_validator=planner_outcome.calls_removed_by_validator,
+                error_type=planner_outcome.error_type,
+                error_message=planner_outcome.error_message,
+                execution_mode="active",
+            )
+            if planner_outcome.status == "complete" and planner_outcome.plan is not None:
+                retrieval_plan = planner_outcome.plan
+            else:
+                medium_fallback_reason = (
+                    planner_outcome.status
+                    if planner_outcome.status != "complete"
+                    else "missing_medium_plan"
+                )
+    elif effort == "medium":
         planner_outcome = plan_medium_retrieval(
             user_request=request.text,
             retrieval_query=retrieval_query,
@@ -172,19 +223,22 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
                 if planner_outcome.status != "complete"
                 else "missing_medium_plan"
             )
-    try:
-        result = run_search(
-            SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),
-            intent=decision.search_intent,
-            plan=retrieval_plan,
-            medium_fallback_reason=medium_fallback_reason,
-            trace=trace,
-            llm_rerank=request.advanced.llm_rerank,
-            model=request.model,
-        )
-    except SearchCriteriaRequiredError as error:
-        yield str(error)
-        return
+    if result is None:
+        try:
+            result = run_search(
+                search_request,
+                intent=decision.search_intent,
+                plan=retrieval_plan,
+                medium_fallback_reason=medium_fallback_reason,
+                trace=trace,
+                llm_rerank=request.advanced.llm_rerank,
+                model=request.model,
+            )
+            if effort == "high":
+                result.diagnostics["requested_plan_source"] = "high"
+        except SearchCriteriaRequiredError as error:
+            yield str(error)
+            return
     ids: list[str] = []
     for item in result.papers:
         paper_id = _paper_id(item.paper)
