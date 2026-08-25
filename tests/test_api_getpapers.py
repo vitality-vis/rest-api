@@ -147,13 +147,19 @@ def test_get_papers_bm25_with_year_filter(api_base_url):
 
 def test_get_papers_bm25_offset_page(api_base_url):
     """BM25 offset supports the frontend's Load more request."""
+    # Match frontend fetchPapers default page size (limit=100).
     payload = {
         "search_query": "visual analytics interactive",
         "search_mode": "bm25",
-        "limit": 2,
+        "limit": 100,
     }
     first_page = _assert_relevance_payload(
         _post_json(api_base_url, "/getPapers", payload)
+    )
+    print(
+        f"\n[getPapers bm25 page 1] query={payload['search_query']!r} "
+        f"offset=0 (returned {len(first_page['papers'])} papers, "
+        f"has_more={first_page['has_more']})"
     )
     assert len(first_page["papers"]) == payload["limit"]
     assert first_page["has_more"] is True
@@ -164,6 +170,11 @@ def test_get_papers_bm25_offset_page(api_base_url):
             "/getPapers",
             {**payload, "offset": len(first_page["papers"])},
         )
+    )
+    print(
+        f"[getPapers bm25 page 2] offset={len(first_page['papers'])} "
+        f"(returned {len(second_page['papers'])} papers, "
+        f"has_more={second_page['has_more']})"
     )
     first_ids = {paper["ID"] for paper in first_page["papers"]}
     second_ids = {paper["ID"] for paper in second_page["papers"]}

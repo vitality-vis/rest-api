@@ -2,22 +2,52 @@
 
 Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 
-## `bootstrap.py`
+HTTP paths are unchanged. Modules are split by dependency boundary:
 
-| Method | Path | Auth | Description |
+- `public/` — papers profile; no Supabase auth, Chat, or agents
+- `user/` — full-app auth/library/notes/resolution/export/config
+- `chat.py` — full-app chat (still top-level until Phase 4)
+- `route_allowlist.py` — explicit papers vs full blueprint registration lists
+
+## `public/papers.py`
+
+| Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/getPublicConfig` | none | Public, non-sensitive browser runtime settings: PDF size limit, `availableModels`, `defaultModel`. |
+| `GET`/`POST` | `/getPapers` | no | Query via args (GET) or JSON (POST). Params: `search_query`, `search_mode` (`exact`, `bm25`, or `vector`), optional `embedding_model`, `title`, `abstract`, `author`, `source`, `keyword`, year/citation ranges, `id_list`, `offset`, `limit` (max 100). |
+| `POST` | `/getSimilarPapers` | no | RRF similarity from seed paper IDs. |
+| `POST` | `/getPaperCitations` | no | OpenAlex references / cited-by. |
+
+## `public/lookup.py`
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/getPaperById` | no | Public corpus ID lookup. |
+| `POST` | `/getPaperByTitle` | no | Title lookup. |
+
+## `public/corpus.py`
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | `GET` | `/getUmapPoints` | no | Cached UMAP points for the map. |
 | `GET` | `/getMetaData` | no | Filter facets; live Zilliz fallback if cache miss. |
 
-## `papers.py`
+## `user/config.py`
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `GET` | `/getPublicConfig` | none | Full-app browser settings: PDF size limit, `availableModels`, `defaultModel`. |
+
+## `user/export.py`
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET`/`POST` | `/getPapers` | no | Query via args (GET) or JSON (POST). Params: `search_query`, `search_mode` (`exact`, `bm25`, or `vector`), optional `embedding_model`, `title`, `abstract`, `author`, `source`, `keyword`, year/citation ranges, `id_list`, `offset`, `limit` (max 100). |
+| `POST` | `/checkoutPapers` | no | BibTeX export for the full app workflow. |
+
+## `user/papers.py`
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/papers/resolve` | optional | Resolve public + authenticated library paper IDs. |
 
 ## `chat.py`
 
@@ -29,7 +59,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`/`model`. `model` is a key from `AZURE_OPENAI_AVAILABLE_MODELS` (default: `AZURE_OPENAI_DEFAULT_MODEL`). `context` is a non-visible JSON object attached to this user message. Streams the legacy assistant response; persists when authenticated. |
 | `POST` | `/chat/v2` | optional | Same body as `/chat`, with a 10,000-character message limit. `agent_v2` owns talk, clarification, paper search, and selected-paper synthesis. |
 
-## `library.py`
+## `user/library.py`
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
@@ -43,7 +73,7 @@ Auth = `Authorization: Bearer <Supabase access token>` unless noted.
 | `PUT` | `/library/papers/{paper_id}/file` | required | multipart: `file` (PDF) + `metadata` (JSON `Paper`). |
 | `DELETE` | `/library/papers/{paper_id}/file` | required | Deletes Azure file, clears upload fields; drops unsaved empty rows. |
 
-## `notes.py`
+## `user/notes.py`
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |

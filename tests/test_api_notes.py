@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 from flask import Flask
 
-from app.api.notes import MAX_NOTES_CONTENT_LENGTH, notes_bp
+from app.api.user.notes import MAX_NOTES_CONTENT_LENGTH, notes_bp
 from repositories.supabase.auth import (
     SupabaseAuthenticationError,
     SupabaseConfigurationError,
@@ -33,8 +33,8 @@ def test_put_notes_requires_auth(client):
 
 def test_get_notes_returns_empty_when_missing(client):
     with (
-        patch("app.api.notes.verify_access_token", return_value="user-1"),
-        patch("app.api.notes.get_user_note", return_value=None),
+        patch("app.api.user.notes.verify_access_token", return_value="user-1"),
+        patch("app.api.user.notes.get_user_note", return_value=None),
     ):
         response = client.get(
             "/notes",
@@ -51,9 +51,9 @@ def test_get_notes_returns_empty_when_missing(client):
 
 def test_put_notes_upserts_content(client):
     with (
-        patch("app.api.notes.verify_access_token", return_value="user-1"),
+        patch("app.api.user.notes.verify_access_token", return_value="user-1"),
         patch(
-            "app.api.notes.upsert_user_note",
+            "app.api.user.notes.upsert_user_note",
             return_value={
                 "content": "themes",
                 "created_at": "2026-07-29T00:00:00Z",
@@ -73,7 +73,7 @@ def test_put_notes_upserts_content(client):
 
 
 def test_put_notes_rejects_oversized_content(client):
-    with patch("app.api.notes.verify_access_token", return_value="user-1"):
+    with patch("app.api.user.notes.verify_access_token", return_value="user-1"):
         response = client.put(
             "/notes",
             headers={"Authorization": "Bearer token"},
@@ -86,7 +86,7 @@ def test_put_notes_rejects_oversized_content(client):
 
 def test_get_notes_maps_configuration_error(client):
     with patch(
-        "app.api.notes.verify_access_token",
+        "app.api.user.notes.verify_access_token",
         side_effect=SupabaseConfigurationError("missing"),
     ):
         response = client.get(
@@ -99,7 +99,7 @@ def test_get_notes_maps_configuration_error(client):
 
 def test_get_notes_maps_authentication_error(client):
     with patch(
-        "app.api.notes.verify_access_token",
+        "app.api.user.notes.verify_access_token",
         side_effect=SupabaseAuthenticationError("bad token"),
     ):
         response = client.get(

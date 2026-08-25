@@ -1,37 +1,23 @@
-"""Endpoints that supply data needed to initialise the client application."""
+"""Public corpus bootstrap endpoints (UMAP + filter metadata)."""
 
 from flask import Blueprint, current_app, jsonify
 from flask_cors import cross_origin
 
-import config
 from service import zilliz
 from service.static_cache import cached_data
 
 
-bootstrap_bp = Blueprint("bootstrap", __name__)
+corpus_bp = Blueprint("corpus", __name__)
 
 
-@bootstrap_bp.route("/getPublicConfig", methods=["GET"])
-@cross_origin()
-def get_public_config():
-    """Return non-sensitive runtime settings needed by the browser."""
-    return jsonify(
-        {
-            "libraryPdfMaxBytes": config.LIBRARY_PDF_MAX_BYTES,
-            "availableModels": list(config.AZURE_OPENAI_AVAILABLE_MODELS.keys()),
-            "defaultModel": config.AZURE_OPENAI_DEFAULT_MODEL or None,
-        }
-    )
-
-
-@bootstrap_bp.route("/getUmapPoints", methods=["GET"])
+@corpus_bp.route("/getUmapPoints", methods=["GET"])
 @cross_origin()
 def get_umap_points():
     """Return cached UMAP projection points used to initialise the visualization."""
     return jsonify(cached_data.get_umap_points())
 
 
-@bootstrap_bp.route("/getMetaData", methods=["GET"])
+@corpus_bp.route("/getMetaData", methods=["GET"])
 @cross_origin()
 def get_metadata():
     """Return cached filter facets, falling back to a live aggregation if needed."""

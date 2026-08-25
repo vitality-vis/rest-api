@@ -15,13 +15,7 @@ from flask_cors import CORS, cross_origin
 from flask_socketio import SocketIO, emit
 from flask_compress import Compress
 from service.static_cache import cached_data
-from app.api.bootstrap import bootstrap_bp
-from app.api.chat import chat_bp
-from app.api.papers import papers_bp
-from app.api.library import library_bp
-from app.api.notes import notes_bp
-from agents.agent_v1_legacy.summary_routes import legacy_summary_bp
-from service import zilliz
+from app.api.route_allowlist import load_full_blueprints
 
 # === Initialize RAG Agent ===
 _rag_agent = None
@@ -35,12 +29,8 @@ app = Flask(
     static_folder=config.FRONTEND_DIST_DIR,
     static_url_path="/",
 )
-app.register_blueprint(bootstrap_bp)
-app.register_blueprint(chat_bp)
-app.register_blueprint(papers_bp)
-app.register_blueprint(library_bp)
-app.register_blueprint(notes_bp)
-app.register_blueprint(legacy_summary_bp)
+for _blueprint in load_full_blueprints():
+    app.register_blueprint(_blueprint)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 app.config['CORS_HEADERS'] = 'Content-Type, Authorization'
 
@@ -48,12 +38,19 @@ app.config['CORS_HEADERS'] = 'Content-Type, Authorization'
 Compress(app)
 
 # socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins (for tunnel access)
-socketio = SocketIO(app, cors_allowed_origins=[
-    'http://localhost:8080',  # User study dev server
-    'http://localhost:8081', # standalone
-    'http://localhost:5173', # rebuild Vite dev server
-    'https://vitality.mathcs.emory.edu'  # Production  server
-])
+socketio = SocketIO(
+    app,
+    # Keep ``python main.py`` compatible with the synchronous/asyncio chat
+    # bridge. Eventlet runs all greenlets on one OS thread, so a blocking chat
+    # turn can otherwise prevent unrelated HTTP routes from being scheduled.
+    async_mode="threading",
+    cors_allowed_origins=[
+        'http://localhost:8080',  # User study dev server
+        'http://localhost:8081', # standalone
+        'http://localhost:5173', # rebuild Vite dev server
+        'https://vitality.mathcs.emory.edu'  # Production  server
+    ],
+)
 
 # Configure Flask's logger to work with our custom logger
 app.logger.handlers = logger.handlers
@@ -110,33 +107,7 @@ def handle_log_event(data):
         logger.info(f"Raw data received: {data}")
         return {"status": "error", "message": str(e)}
 
-# === Route: Download selected papers in BibTeX format ===
-@app.route('/checkoutPapers', methods=['POST'])
-@cross_origin()
-def checkout_papers():
-    input_payload = request.json
-    # Prioritize "input_data" field from frontend
-    received_data = input_payload.get('input_data', [])
-
-    paper_ids = []
-    if received_data and isinstance(received_data[0], dict):
-        paper_ids = [str(p.get('ID')) for p in received_data if p.get('ID') is not None]
-    elif received_data:
-        paper_ids = [str(pid) for pid in received_data]
-
-    if not paper_ids:
-        return Response("No valid paper IDs provided.", status=400)
-
-    filename = "papers-checked-out.bibtex"
-    papers = zilliz.query_doc_by_ids(paper_ids)
-    from service import lib
-    response_text = '\n'.join([lib.bib_template(paper) for paper in papers])
-    return Response(response_text, mimetype="text/plain", headers={"Content-Disposition": "attachment;" + filename})
-
-
-from flask import Response, request
-from flask_cors import cross_origin
-# from agents.agent_v1_legacy.runner import streaming_llm  # legacy; undefined  
+# from agents.agent_v1_legacy.runner import streaming_llm  # legacy; undefined
 import asyncio
 
 
@@ -201,31 +172,6 @@ def spa_fallback(error):
 #     cached_data.init()
 #     app.run(host='0.0.0.0', port=port)
 
-@app.route("/getPaperById", methods=["GET"])
-@cross_origin()
-def get_paper_by_id():
-    paper_id = request.args.get("id")
-    if not paper_id:
-        return jsonify({"message": "No ID provided"}), 400
-
-    papers = zilliz.query_doc_by_ids([paper_id])
-    if papers and len(papers) > 0:
-        return jsonify(papers[0]) 
-    return jsonify({})
-
-
-@app.route("/getPaperByTitle", methods=["POST"])
-@cross_origin()
-def get_paper_by_title():
-    data = request.json or {}
-    title = data.get("title", "").strip()
-    if not title:
-        return jsonify({"message": "No title provided"}), 400
-
-    papers = zilliz.query_doc_by_title(title)
-    return jsonify(papers)
-
-
 from agents.agent_v1_legacy.runner import reset_all_sessions
 
 # On startup
@@ -262,4 +208,11 @@ if __name__ == "__main__":
     print(f"Starting Flask-SocketIO server on http://localhost:{port}")
     print(f"Debug mode: {debug_mode}")
 
-    socketio.run(app, host="0.0.0.0", port=port, debug=debug_mode, use_reloader=debug_mode)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        debug=debug_mode,
+        use_reloader=debug_mode,
+        allow_unsafe_werkzeug=True,
+    )
