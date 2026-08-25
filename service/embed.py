@@ -1,7 +1,6 @@
 """Query-embedding helpers for the deployed paper embedding model."""
 from __future__ import annotations
 
-import os
 from typing import Dict, List, Union
 
 import numpy as np
@@ -13,20 +12,14 @@ from logger_config import get_logger
 
 logging = get_logger()
 
-AZURE_EMBED_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_EMBED_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
-AZURE_EMBED_API_VERSION = os.getenv("AZURE_OPENAI_EMBED_API_VERSION")
-
 
 def _azure_embed_client() -> AzureOpenAI:
     """Create the Azure client only when an embedding is actually requested."""
-    if not AZURE_EMBED_ENDPOINT or not AZURE_EMBED_API_KEY or not AZURE_EMBED_DEPLOYMENT:
-        raise RuntimeError("Azure OpenAI embedding configuration is incomplete")
+    config.require_azure_embedding_config()
     return AzureOpenAI(
-        api_version=AZURE_EMBED_API_VERSION,
-        azure_endpoint=AZURE_EMBED_ENDPOINT,
-        api_key=AZURE_EMBED_API_KEY,
+        api_version=config.AZURE_OPENAI_EMBED_API_VERSION or None,
+        azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+        api_key=config.AZURE_OPENAI_API_KEY,
     )
 
 
@@ -37,7 +30,7 @@ def embed_query(text: str) -> List[float]:
 
     try:
         response = _azure_embed_client().embeddings.create(
-            model=AZURE_EMBED_DEPLOYMENT,
+            model=config.AZURE_OPENAI_EMBED_DEPLOYMENT,
             input=[text],
         )
         embedding = list(response.data[0].embedding)

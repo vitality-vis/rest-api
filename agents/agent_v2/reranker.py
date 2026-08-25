@@ -11,8 +11,13 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import CrossEncoder
-
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as error:
+            raise RuntimeError(
+                "Local CrossEncoder rerank requires the rerank extra "
+                "(pip install '.[rerank]' or '.[full,rerank]')."
+            ) from error
         _model = CrossEncoder(MODEL_NAME)
     return _model
 

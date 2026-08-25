@@ -151,13 +151,37 @@ def resolve_chat_deployment(model: str | None = None) -> str:
 # === Zilliz paper collection schema ===
 PAPER_COLLECTION = "paper_prod"
 
-# === Paper embedding ===
+# === Paper embedding (Azure OpenAI Embeddings API; checked on vector request) ===
 PAPER_EMBEDDING_MODEL = EMBED.TEXT_EMBEDDING_3_SMALL
 PAPER_VECTOR_FIELD = "embedding"
 PAPER_VECTOR_DIMENSION = 1536
 DEFAULT_EMBEDDING_MODEL = PAPER_EMBEDDING_MODEL
 PAPER_UMAP_FIELD = "umap"
 PAPER_VECTOR_METRIC = "COSINE"
+
+AZURE_OPENAI_ENDPOINT = (os.environ.get("AZURE_OPENAI_ENDPOINT") or "").strip()
+AZURE_OPENAI_API_KEY = (os.environ.get("AZURE_OPENAI_API_KEY") or "").strip()
+AZURE_OPENAI_EMBED_DEPLOYMENT = (os.environ.get("AZURE_OPENAI_EMBED_DEPLOYMENT") or "").strip()
+AZURE_OPENAI_EMBED_API_VERSION = (os.environ.get("AZURE_OPENAI_EMBED_API_VERSION") or "").strip()
+
+
+def is_azure_embedding_configured() -> bool:
+    """Whether remote vector-query embedding credentials are present.
+
+    Missing values must not block exact/BM25 startup; vector requests check this
+    (and raise a capability error) at call time.
+    """
+    return bool(
+        AZURE_OPENAI_ENDPOINT
+        and AZURE_OPENAI_API_KEY
+        and AZURE_OPENAI_EMBED_DEPLOYMENT
+    )
+
+
+def require_azure_embedding_config() -> None:
+    """Raise when vector search is requested without embedding configuration."""
+    if not is_azure_embedding_configured():
+        raise RuntimeError("Azure OpenAI embedding configuration is incomplete")
 
 
 def is_supported_embedding_model(name=None) -> bool:

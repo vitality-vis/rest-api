@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vitality-rest-api"
+version = "0.1.0"
+description = "VitaLITy REST API: public paper search and optional full-app extras"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "flask",
+  "flask-cors",
+  "flask-compress",
+  "pydantic>=2,<3",
+  "typing-extensions",
+  "requests",
+  "python-dotenv",
+  "packaging",
+  "openai",
+  "numpy<2",
+  "pymilvus==3.0.0",
+  "tqdm",
+]
+
+[project.optional-dependencies]
+full = [
+  "Flask-SocketIO",
+  "python-socketio",
+  "gunicorn>=23,<26",
+  "eventlet",
+  "langchain==0.3.25",
+  "langchain-core==0.3.59",
+  "langchain-community==0.3.24",
+  "langchain-openai==0.2.14",
+  "google-cloud-logging",
+  "colorama",
+]
+rerank = [
+  "sentence-transformers>=3,<4",
+  "transformers>=4.45,<5",
+  "torch>=2.4,<3",
+  "accelerate>=0.34,<1",
+  "safetensors",
+  "huggingface-hub<1",
+]
+dev = [
+  "pytest",
+  "pytest-mock",
+]
+
+[tool.setuptools]
+py-modules = ["config", "logger_config", "prompt"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "app*",
+  "agents*",
+  "service*",
+  "repositories*",
+  "model*",
+]

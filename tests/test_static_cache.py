@@ -192,16 +192,50 @@ def test_write_static_cache_from_zilliz_writes_normalized_snapshot(tmp_path, mon
     assert result == {
         "metadata": expected_metadata,
         "umap_points": points,
-        "fingerprint": fingerprint,
+        "fingerprint": {**fingerprint, "queryable_row_count": 1},
     }
     assert json.loads(meta_p.read_text(encoding="utf-8")) == expected_metadata
     assert json.loads(umap_p.read_text(encoding="utf-8")) == points
-    assert json.loads(fp_p.read_text(encoding="utf-8")) == fingerprint
+    assert json.loads(fp_p.read_text(encoding="utf-8")) == {
+        **fingerprint,
+        "queryable_row_count": 1,
+    }
     get_cache_rows.assert_called_once_with("text-embedding-3-small")
     format_umap_points.assert_called_once_with(rows)
 
 
-def test_write_static_cache_rejects_incomplete_zilliz_results(tmp_path, monkeypatch):
+def test_write_static_cache_allows_stats_row_count_mismatch(tmp_path, monkeypatch):
+    """Stats row_count can exceed searchable query size; still write the pull."""
+    meta_p = tmp_path / "meta_data.json"
+    umap_p = tmp_path / "umap_data.json"
+    fp_p = tmp_path / "cache_fingerprint.json"
+    _patch_cache_paths(monkeypatch, meta_p, umap_p, fp_p)
+
+    rows = [{"ID": "1", "Title": "T1", "Authors": [], "Keywords": [], "Source": "CHI", "Year": 2024}]
+    monkeypatch.setattr(
+        "service.static_cache.zilliz.get_all_static_cache_rows",
+        Mock(return_value=rows),
+    )
+    monkeypatch.setattr(
+        "service.static_cache.zilliz.format_umap_points",
+        Mock(return_value=[{"ID": "1"}]),
+    )
+
+    result = write_static_cache_from_zilliz(
+        fingerprint={
+            "collection": "paper_prod",
+            "update_timestamp": 42,
+            "row_count": 2,
+        }
+    )
+
+    assert result["fingerprint"]["row_count"] == 2
+    assert result["fingerprint"]["queryable_row_count"] == 1
+    assert meta_p.is_file()
+    assert umap_p.is_file()
+
+
+def test_write_static_cache_rejects_empty_zilliz_results(tmp_path, monkeypatch):
     meta_p = tmp_path / "meta_data.json"
     umap_p = tmp_path / "umap_data.json"
     fp_p = tmp_path / "cache_fingerprint.json"
@@ -212,10 +246,10 @@ def test_write_static_cache_rejects_incomplete_zilliz_results(tmp_path, monkeypa
 
     monkeypatch.setattr(
         "service.static_cache.zilliz.get_all_static_cache_rows",
-        Mock(return_value=[{"ID": "1"}]),
+        Mock(return_value=[]),
     )
 
-    with pytest.raises(RuntimeError, match="expected 2 rows, received 1"):
+    with pytest.raises(RuntimeError, match="empty Zilliz query results"):
         write_static_cache_from_zilliz(
             fingerprint={
                 "collection": "paper_prod",

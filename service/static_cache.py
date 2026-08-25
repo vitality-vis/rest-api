@@ -97,6 +97,11 @@ def fingerprints_match(
     local: Optional[Dict[str, Any]],
     remote: Optional[Dict[str, Any]],
 ) -> bool:
+    """Compare change-detection fields only.
+
+    ``queryable_row_count`` is local pull metadata and is ignored here so a
+    successful refresh still matches the next remote stats fingerprint.
+    """
     if not local or not remote:
         return False
     if local.get("collection") != remote.get("collection"):
@@ -175,7 +180,13 @@ def write_static_cache_from_zilliz(
     embedding_type: str = DEFAULT_EMBEDDING_MODEL,
     fingerprint: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Pull meta + UMAP from Zilliz and write local snapshot files + fingerprint."""
+    """Pull meta + UMAP from Zilliz and write local snapshot files + fingerprint.
+
+    ``fingerprint["row_count"]`` from ``get_collection_stats`` is treated only as a
+    change-detection signal. It can exceed the number of entities scalar ``query``
+    can see (Zilliz UI / searchable count), so it must not gate whether a pull is
+    complete.
+    """
     if fingerprint is None:
         logging.info("Reading Zilliz collection fingerprint...")
         fingerprint = get_collection_fingerprint(embedding_type)
@@ -185,13 +196,29 @@ def write_static_cache_from_zilliz(
 
     logging.info("Fetching metadata and UMAP points from Zilliz in one pass...")
     rows = zilliz.get_all_static_cache_rows(embedding_type)
-    expected_row_count = fingerprint.get("row_count")
-    if expected_row_count is not None and len(rows) != int(expected_row_count):
+    pulled_row_count = len(rows)
+    if pulled_row_count == 0:
         raise RuntimeError(
-            "Refusing to replace static cache with incomplete Zilliz data: "
-            f"expected {expected_row_count} rows, received {len(rows)}"
+            "Refusing to replace static cache with empty Zilliz query results"
         )
-    logging.info("Building metadata and UMAP snapshots from %s rows...", len(rows))
+
+    stats_row_count = fingerprint.get("row_count")
+    if stats_row_count is not None and int(stats_row_count) != pulled_row_count:
+        logging.warning(
+            "Zilliz get_collection_stats row_count=%s differs from searchable/"
+            "queryable pull size=%s; writing cache from query results "
+            "(stats are not used as a completeness gate)",
+            stats_row_count,
+            pulled_row_count,
+        )
+
+    # Persist both signals: stats for change detection, pull size for ops/debug.
+    fingerprint = {
+        **fingerprint,
+        "queryable_row_count": pulled_row_count,
+    }
+
+    logging.info("Building metadata and UMAP snapshots from %s rows...", pulled_row_count)
     metadata = normalize_aggregated_metadata(aggregate_metadata(rows))
     umap_points = zilliz.format_umap_points(rows)
 
@@ -262,9 +289,11 @@ class CachedData:
                 remote_fp,
             )
             try:
-                write_static_cache_from_zilliz(embedding_type, fingerprint=remote_fp)
+                written = write_static_cache_from_zilliz(
+                    embedding_type, fingerprint=remote_fp
+                )
                 self._load_from_disk()
-                self.fingerprint = remote_fp
+                self.fingerprint = written.get("fingerprint") or remote_fp
                 return
             except Exception as e:
                 logging.error(

@@ -11,7 +11,6 @@ from typing import List, Dict, Any, Sequence, Optional
 from langchain_core.documents import Document
 from model.paper import SearchRequest
 from service.search import search
-from sentence_transformers import CrossEncoder
 
 # How many ranked papers to send to the frontend paper list after a search.
 # TODO: Replace this fixed cap with score-based truncation (relative threshold /
@@ -25,6 +24,35 @@ PAPERS_PAYLOAD_END = "[[/VITALITY_PAPERS_JSON]]"
 
 # First N papers included in the tool text for the LLM / chat narrative.
 CHAT_PREVIEW_LIMIT = 5
+
+_CROSS_ENCODER_MODEL = None
+_CROSS_ENCODER_LOAD_ATTEMPTED = False
+_CROSS_ENCODER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+def _get_cross_encoder():
+    """Lazy-load the local CrossEncoder when the rerank extra is installed."""
+    global _CROSS_ENCODER_MODEL, _CROSS_ENCODER_LOAD_ATTEMPTED
+    if _CROSS_ENCODER_LOAD_ATTEMPTED:
+        return _CROSS_ENCODER_MODEL
+    _CROSS_ENCODER_LOAD_ATTEMPTED = True
+    try:
+        from sentence_transformers import CrossEncoder
+    except ImportError:
+        logging.warning(
+            "sentence-transformers is not installed; local CrossEncoder rerank is disabled. "
+            "Install with: pip install '.[rerank]' (or '.[full,rerank]')."
+        )
+        _CROSS_ENCODER_MODEL = None
+        return None
+    try:
+        _CROSS_ENCODER_MODEL = CrossEncoder(_CROSS_ENCODER_MODEL_NAME)
+    except Exception as error:
+        logging.error("Could not load CrossEncoder model: %s", error, exc_info=True)
+        _CROSS_ENCODER_MODEL = None
+    return _CROSS_ENCODER_MODEL
+
+
 def _doc_paper_id(doc: Any) -> Optional[str]:
     if isinstance(doc, dict):
         md = doc.get("metadata", doc)
@@ -135,9 +163,8 @@ def clear_session_docs(chat_id: str) -> None:
             logging.error(f"[rag_core] MemoryManager clear failed: {e}")
 
 # =====================================================
-# Embedding + Zilliz setup
+# Formatting helpers
 # =====================================================
-CROSS_ENCODER_MODEL = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 def format_docs(docs: Sequence[Document], *, include_abstract: bool = True, include_score: bool = True) -> str:
     """
     Format retrieved or recalled docs into Markdown for LLM context (memory-aware).
@@ -296,13 +323,17 @@ def _run_semantic_search(
 
     rerank_candidates = vector_docs[:100] # Keep the top 100
 
-    # --- Stage 3: Deep Reranking ---
+    # --- Stage 3: Deep Reranking (optional local CrossEncoder) ---
+    model = _get_cross_encoder()
+    if model is None:
+        return rerank_candidates[:top_k]
+
     pairs = []
     for d in rerank_candidates:
         doc_text = f"{d.metadata.get('title', '')} [SEP] {d.page_content}"
         pairs.append((query_text, doc_text))
 
-    scores = CROSS_ENCODER_MODEL.predict(pairs)
+    scores = model.predict(pairs)
     for d, s in zip(rerank_candidates, scores):
         d.metadata["_rerank_score"] = float(s)
         
@@ -321,14 +352,18 @@ def _rerank_docs_by_query(docs: List[Document], query_text: str, top_k: Optional
     """
     Re-rank a list of documents by relevance to query_text using the cross-encoder.
     Returns the full list sorted by score (or first top_k if top_k is set).
+    Falls back to the input order when the local rerank extra is unavailable.
     """
     if not docs:
         return []
+    model = _get_cross_encoder()
+    if model is None:
+        return docs[:top_k] if top_k is not None else docs
     pairs = [
         (query_text, f"{d.metadata.get('title', '')} [SEP] {d.page_content}")
         for d in docs
     ]
-    scores = CROSS_ENCODER_MODEL.predict(pairs)
+    scores = model.predict(pairs)
     for d, s in zip(docs, scores):
         d.metadata["_rerank_score"] = float(s)
     docs_sorted = sorted(docs, key=lambda d: d.metadata["_rerank_score"], reverse=True)
@@ -383,9 +418,10 @@ def hybrid_refine(meta_docs, sem_docs, query_text, top_k=5, alpha=0.7):
         d.metadata["_hybrid_score"] = alpha * sem_score + (1 - alpha) * meta_score
 
     # --- 5. Rerank ---
-    if CROSS_ENCODER_MODEL is not None:
+    model = _get_cross_encoder()
+    if model is not None:
         pairs = [(query_text, d.page_content) for d in final_docs]
-        scores = CROSS_ENCODER_MODEL.predict(pairs)
+        scores = model.predict(pairs)
         for d, s in zip(final_docs, scores):
             d.metadata["_rerank_score"] = float(s)
         final_docs.sort(key=lambda x: x.metadata["_rerank_score"], reverse=True)
