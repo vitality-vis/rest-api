@@ -8,6 +8,7 @@ from uuid import uuid4
 from langchain_core.messages import HumanMessage
 
 from app.chat.events import AgentAction, PapersResult, TextDelta
+from app.chat.run_control import RunControl
 from .models import SearchV2Request, V2ChatRequest
 from .query_planner import plan_medium_retrieval
 from .router import route
@@ -25,6 +26,17 @@ ROUTER_FAILURE_CLARIFICATION = (
     "I couldn't reliably determine whether you want a general response or a "
     "research-grounded answer. Which would you prefer?"
 )
+
+
+def _control(request: V2ChatRequest) -> RunControl | None:
+    control = request.control
+    return control if isinstance(control, RunControl) else None
+
+
+def _checkpoint(request: V2ChatRequest) -> None:
+    control = _control(request)
+    if control is not None:
+        control.raise_if_aborted()
 
 
 def _paper_id(paper: dict) -> str | None:
@@ -105,6 +117,7 @@ contains that detail. Give a concise, direct research-oriented answer.
 
 
 async def run(request: V2ChatRequest) -> AsyncIterator[object]:
+    _checkpoint(request)
     trace = SearchV2Trace.create(
         trace_id=request.trace_id,
         chat_id=request.chat_id,
@@ -113,6 +126,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     )
     effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
     decision = route(request, trace=trace)
+    _checkpoint(request)
     route_degraded = decision.decision_status not in {
         "model_decision",
         "explicit_mode",
@@ -130,17 +144,20 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
             ),
         },
     )
+    _checkpoint(request)
     if decision.route == "talk":
         if route_degraded:
             yield TextDelta(text=ROUTER_FAILURE_CLARIFICATION)
             return
-        async for chunk in respond_to_talk(request):
+        async for chunk in respond_to_talk(request, control=_control(request)):
+            _checkpoint(request)
             yield TextDelta(text=str(chunk))
         return
     if decision.route == "clarify":
         yield TextDelta(text=decision.clarification_question or DEFAULT_CLARIFICATION)
         return
     if decision.route == "synthesis":
+        _checkpoint(request)
         try:
             yield TextDelta(
                 text=answer_selected_papers(
@@ -170,6 +187,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     retrieval_plan = None
     medium_fallback_reason = None
     if effort == "medium":
+        _checkpoint(request)
         plan_started = monotonic()
         planner_outcome = plan_medium_retrieval(
             user_request=request.text,
@@ -177,6 +195,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
             intent=decision.search_intent,
             llm=get_llm(model=request.model),
         )
+        _checkpoint(request)
         trace.log_medium_retrieval_plan(
             status=planner_outcome.status,
             raw_tool_calls=planner_outcome.raw_tool_calls,
@@ -207,6 +226,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     search_action_id = uuid4().hex
     search_started = monotonic()
     yield _action("search", "started", action_id=search_action_id)
+    _checkpoint(request)
     try:
         result = run_search(
             SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),
@@ -216,6 +236,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
             trace=trace,
             llm_rerank=request.advanced.llm_rerank,
             model=request.model,
+            control=_control(request),
         )
     except SearchCriteriaRequiredError as error:
         yield _action(
@@ -226,6 +247,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
         )
         yield TextDelta(text=str(error))
         return
+    _checkpoint(request)
     ids: list[str] = []
     for item in result.papers:
         paper_id = _paper_id(item.paper)
@@ -242,6 +264,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
         },
     )
     if decision.response_mode == "grounded_answer" and result.papers:
+        _checkpoint(request)
         yield TextDelta(
             text=_answer_from_search(
                 request.text,

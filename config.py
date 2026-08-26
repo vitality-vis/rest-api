@@ -82,6 +82,15 @@ data_source = "json"  # Keep as json, indicating local JSON file is used for loa
 ZILLIZ_URI = os.environ.get("ZILLIZ_URI", "")
 ZILLIZ_TOKEN = os.environ.get("ZILLIZ_TOKEN", "")
 
+# Hard-coded request budgets for Chat Agent isolation (not env-tunable yet).
+ZILLIZ_REQUEST_TIMEOUT_SECONDS = 30.0
+EMBEDDING_REQUEST_TIMEOUT_SECONDS = 30.0
+LLM_REQUEST_TIMEOUT_SECONDS = 120.0
+AGENT_QUEUE_WAIT_TIMEOUT_SECONDS = 120.0
+AGENT_RUN_TIMEOUT_SECONDS = 600.0
+AGENT_SSE_KEEPALIVE_SECONDS = 15.0
+AGENT_SSE_QUEUE_SIZE = 64
+
 # === OpenAlex (citation neighbors; free API key required) ===
 # Key: https://openalex.org/settings/api — free daily credit, not a paid plan.
 OPENALEX_API_KEY = os.environ.get("OPENALEX_API_KEY", "").strip()

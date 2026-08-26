@@ -38,6 +38,7 @@ def get_client():
         _state.client = MilvusClient(
             uri=config.ZILLIZ_URI,
             token=config.ZILLIZ_TOKEN,
+            timeout=config.ZILLIZ_REQUEST_TIMEOUT_SECONDS,
         )
         logging.info("Zilliz Cloud MilvusClient established")
         return _state.client

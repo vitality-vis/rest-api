@@ -16,6 +16,7 @@ from app.chat.events import (
 )
 from app.chat.models import PreparedChatTurn
 from app.chat.persistence import save_assistant_result
+from app.chat.run_control import RunAborted, RunControl
 from app.chat.runner_adapter import ChatRunner, adapt_runner_output
 
 FALLBACK_TEXT = "I'm sorry, something went wrong on our side. Please try again."
@@ -26,6 +27,7 @@ async def iter_chat_turn_events(
     *,
     run_agent: ChatRunner,
     logger: logging.Logger | None = None,
+    control: RunControl | None = None,
 ) -> AsyncIterator[ChatEvent]:
     """Run one prepared Chat turn and yield internal typed events.
 
@@ -42,10 +44,15 @@ async def iter_chat_turn_events(
     stream_error: str | None = None
     papers_result: PapersResult | None = None
     degraded = False
+    aborted: RunAborted | None = None
 
     try:
         try:
-            async for event in adapt_runner_output(run_agent, prepared):
+            async for event in adapt_runner_output(
+                run_agent, prepared, control=control
+            ):
+                if control is not None:
+                    control.raise_if_aborted()
                 if isinstance(event, TextDelta):
                     assistant_chunks.append(event.text)
                 elif isinstance(event, PapersResult):
@@ -54,6 +61,14 @@ async def iter_chat_turn_events(
                     degraded = True
                 yield event
             stream_completed = True
+        except RunAborted as error:
+            aborted = error
+            stream_error = error.error_code
+            active_logger.info(
+                "Chat run aborted kind=%s conversation=%s",
+                error.error_code,
+                prepared.request.chat_id,
+            )
         except Exception as error:  # pylint: disable=broad-except
             # Status 200 and earlier chunks are already conceptually "sent", so
             # no failure may escape: every error degrades into fallback text.
@@ -64,7 +79,14 @@ async def iter_chat_turn_events(
             yield TextDelta(text=FALLBACK_TEXT)
 
         duration_ms = round((monotonic() - started_at) * 1000)
-        if stream_completed:
+        if aborted is not None:
+            yield RunFailed(
+                message=aborted.public_message,
+                duration_ms=duration_ms,
+                error_code=aborted.error_code,
+                retryable=aborted.retryable,
+            )
+        elif stream_completed:
             yield RunCompleted(duration_ms=duration_ms, degraded=degraded)
         else:
             yield RunFailed(

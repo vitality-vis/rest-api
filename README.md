@@ -77,8 +77,6 @@ PORT=3000
 # Full profile Chat Agent admission (ignored by papers profile)
 # AGENT_MAX_CONCURRENT=2
 # AGENT_MAX_PENDING=8
-# AGENT_SSE_QUEUE_SIZE=64
-# AGENT_SSE_KEEPALIVE_SECONDS=15
 ```
 
 ### 3. (Optional) Pre-warm the local cache

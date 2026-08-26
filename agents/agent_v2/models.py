@@ -130,6 +130,8 @@ class V2ChatRequest:
     requested_mode: Literal["auto", "chat", "search", "synthesis"] = "auto"
     user_id: str | None = None
     advanced: AdvancedSearchConfig = field(default_factory=AdvancedSearchConfig)
+    # Mutable cancel/deadline token; omitted from equality by being optional.
+    control: object | None = None
 
 
 RouteKind = Literal["talk", "search", "synthesis", "clarify"]

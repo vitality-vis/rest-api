@@ -20,6 +20,8 @@ def _azure_embed_client() -> AzureOpenAI:
         api_version=config.AZURE_OPENAI_EMBED_API_VERSION or None,
         azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
         api_key=config.AZURE_OPENAI_API_KEY,
+        timeout=config.EMBEDDING_REQUEST_TIMEOUT_SECONDS,
+        max_retries=1,
     )
 
 

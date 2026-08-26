@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from service.search import SearchUnavailableError, search
 
+from app.chat.run_control import RunControl
 from .logging import SearchV2Trace
 from .llm_reranker import score_batch
 from .models import (
@@ -204,8 +205,11 @@ def execute_retrieval_plan(
     trace: SearchV2Trace | None = None,
     llm_rerank: LLMRerankConfig | None = None,
     model: str | None = None,
+    control: RunControl | None = None,
 ) -> SearchV2Response:
     """Validate and execute a low- or medium-generated retrieval plan."""
+    if control is not None:
+        control.raise_if_aborted()
     validated_plan = validate_retrieval_plan(plan, intent=intent)
     try:
         action_results, diagnostics = _execute_actions(validated_plan, intent)
@@ -219,6 +223,8 @@ def execute_retrieval_plan(
                 status="failed",
             )
         raise
+    if control is not None:
+        control.raise_if_aborted()
     candidates = _merge_results(action_results, primary_query=validated_plan.rerank_query)
     if request.effort == "medium" and llm_rerank is not None and llm_rerank.enabled and candidates:
         candidate_pool = candidates[:llm_rerank.candidate_limit]
@@ -226,6 +232,8 @@ def execute_retrieval_plan(
         try:
             scores: dict[str, float] = {}
             for start in range(0, len(candidate_pool), llm_rerank.batch_size):
+                if control is not None:
+                    control.raise_if_aborted()
                 batch = candidate_pool[start : start + llm_rerank.batch_size]
                 scores.update(
                     score_batch(
@@ -310,8 +318,11 @@ def run_search(
     trace: SearchV2Trace | None = None,
     llm_rerank: LLMRerankConfig | None = None,
     model: str | None = None,
+    control: RunControl | None = None,
 ) -> SearchV2Response:
     """Execute a supplied medium plan or the deterministic low plan."""
+    if control is not None:
+        control.raise_if_aborted()
     requested_plan_source = (
         plan.source
         if plan is not None
@@ -339,6 +350,7 @@ def run_search(
             trace=trace,
             llm_rerank=llm_rerank,
             model=model,
+            control=control,
         )
     except (RetrievalPlanValidationError, SearchUnavailableError) as error:
         if selected_plan.source != "medium":
@@ -359,6 +371,8 @@ def run_search(
                 error_message=str(error),
             )
         try:
+            if control is not None:
+                control.raise_if_aborted()
             low_plan = build_low_retrieval_plan(request.query, intent)
             response = execute_retrieval_plan(
                 low_plan,
@@ -368,6 +382,7 @@ def run_search(
                 trace=trace,
                 llm_rerank=llm_rerank,
                 model=model,
+                control=control,
             )
         except RetrievalPlanValidationError as low_error:
             raise SearchCriteriaRequiredError(str(low_error)) from low_error

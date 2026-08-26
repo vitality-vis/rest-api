@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.chat.run_control import RunControl
 from service.llm import get_llm
 
 from .chat_history import history_messages
@@ -23,7 +24,11 @@ internal routing details, tool syntax, or Vitality machine-payload markers.
 """
 
 
-async def respond(request: V2ChatRequest) -> AsyncIterator[str]:
+async def respond(
+    request: V2ChatRequest,
+    *,
+    control: RunControl | None = None,
+) -> AsyncIterator[str]:
     """Stream one non-retrieval response using v2-owned conversation history."""
     llm = get_llm(model=request.model, streaming=True)
     messages = [
@@ -32,6 +37,8 @@ async def respond(request: V2ChatRequest) -> AsyncIterator[str]:
         HumanMessage(content=request.text),
     ]
     async for chunk in llm.astream(messages):
+        if control is not None:
+            control.raise_if_aborted()
         content = getattr(chunk, "content", None)
         if isinstance(content, str) and content:
             yield content

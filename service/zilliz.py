@@ -10,6 +10,7 @@ from config import (
     DEFAULT_EMBEDDING_MODEL,
     PAPER_COLLECTION,
     PAPER_EMBEDDING_MODEL,
+    ZILLIZ_REQUEST_TIMEOUT_SECONDS,
     is_supported_embedding_model,
 )
 from logger_config import get_logger
@@ -67,6 +68,7 @@ class _MilvusCollectionCompat:
             collection_name=self._collection_name,
             filter=expr,
             output_fields=output_fields,
+            timeout=ZILLIZ_REQUEST_TIMEOUT_SECONDS,
             **pagination,
         )
 
@@ -83,6 +85,7 @@ class _MilvusCollectionCompat:
             "search_params": param,
             "limit": limit,
             "output_fields": output_fields,
+            "timeout": ZILLIZ_REQUEST_TIMEOUT_SECONDS,
         }
         if filter:
             kwargs["filter"] = filter

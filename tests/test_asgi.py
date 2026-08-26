@@ -298,6 +298,7 @@ def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
             text="Hello",
             chat_id="queued-1",
             assistant_message_id="asst-queued",
+            pipeline="v2",
         ),
         user_id="user-1",
         history=[],

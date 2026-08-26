@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, TypeVar
 
+import config
+
 T = TypeVar("T")
 
 DEFAULT_AGENT_MAX_CONCURRENT = 2
 DEFAULT_AGENT_MAX_PENDING = 8
-DEFAULT_AGENT_SSE_QUEUE_SIZE = 64
-DEFAULT_AGENT_SSE_KEEPALIVE_SECONDS = 15.0
 
 
 class RunTerminal(str, Enum):
@@ -26,10 +26,12 @@ class RunTerminal(str, Enum):
 
 
 class _RunPhase(str, Enum):
+    """Executor occupancy. Independent of semantic Chat outcome."""
+
     RESERVED = "reserved"
     PENDING = "pending"
     ACTIVE = "active"
-    TERMINAL = "terminal"
+    RELEASED = "released"
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,12 @@ class AgentRuntimeSnapshot:
 
 
 class AgentRunReservation:
-    """One admitted Chat run. Exactly one terminal transition under the runtime lock."""
+    """One admitted Chat run.
+
+    Occupancy (reserved/pending/active/released) tracks real executor capacity.
+    Semantic outcome (completed/failed/cancelled/timedOut) may be recorded while
+    the worker thread is still running after an SSE timeout.
+    """
 
     __slots__ = (
         "_runtime",
@@ -98,7 +105,12 @@ class AgentRunReservation:
 
     @property
     def is_terminal(self) -> bool:
-        return self._phase is _RunPhase.TERMINAL
+        """True when a semantic outcome has been recorded (occupancy may remain)."""
+        return self._terminal is not None
+
+    @property
+    def is_released(self) -> bool:
+        return self._phase is _RunPhase.RELEASED
 
     def release(self) -> None:
         """Drop an unused reservation (validation/auth failure before submit)."""
@@ -106,25 +118,26 @@ class AgentRunReservation:
 
     def mark_cancelled(self) -> None:
         """Client disconnect / shutdown before or during the run."""
-        self._runtime._mark_terminal(self, RunTerminal.CANCELLED)
+        self._runtime._record_outcome(self, RunTerminal.CANCELLED)
 
     def mark_completed(self) -> None:
-        self._runtime._mark_terminal(self, RunTerminal.COMPLETED)
+        self._runtime._record_outcome(self, RunTerminal.COMPLETED)
 
     def mark_failed(self) -> None:
-        self._runtime._mark_terminal(self, RunTerminal.FAILED)
+        self._runtime._record_outcome(self, RunTerminal.FAILED)
 
     def mark_timed_out(self) -> None:
-        self._runtime._mark_terminal(self, RunTerminal.TIMED_OUT)
+        self._runtime._record_outcome(self, RunTerminal.TIMED_OUT)
 
     def ensure_closed(self, *, terminal: RunTerminal = RunTerminal.CANCELLED) -> None:
-        """Idempotent cleanup if the stream ends without an explicit terminal mark."""
-        if self.is_terminal:
-            return
+        """Idempotent semantic + occupancy cleanup when the stream ends."""
+        if self._terminal is None:
+            self._runtime._record_outcome(self, terminal)
         if self._phase is _RunPhase.RESERVED and self._future is None:
-            self.release()
+            self._runtime._release_occupancy(self)
             return
-        self._runtime._mark_terminal(self, terminal)
+        if self._future is not None and self._future.done():
+            self._runtime._release_occupancy(self)
 
 
 class AgentExecutionRuntime:
@@ -135,8 +148,10 @@ class AgentExecutionRuntime:
         max_workers: int,
         max_pending: int,
         *,
-        sse_queue_size: int = DEFAULT_AGENT_SSE_QUEUE_SIZE,
-        sse_keepalive_seconds: float = DEFAULT_AGENT_SSE_KEEPALIVE_SECONDS,
+        sse_queue_size: int = config.AGENT_SSE_QUEUE_SIZE,
+        sse_keepalive_seconds: float = config.AGENT_SSE_KEEPALIVE_SECONDS,
+        queue_wait_timeout_seconds: float = config.AGENT_QUEUE_WAIT_TIMEOUT_SECONDS,
+        agent_run_timeout_seconds: float = config.AGENT_RUN_TIMEOUT_SECONDS,
     ):
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
@@ -146,12 +161,18 @@ class AgentExecutionRuntime:
             raise ValueError("sse_queue_size must be at least 1")
         if sse_keepalive_seconds <= 0:
             raise ValueError("sse_keepalive_seconds must be > 0")
+        if queue_wait_timeout_seconds <= 0:
+            raise ValueError("queue_wait_timeout_seconds must be > 0")
+        if agent_run_timeout_seconds <= 0:
+            raise ValueError("agent_run_timeout_seconds must be > 0")
 
         self.max_workers = max_workers
         self.max_pending = max_pending
         self.max_admitted = max_workers + max_pending
         self.sse_queue_size = sse_queue_size
         self.sse_keepalive_seconds = sse_keepalive_seconds
+        self.queue_wait_timeout_seconds = queue_wait_timeout_seconds
+        self.agent_run_timeout_seconds = agent_run_timeout_seconds
 
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -210,15 +231,15 @@ class AgentExecutionRuntime:
 
             def run_tracked() -> T:
                 self._mark_active(reservation)
-                try:
-                    return job()
-                finally:
-                    # Bridge / route owns semantic terminal (completed/failed/…).
-                    # If they never mark, ensure_closed will finalize as cancelled.
-                    pass
+                return job()
 
             future = self._executor.submit(run_tracked)
             reservation._future = future
+
+            def _on_done(_fut: Future[T]) -> None:
+                self._release_occupancy(reservation)
+
+            future.add_done_callback(_on_done)
             return future
 
     def snapshot(self) -> AgentRuntimeSnapshot:
@@ -257,7 +278,7 @@ class AgentExecutionRuntime:
 
     def _release_unused(self, reservation: AgentRunReservation) -> None:
         with self._lock:
-            if reservation._phase is _RunPhase.TERMINAL:
+            if reservation._phase is _RunPhase.RELEASED:
                 return
             if reservation._phase is not _RunPhase.RESERVED:
                 raise RuntimeError(
@@ -265,12 +286,12 @@ class AgentExecutionRuntime:
                     f"phase={reservation._phase.value}"
                 )
             self._reserved -= 1
-            reservation._phase = _RunPhase.TERMINAL
+            reservation._phase = _RunPhase.RELEASED
             # Validation failure is not a Chat outcome; do not bump cancelled.
 
     def _mark_active(self, reservation: AgentRunReservation) -> None:
         with self._lock:
-            if reservation._phase is _RunPhase.TERMINAL:
+            if reservation._phase is _RunPhase.RELEASED:
                 return
             if reservation._phase is not _RunPhase.PENDING:
                 return
@@ -283,13 +304,37 @@ class AgentExecutionRuntime:
             reservation._phase = _RunPhase.ACTIVE
             reservation._started_at = now
 
-    def _mark_terminal(
+    def _record_outcome(
         self,
         reservation: AgentRunReservation,
         terminal: RunTerminal,
     ) -> None:
+        """Record semantic Chat outcome without freeing executor occupancy."""
         with self._lock:
-            if reservation._phase is _RunPhase.TERMINAL:
+            if reservation._terminal is not None:
+                return
+            reservation._terminal = terminal
+            if terminal is RunTerminal.COMPLETED:
+                self._completed += 1
+            elif terminal is RunTerminal.FAILED:
+                self._failed += 1
+            elif terminal is RunTerminal.CANCELLED:
+                self._cancelled += 1
+            elif terminal is RunTerminal.TIMED_OUT:
+                self._timed_out += 1
+
+            # Rejected-before-submit / unused reserved: no Future will release us.
+            if (
+                reservation._phase is _RunPhase.RESERVED
+                and reservation._future is None
+            ):
+                self._reserved -= 1
+                reservation._phase = _RunPhase.RELEASED
+
+    def _release_occupancy(self, reservation: AgentRunReservation) -> None:
+        """Free reserved/pending/active capacity once the Future is done or unused."""
+        with self._lock:
+            if reservation._phase is _RunPhase.RELEASED:
                 return
             now = time.monotonic()
             if reservation._phase is _RunPhase.RESERVED:
@@ -304,18 +349,7 @@ class AgentExecutionRuntime:
                 if reservation._started_at is not None:
                     exec_ms = max(0, round((now - reservation._started_at) * 1000))
                     self._execution_ms_total += exec_ms
-
-            if terminal is RunTerminal.COMPLETED:
-                self._completed += 1
-            elif terminal is RunTerminal.FAILED:
-                self._failed += 1
-            elif terminal is RunTerminal.CANCELLED:
-                self._cancelled += 1
-            elif terminal is RunTerminal.TIMED_OUT:
-                self._timed_out += 1
-
-            reservation._phase = _RunPhase.TERMINAL
-            reservation._terminal = terminal
+            reservation._phase = _RunPhase.RELEASED
 
 
 def _env_int(name: str, default: int) -> int:
@@ -326,32 +360,18 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from error
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, str(default))
-    try:
-        return float(raw)
-    except ValueError as error:
-        raise ValueError(f"{name} must be a number") from error
-
-
 def create_agent_runtime() -> AgentExecutionRuntime:
     max_workers = _env_int("AGENT_MAX_CONCURRENT", DEFAULT_AGENT_MAX_CONCURRENT)
     max_pending = _env_int("AGENT_MAX_PENDING", DEFAULT_AGENT_MAX_PENDING)
-    sse_queue_size = _env_int("AGENT_SSE_QUEUE_SIZE", DEFAULT_AGENT_SSE_QUEUE_SIZE)
-    keepalive = _env_float(
-        "AGENT_SSE_KEEPALIVE_SECONDS", DEFAULT_AGENT_SSE_KEEPALIVE_SECONDS
-    )
     if max_workers < 1:
         raise ValueError("AGENT_MAX_CONCURRENT must be at least 1")
     if max_pending < 0:
         raise ValueError("AGENT_MAX_PENDING must be >= 0")
-    if sse_queue_size < 1:
-        raise ValueError("AGENT_SSE_QUEUE_SIZE must be at least 1")
-    if keepalive <= 0:
-        raise ValueError("AGENT_SSE_KEEPALIVE_SECONDS must be > 0")
     return AgentExecutionRuntime(
         max_workers=max_workers,
         max_pending=max_pending,
-        sse_queue_size=sse_queue_size,
-        sse_keepalive_seconds=keepalive,
+        sse_queue_size=config.AGENT_SSE_QUEUE_SIZE,
+        sse_keepalive_seconds=config.AGENT_SSE_KEEPALIVE_SECONDS,
+        queue_wait_timeout_seconds=config.AGENT_QUEUE_WAIT_TIMEOUT_SECONDS,
+        agent_run_timeout_seconds=config.AGENT_RUN_TIMEOUT_SECONDS,
     )
