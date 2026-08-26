@@ -9,6 +9,12 @@ HTTP paths are unchanged. Modules are split by dependency boundary:
 - `chat.py` — full-app chat (still top-level until Phase 4)
 - `route_allowlist.py` — explicit papers vs full blueprint registration lists
 
+## `public/health.py`
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/health` | no | Profile name + discovered capability flags. |
+
 ## `public/papers.py`
 
 | Method | Path | Auth | Notes |

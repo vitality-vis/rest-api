@@ -44,6 +44,11 @@ def _positive_int_environment_value(name: str, default: int) -> int:
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
+
+def is_supabase_configured() -> bool:
+    """Whether authenticated user persistence is configured."""
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
 # === Library PDF uploads ===
 # This is safe to expose through the public bootstrap config: it is a UI limit,
 # not an Azure credential or endpoint. 100 MiB is the default when unset.
@@ -161,8 +166,20 @@ PAPER_VECTOR_METRIC = "COSINE"
 
 AZURE_OPENAI_ENDPOINT = (os.environ.get("AZURE_OPENAI_ENDPOINT") or "").strip()
 AZURE_OPENAI_API_KEY = (os.environ.get("AZURE_OPENAI_API_KEY") or "").strip()
+AZURE_OPENAI_API_VERSION = (os.environ.get("AZURE_OPENAI_API_VERSION") or "").strip()
 AZURE_OPENAI_EMBED_DEPLOYMENT = (os.environ.get("AZURE_OPENAI_EMBED_DEPLOYMENT") or "").strip()
 AZURE_OPENAI_EMBED_API_VERSION = (os.environ.get("AZURE_OPENAI_EMBED_API_VERSION") or "").strip()
+
+
+def is_azure_chat_configured() -> bool:
+    """Whether the full-app Azure Chat capability has complete configuration."""
+    return bool(
+        AZURE_OPENAI_ENDPOINT
+        and AZURE_OPENAI_API_KEY
+        and AZURE_OPENAI_API_VERSION
+        and AZURE_OPENAI_AVAILABLE_MODELS
+        and AZURE_OPENAI_DEFAULT_MODEL
+    )
 
 
 def is_azure_embedding_configured() -> bool:
@@ -175,6 +192,7 @@ def is_azure_embedding_configured() -> bool:
         AZURE_OPENAI_ENDPOINT
         and AZURE_OPENAI_API_KEY
         and AZURE_OPENAI_EMBED_DEPLOYMENT
+        and AZURE_OPENAI_EMBED_API_VERSION
     )
 
 

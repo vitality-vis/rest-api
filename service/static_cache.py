@@ -261,15 +261,20 @@ class CachedData:
     meta_datas = None
     aggregated_metadata = None
     fingerprint = None
+    zilliz_ready = False
 
     def init(self, embedding_type: str = DEFAULT_EMBEDDING_MODEL):
         logging.info("Initializing cached data...")
+        # This is a startup readiness snapshot. Reset it on every init so a
+        # second app construction cannot inherit stale state from this singleton.
+        self.zilliz_ready = False
         meta_path = Path(config.meta_data_file_path)
         umap_path = Path(config.umap_data_file_path)
         fp_path = Path(config.cache_fingerprint_file_path)
 
         local_fp = load_json_file(str(fp_path), None)
         remote_fp = get_collection_fingerprint(embedding_type)
+        self.zilliz_ready = remote_fp is not None
         files_ok = meta_path.is_file() and umap_path.is_file()
 
         if files_ok and remote_fp and fingerprints_match(local_fp, remote_fp):

@@ -6,10 +6,9 @@ Backend API for **VitaLITy**, built with **Flask**, **Zilliz Cloud** (vector DB)
 
 ## Requirements
 
-- **Python 3.9+**
-- **Azure OpenAI** (LLM and optional Ada embeddings)
-- **Zilliz Cloud** (vector database)
-- **Supabase** (authenticated chat persistence)
+- **Python 3.10+**
+- **Zilliz Cloud** (required)
+- **Azure OpenAI**, **Supabase** (full app only)
 
 ---
 
@@ -17,27 +16,31 @@ Backend API for **VitaLITy**, built with **Flask**, **Zilliz Cloud** (vector DB)
 
 ### 1. Environment
 
-**Option A – venv + pip:**
-
 ```bash
 python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install --upgrade pip
-pip install -r requirements.txt
 ```
 
-**Option B – Conda (from `environment.yml`):**
+**If you only need the public paper REST API** (get papers from the vitality dataset):
 
 ```bash
-conda env create -f environment.yml
-conda activate vitality-rest-api
+pip install -e .
 ```
 
-### 2. Data
+**If you want the full VitaLITy app** (to chat with your papers):
 
-Place the paper dataset in the `data/` folder. The loader expects **`data/VitaLITy-2.0.0.json`** by default (see `config.py` → `raw_json_datafile`). If your dataset has a different name (e.g. `VitaLITy-2.0.0_final.json`), set the path in `config.py` or use the same filename.
+```bash
+pip install -e ".[full,rerank]"
+```
 
-### 3. Environment variables
+**If you are developing the VitaLITy app**:
+
+```bash
+pip install -e ".[full,rerank,dev]"
+```
+
+### 2. Environment variables
 
 Create a **`.env`** file in the project root:
 
@@ -72,22 +75,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-or-secret-key
 PORT=3000
 ```
 
-Get Zilliz credentials from [Zilliz Cloud](https://cloud.zilliz.com).
-
-`SUPABASE_SERVICE_ROLE_KEY` has administrator access and must remain in the backend `.env` or your deployment platform's secret store. Never add it to a Vite `VITE_*` variable, send it to the browser, or commit it. The frontend uses the separate public Supabase URL and anon/publishable key.
-
-### 4. Supabase database migrations
-
-Authenticated chat tables and RLS policies are versioned in `supabase/migrations/`. After authenticating the Supabase CLI, link this backend to the intended Supabase project and apply outstanding migrations:
-
-```bash
-npx supabase link --project-ref <your-project-ref>
-npx supabase db push
-```
-
-The migration creates `chat_conversations` and `chat_messages`, enables Row Level Security (RLS), and limits table access to the owning authenticated user. Do not use `db push` against production until the migration has been reviewed.
-
-### 5. (Optional) Pre-warm the local cache
+### 3. (Optional) Pre-warm the local cache
 
 ```bash
 python script/export_zilliz_static_data.py
@@ -112,8 +100,8 @@ Server runs at **http://localhost:3000** (or the port in `PORT`).
 **Production (Gunicorn):**
 
 ```bash
-pip install gunicorn eventlet
-gunicorn --worker-class eventlet -w 1 --bind 127.0.0.1:8000 --timeout 600 main:app
+pip install gunicorn
+gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:8000 --timeout 600 main:app
 ```
 
 ---
@@ -177,11 +165,11 @@ POST /chat
 ├── prompt.py            # LLM prompts
 ├── load_to_zilliz.py    # Load JSON into Zilliz collections
 ├── requirements.txt
-├── environment.yml      # Optional Conda env
+├── pyproject.toml       # Dependency source of truth (papers / full / rerank / dev)
+├── requirements.txt     # Temporary shim → -e .[full,rerank]
 ├── supabase/
 │   └── migrations/       # Versioned Supabase database schema and RLS policies
-├── data/
-│   └── VitaLITy-2.0.0.json   # Paper dataset (path configurable in config.py)
+├── data/               # Local cache (meta_data.json, umap_data.json; fetched from Zilliz)
 ├── service/              # Core logic
 │   ├── bootstrap.py
 │   ├── citations.py

@@ -285,6 +285,7 @@ def test_cached_data_init_uses_local_when_fingerprint_matches(tmp_path, monkeypa
         refresh.assert_not_called()
         assert len(cache.get_umap_points()) == 1
         assert cache.fingerprint == fp
+        assert cache.zilliz_ready is True
 
 
 def test_cached_data_init_refreshes_when_stale(tmp_path, monkeypatch):
@@ -325,6 +326,7 @@ def test_cached_data_init_refreshes_when_stale(tmp_path, monkeypatch):
     cache.init()
     assert cache.get_umap_points()[0]["ID"] == "9"
     assert cache.fingerprint == remote
+    assert cache.zilliz_ready is True
 
 
 def test_cached_data_init_uses_local_cache_when_remote_fingerprint_unavailable(
@@ -350,6 +352,7 @@ def test_cached_data_init_uses_local_cache_when_remote_fingerprint_unavailable(
 
     assert cache.get_umap_points() == points
     assert cache.fingerprint == local_fp
+    assert cache.zilliz_ready is False
     refresh.assert_not_called()
 
 
@@ -376,6 +379,7 @@ def test_cached_data_init_keeps_local_cache_when_refresh_fails(tmp_path, monkeyp
 
     assert cache.get_umap_points() == points
     assert cache.fingerprint == local_fp
+    assert cache.zilliz_ready is True
     refresh.assert_called_once_with("text-embedding-3-small", fingerprint=remote_fp)
 
 
@@ -399,6 +403,7 @@ def test_cached_data_init_is_empty_when_no_local_cache_or_remote_fingerprint(
     assert cache.get_meta_datas() == {}
     assert cache.get_aggregated_metadata() == {}
     assert cache.fingerprint is None
+    assert cache.zilliz_ready is False
 
 
 @pytest.mark.live

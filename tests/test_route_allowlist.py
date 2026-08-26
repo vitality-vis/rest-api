@@ -35,6 +35,7 @@ def test_load_papers_blueprints_registers_expected_paths():
         app.register_blueprint(blueprint)
 
     rules = {(rule.rule, tuple(sorted(rule.methods - {"HEAD", "OPTIONS"}))) for rule in app.url_map.iter_rules()}
+    assert ("/health", ("GET",)) in rules
     assert ("/getPapers", ("GET", "POST")) in rules
     assert ("/getSimilarPapers", ("POST",)) in rules
     assert ("/getPaperCitations", ("POST",)) in rules
@@ -42,6 +43,7 @@ def test_load_papers_blueprints_registers_expected_paths():
     assert ("/getPaperByTitle", ("POST",)) in rules
     assert ("/getUmapPoints", ("GET",)) in rules
     assert ("/getMetaData", ("GET",)) in rules
+    assert ("app.api.public.health", "health_bp") in PAPERS_BLUEPRINTS
     assert not any(rule == "/papers/resolve" for rule, _ in rules)
     assert not any(rule == "/getPublicConfig" for rule, _ in rules)
     assert not any(rule == "/checkoutPapers" for rule, _ in rules)

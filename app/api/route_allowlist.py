@@ -11,6 +11,7 @@ from typing import Any
 
 # (import module, blueprint attribute)
 PAPERS_BLUEPRINTS: tuple[tuple[str, str], ...] = (
+    ("app.api.public.health", "health_bp"),
     ("app.api.public.papers", "papers_bp"),
     ("app.api.public.lookup", "lookup_bp"),
     ("app.api.public.corpus", "corpus_bp"),
