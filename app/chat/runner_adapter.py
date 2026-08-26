@@ -17,39 +17,25 @@ def build_agent_request(
     *,
     control: RunControl | None = None,
 ) -> Any:
-    """Build the pipeline-specific Agent request object."""
+    """Build the v2 Agent request object."""
+    from agents.agent_v2.models import V2ChatRequest
+
     request = prepared.request
-    if request.pipeline == "v2":
-        from agents.agent_v2.models import V2ChatRequest
-
-        return V2ChatRequest(
-            text=request.text,
-            chat_id=request.chat_id,
-            history=prepared.history,
-            selected_paper_ids=request.paper_ids,
-            context=request.message_context,
-            effort=request.effort,
-            model=request.model,
-            trace_id=request.trace_id,
-            user_message_id=request.user_message_id,
-            assistant_message_id=request.assistant_message_id,
-            requested_mode=request.requested_mode,
-            user_id=prepared.user_id,
-            advanced=request.advanced,
-            control=control,
-        )
-
-    from agents.agent_v1_legacy import AgentRequest
-
-    return AgentRequest(
+    return V2ChatRequest(
         text=request.text,
         chat_id=request.chat_id,
         history=prepared.history,
+        selected_paper_ids=request.paper_ids,
+        context=request.message_context,
         effort=request.effort,
         model=request.model,
         trace_id=request.trace_id,
         user_message_id=request.user_message_id,
         assistant_message_id=request.assistant_message_id,
+        requested_mode=request.requested_mode,
+        user_id=prepared.user_id,
+        advanced=request.advanced,
+        control=control,
     )
 
 

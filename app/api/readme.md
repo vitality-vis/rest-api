@@ -62,7 +62,6 @@ HTTP paths are unchanged. Modules are split by dependency boundary:
 | `POST` | `/chat/import` | required | Body `{ conversations: [...] }`. Idempotent guest→cloud import. |
 | `GET` | `/chat/conversations` | required | User's cloud chat history. |
 | `PUT` | `/chat/conversations/{id}/closed` | required | Body `{ is_closed: boolean }`; saves the tab visibility state. |
-| `POST` | `/chat` | optional | Legacy Flask `text/plain` stream (v1). Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`/`model`. |
 | `POST` | `/chat/v2` | optional | **ASGI-only** typed SSE (`text/event-stream`). Requires `client_request_id`. Backend assigns `agentRunId` / `assistantMessageId` in `run.started`. Message limit 10,000 chars. `agent_v2` owns talk, clarification, paper search, and selected-paper synthesis. |
 
 Pre-stream failures on `/chat/v2` (validation, auth, unavailable executor) return JSON:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-ChatPipeline = Literal["v1", "v2"]
+ChatPipeline = Literal["v2"]
 ChatEffort = Literal["low", "medium", "high"]
 ChatMode = Literal["auto", "chat", "search", "synthesis"]
 
@@ -53,12 +53,12 @@ class ChatTurnRequest:
     message_context: dict[str, object] = field(default_factory=dict)
     guest_history: list[dict[str, str]] = field(default_factory=list)
     authorization_header: str | None = None
-    pipeline: ChatPipeline = "v1"
+    pipeline: ChatPipeline = "v2"
     max_text_length: int | None = None
     trace_id: str | None = None
     client_request_id: str | None = None
     agent_run_id: str | None = None
-    # v2-only fields (ignored for v1)
+    # v2-only fields
     requested_mode: ChatMode = "auto"
     paper_ids: list[str] = field(default_factory=list)
     advanced: Any | None = None

@@ -76,9 +76,8 @@ def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Lo
             # 1. GOOGLE_APPLICATION_CREDENTIALS environment variable
             # 2. Application Default Credentials (ADC)
             # 3. Metadata service (when running on GCP)
-            # TODO: Revisit this when moving off eventlet (for example to
-            # gevent or an ASGI stack). The default gRPC transport times out
-            # consistently under Gunicorn's eventlet worker; REST is stable.
+            # Prefer HTTP transport for Cloud Logging under Uvicorn. gRPC has been
+            # flaky in some long-running process layouts; REST remains stable.
             client = google.cloud.logging.Client(_use_grpc=False)
 
             # Create Cloud Logging handler

@@ -32,7 +32,7 @@ def register_socket_handlers(sio: Any, logger: Any) -> None:
         logger.info("[%s] WebSocket Client connected: %s", timestamp, sid)
         await sio.emit(
             "connected",
-            {"data": "Connected to Flask-SocketIO server"},
+            {"data": "Connected to Socket.IO server"},
             to=sid,
         )
 

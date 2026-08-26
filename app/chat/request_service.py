@@ -162,7 +162,7 @@ def parse_access_token(authorization_header: str | None) -> str | None:
 def build_chat_turn_request(
     data: dict[str, Any],
     *,
-    pipeline: ChatPipeline = "v1",
+    pipeline: ChatPipeline = "v2",
     max_text_length: int | None = None,
     authorization_header: str | None = None,
     trace_id: str | None = None,

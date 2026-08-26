@@ -78,9 +78,16 @@ def test_prepare_guest_turn_uses_request_history():
     assert prepared.history == [{"role": "user", "content": "before"}]
 
 
-def test_build_agent_request_v1():
+def test_build_agent_request_v2():
     prepared = PreparedChatTurn(
-        request=ChatTurnRequest(text="Find papers", chat_id="c1", effort="medium"),
+        request=ChatTurnRequest(
+            text="Find papers",
+            chat_id="c1",
+            effort="medium",
+            pipeline="v2",
+            requested_mode="search",
+            paper_ids=["p1"],
+        ),
         user_id=None,
         history=[{"role": "user", "content": "prev"}],
     )
@@ -89,6 +96,8 @@ def test_build_agent_request_v1():
     assert agent_request.chat_id == "c1"
     assert agent_request.history == [{"role": "user", "content": "prev"}]
     assert agent_request.effort == "medium"
+    assert agent_request.selected_paper_ids == ["p1"]
+    assert agent_request.requested_mode == "search"
 
 
 def test_iter_chat_turn_events_without_flask_context():

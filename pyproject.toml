@@ -29,9 +29,6 @@ dependencies = [
 [project.optional-dependencies]
 full = [
   "python-socketio",
-  "Flask-SocketIO",
-  "gunicorn>=23,<26",
-  "eventlet",
   "langchain==0.3.25",
   "langchain-core==0.3.59",
   "langchain-community==0.3.24",

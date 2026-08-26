@@ -123,7 +123,7 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/chat` | POST | Chat about selected papers (streaming) |
+| `/chat/v2` | POST | Chat agent (typed SSE) |
 | `/summarize` | POST | Summarize selected papers |
 | `/literatureReview` | POST | Generate a literature review |
 
@@ -147,10 +147,11 @@ POST /getSimilarPapers
 **Chat:**
 
 ```json
-POST /chat
+POST /chat/v2
 {
-  "papers": [...],
-  "message": "What are the main themes in these papers?"
+  "client_request_id": "…",
+  "chat_id": "…",
+  "text": "What are the main themes in these papers?"
 }
 ```
 
@@ -160,12 +161,11 @@ POST /chat
 ## Project structure
 
 ```
-├── main.py              # Flask app and routes
+├── main.py              # ASGI app entry (uvicorn main:app)
 ├── config.py            # Paths, Zilliz and search settings
 ├── logger_config.py     # Logging (including optional Google Cloud)
 ├── prompt.py            # LLM prompts
 ├── load_to_zilliz.py    # Load JSON into Zilliz collections
-├── requirements.txt
 ├── pyproject.toml       # Dependency source of truth (papers / full / rerank / dev)
 ├── requirements.txt     # Temporary shim → -e .[full,rerank]
 ├── supabase/

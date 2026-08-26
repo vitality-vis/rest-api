@@ -1,27 +1,15 @@
-"""Flask Chat transport: route parsing, error mapping, and text/plain encoding."""
+"""Flask Chat transport: import and conversation history routes."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask_cors import cross_origin
 
-from agents.agent_v1_legacy import run as run_search_v1_legacy
-from app.chat.events import TextDelta
 from app.chat.models import ChatDomainError
-from app.chat.request_service import (
-    build_chat_turn_request,
-    normalise_context,
-    parse_access_token,
-    prepare_chat_turn,
-)
-from app.chat.runner_adapter import ChatRunner
-from app.chat.service import iter_chat_turn_events
+from app.chat.request_service import normalise_context, parse_access_token
 from repositories.supabase.auth import (
     SupabaseAuthenticationError,
     SupabaseConfigurationError,
@@ -246,92 +234,3 @@ def update_chat_conversation_closed(conversation_id: str):
         return Response("Chat tab state is unavailable", status=503, mimetype="text/plain")
 
     return Response(status=204)
-
-
-def _domain_error_response(error: ChatDomainError) -> Response:
-    """Map domain errors to the historical HTTP bodies."""
-    if error.message == "Please Input Your Text":
-        # Preserve the historical bare 400 body (no explicit mimetype).
-        return Response(error.message, status=error.status_code)
-    return Response(error.message, status=error.status_code, mimetype="text/plain")
-
-
-def _encode_text_plain_stream(
-    prepared: Any,
-    run_agent: ChatRunner,
-    *,
-    logger: logging.Logger,
-) -> Response:
-    """Encode internal typed events as the current text/plain chunk stream."""
-    loop = asyncio.new_event_loop()
-
-    def stream_sync():
-        agen = None
-        try:
-            agen = iter_chat_turn_events(
-                prepared,
-                run_agent=run_agent,
-                logger=logger,
-            ).__aiter__()
-            while True:
-                event = loop.run_until_complete(agen.__anext__())
-                if isinstance(event, TextDelta):
-                    yield event.text
-        except StopAsyncIteration:
-            pass
-        finally:
-            # Client disconnect injects GeneratorExit at yield. aclose() so the
-            # Chat service ``finally`` still persists the assistant message.
-            if agen is not None and not loop.is_closed():
-                try:
-                    loop.run_until_complete(agen.aclose())
-                except Exception:
-                    pass
-            if not loop.is_closed():
-                pending = asyncio.all_tasks(loop=loop)
-                for task in pending:
-                    task.cancel()
-                try:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
-                except Exception:
-                    pass
-                loop.close()
-
-    return Response(stream_sync(), status=200, mimetype="text/plain")
-
-
-def _chat_response(
-    run_agent: ChatRunner,
-    *,
-    pipeline: str = "v1",
-    max_text_length: int | None = None,
-    trace_id: str | None = None,
-) -> Response:
-    """Flask transport for one Chat turn (parse → service → encode)."""
-    data = request.get_json(force=True) or {}
-    try:
-        turn_request = build_chat_turn_request(
-            data,
-            pipeline=pipeline,  # type: ignore[arg-type]
-            max_text_length=max_text_length,
-            authorization_header=request.headers.get("Authorization"),
-            trace_id=trace_id,
-        )
-        prepared = prepare_chat_turn(turn_request)
-    except ChatDomainError as error:
-        return _domain_error_response(error)
-
-    return _encode_text_plain_stream(
-        prepared,
-        run_agent,
-        logger=current_app.logger,
-    )
-
-
-@chat_bp.route("/chat", methods=["POST"])
-@cross_origin()
-def chat():
-    """Stream a research-assistant response using the production legacy runner."""
-    return _chat_response(run_search_v1_legacy, pipeline="v1")

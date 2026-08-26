@@ -144,7 +144,7 @@ def _dump_intent(intent: SearchIntent | None) -> dict | None:
     return intent.model_dump() if hasattr(intent, "model_dump") else intent.dict()
 
 
-def route(
+async def route(
     request: V2ChatRequest,
     *,
     trace: SearchV2Trace,
@@ -205,11 +205,15 @@ def route(
             .replace("{current_user_message}", request.text)
         )
         system_prompt, _, current_turn = router_prompt.partition(_CURRENT_TURN_MARKER)
-        raw = llm.invoke([
-            SystemMessage(content=system_prompt.strip()),
-            *history_messages(request.history),
-            HumanMessage(content=f"{_CURRENT_TURN_MARKER}{current_turn}".strip()),
-        ]).content
+        raw = (
+            await llm.ainvoke(
+                [
+                    SystemMessage(content=system_prompt.strip()),
+                    *history_messages(request.history),
+                    HumanMessage(content=f"{_CURRENT_TURN_MARKER}{current_turn}".strip()),
+                ]
+            )
+        ).content
         clean = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
         decision = _validate_decision(json.loads(clean))
         decision.decision_status = "model_decision"

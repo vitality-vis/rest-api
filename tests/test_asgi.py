@@ -117,6 +117,15 @@ def test_full_asgi_health_and_socket_server(suppress_lifecycle, monkeypatch):
     assert payload["agentRuntime"]["capacity"] >= 1
     assert "pendingCapacity" in payload["agentRuntime"]
 
+    with TestClient(bundle.asgi_app) as client:
+        # No Chat turn route at /chat. Full profile may return 405 because the
+        # SPA static catch-all registers GET /<path:filename> for "chat".
+        assert client.post("/chat", json={"text": "hi"}).status_code in {404, 405}
+        assert client.post("/chat_stream_simple", json={"text": "hi"}).status_code in {
+            404,
+            405,
+        }
+
 
 def test_startup_bundle_refreshes_capabilities(suppress_lifecycle, monkeypatch):
     monkeypatch.setattr(

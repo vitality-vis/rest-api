@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, jsonify, request
 from flask_cors import cross_origin
 
 from app.asgi import attach_asgi
@@ -63,37 +62,6 @@ def _attach_logger(app: Flask, logger) -> None:
 
 
 def _register_full_only_http_routes(app: Flask) -> None:
-    # Deprecated simple stream route (kept for compatibility; streaming_llm undefined).
-    @app.route("/chat_stream_simple", methods=["POST"])
-    @cross_origin()
-    def chat_stream_simple():
-        data = request.get_json(force=True) or {}
-        text = data.get("text", "").strip()
-        if not text:
-            return Response("Please Input Your Text", status=400)
-
-        async def llm_stream():
-            async for chunk in streaming_llm.astream(text):  # noqa: F821
-                yield chunk.content or ""
-            yield "[[STREAM_DONE]]"
-
-        def sync_stream():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                agen = llm_stream()
-                while True:
-                    part = loop.run_until_complete(agen.__anext__())
-                    if not part:
-                        continue
-                    yield part
-            except StopAsyncIteration:
-                pass
-            finally:
-                loop.close()
-
-        return Response(sync_stream(), mimetype="text/plain", status=200)
-
     @app.route("/resetMemory", methods=["POST"])
     @cross_origin()
     def reset_memory():

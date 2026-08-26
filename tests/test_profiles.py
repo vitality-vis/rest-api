@@ -228,7 +228,10 @@ def test_full_profile_includes_user_and_chat_routes(suppress_lifecycle):
     rules = {rule.rule for rule in bundle.flask_app.url_map.iter_rules()}
     assert "/health" in rules
     assert "/getPapers" in rules
-    assert "/chat" in rules
+    assert "/chat" not in rules
+    assert "/chat/import" in rules
+    assert "/chat/conversations" in rules
+    assert "/chat_stream_simple" not in rules
     assert "/chat/v2" not in rules
     assert "/library/papers" in rules
     assert "/notes" in rules

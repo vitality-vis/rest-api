@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections import Counter
@@ -77,9 +78,11 @@ def _evaluate_case(case: dict[str, Any], attempt: int) -> dict[str, Any]:
         context=case.get("context"),
         requested_mode=case.get("requested_mode", "auto"),
     )
-    decision = route(
-        request,
-        trace=SearchV2Trace.create(trace_id=f"router-eval-{case['id']}-{attempt}"),
+    decision = asyncio.run(
+        route(
+            request,
+            trace=SearchV2Trace.create(trace_id=f"router-eval-{case['id']}-{attempt}"),
+        )
     )
     expected = case["expected"]
     actual_intent = _dump_model(decision.search_intent)

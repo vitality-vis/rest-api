@@ -196,7 +196,7 @@ def _merge_results(results: list[_ActionResult], *, primary_query: str) -> list[
     return list(merged.values())[:FUSED_CANDIDATE_LIMIT]
 
 
-def execute_retrieval_plan(
+async def execute_retrieval_plan(
     plan: RetrievalPlan,
     *,
     request: SearchV2Request,
@@ -236,7 +236,7 @@ def execute_retrieval_plan(
                     control.raise_if_aborted()
                 batch = candidate_pool[start : start + llm_rerank.batch_size]
                 scores.update(
-                    score_batch(
+                    await score_batch(
                         validated_plan.rerank_query,
                         [item.paper for item in batch],
                         model=model,
@@ -308,7 +308,7 @@ def execute_retrieval_plan(
     )
 
 
-def run_search(
+async def run_search(
     request: SearchV2Request,
     *,
     intent: SearchIntent,
@@ -342,7 +342,7 @@ def run_search(
         )
 
     try:
-        response = execute_retrieval_plan(
+        response = await execute_retrieval_plan(
             selected_plan,
             request=request,
             intent=intent,
@@ -374,7 +374,7 @@ def run_search(
             if control is not None:
                 control.raise_if_aborted()
             low_plan = build_low_retrieval_plan(request.query, intent)
-            response = execute_retrieval_plan(
+            response = await execute_retrieval_plan(
                 low_plan,
                 request=request,
                 intent=intent,
@@ -387,8 +387,9 @@ def run_search(
         except RetrievalPlanValidationError as low_error:
             raise SearchCriteriaRequiredError(str(low_error)) from low_error
 
-    response.diagnostics["requested_plan_source"] = requested_plan_source
-    response.diagnostics["executed_plan_source"] = response.diagnostics.get("plan_source")
+    diagnostics: dict = response.diagnostics
+    diagnostics["requested_plan_source"] = requested_plan_source
+    diagnostics["executed_plan_source"] = diagnostics["plan_source"]
     if fallback_reason:
-        response.diagnostics["fallback_reason"] = fallback_reason
+        diagnostics["fallback_reason"] = fallback_reason
     return response

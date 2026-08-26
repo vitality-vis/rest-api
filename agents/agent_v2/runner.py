@@ -90,7 +90,7 @@ def _citation_ids(papers: list[dict], *, limit: int = 8) -> dict[int, str]:
     }
 
 
-def _answer_from_search(question: str, papers: list[dict], *, model: str | None = None) -> str:
+async def _answer_from_search(question: str, papers: list[dict], *, model: str | None = None) -> str:
     """Synthesize an answer from v2 retrieval results without invoking v1."""
     evidence = _paper_evidence(papers)
     prompt = f"""Answer the user's question using only the retrieved-paper evidence below.
@@ -109,7 +109,9 @@ contains that detail. Give a concise, direct research-oriented answer.
 <RETRIEVED_PAPERS>
 {evidence}
 </RETRIEVED_PAPERS>"""
-    content = get_llm(model=model).invoke([HumanMessage(content=prompt)]).content
+    content = (
+        await get_llm(model=model).ainvoke([HumanMessage(content=prompt)])
+    ).content
     answer = str(content).strip()
     if not answer:
         return "I found relevant papers, but couldn't generate a grounded answer from them."
@@ -125,7 +127,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
         assistant_message_id=request.assistant_message_id,
     )
     effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
-    decision = route(request, trace=trace)
+    decision = await route(request, trace=trace)
     _checkpoint(request)
     route_degraded = decision.decision_status not in {
         "model_decision",
@@ -189,7 +191,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     if effort == "medium":
         _checkpoint(request)
         plan_started = monotonic()
-        planner_outcome = plan_medium_retrieval(
+        planner_outcome = await plan_medium_retrieval(
             user_request=request.text,
             retrieval_query=retrieval_query,
             intent=decision.search_intent,
@@ -228,7 +230,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     yield _action("search", "started", action_id=search_action_id)
     _checkpoint(request)
     try:
-        result = run_search(
+        result = await run_search(
             SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),
             intent=decision.search_intent,
             plan=retrieval_plan,
@@ -266,7 +268,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     if decision.response_mode == "grounded_answer" and result.papers:
         _checkpoint(request)
         yield TextDelta(
-            text=_answer_from_search(
+            text=await _answer_from_search(
                 request.text,
                 [item.paper for item in result.papers],
                 model=request.model,

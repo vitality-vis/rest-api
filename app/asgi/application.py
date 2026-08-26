@@ -53,8 +53,8 @@ def attach_asgi(
         from app.asgi.chat_routes import register_chat_routes
 
         register_chat_routes(fastapi_app, bundle)
-    # Mount after FastAPI-native routes. Flask owns remaining HTTP paths,
-    # including legacy ``POST /chat`` (v1 text/plain).
+    # Mount after FastAPI-native routes. Flask owns remaining HTTP paths
+    # (papers, user, chat import/history, SPA). Chat turns use ASGI ``/chat/v2``.
     fastapi_app.mount("/", WSGIMiddleware(bundle.flask_app))
 
     if not enable_socketio:

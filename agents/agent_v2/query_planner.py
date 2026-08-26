@@ -101,7 +101,7 @@ def _raw_tool_call(call: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def plan_medium_retrieval(
+async def plan_medium_retrieval(
     *,
     user_request: str,
     retrieval_query: str,
@@ -125,7 +125,7 @@ def plan_medium_retrieval(
             parallel_tool_calls=True,
             tool_choice="required",
         )
-        response = tool_model.invoke(
+        response = await tool_model.ainvoke(
             [
                 SystemMessage(content=_MEDIUM_PLANNER_PROMPT),
                 HumanMessage(content=f"<SEARCH_CONTEXT>{planner_input}</SEARCH_CONTEXT>"),
