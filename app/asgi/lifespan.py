@@ -41,6 +41,12 @@ def startup_bundle(bundle: ApplicationBundle) -> None:
         # Idempotent: repeated startup must not orphan a live ThreadPoolExecutor.
         if bundle.agent_runtime is None:
             bundle.agent_runtime = create_agent_runtime()
+        # Flask /health reads this provider; avoid a second ASGI-only metrics URL.
+        bundle.flask_app.config["VITALITY_AGENT_RUNTIME_SNAPSHOT"] = (
+            bundle.agent_runtime.snapshot
+        )
+    else:
+        bundle.flask_app.config["VITALITY_AGENT_RUNTIME_SNAPSHOT"] = None
 
     if bundle.profile is AppProfile.PAPERS:
         logger.info(
@@ -63,6 +69,7 @@ async def shutdown_bundle(bundle: ApplicationBundle) -> None:
     if bundle.agent_runtime is not None:
         await bundle.agent_runtime.shutdown()
         bundle.agent_runtime = None
+        bundle.flask_app.config["VITALITY_AGENT_RUNTIME_SNAPSHOT"] = None
     if bundle.socketio is not None:
         await bundle.socketio.shutdown()
     bundle.logger.info(

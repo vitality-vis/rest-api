@@ -212,6 +212,7 @@ def test_papers_health_endpoint(suppress_lifecycle, monkeypatch):
     assert payload["capabilities"]["paperSearch"] is False
     assert payload["capabilities"]["chat"] is False
     assert payload["capabilities"]["socketIo"] is False
+    assert payload.get("agentRuntime") is None
 
     monkeypatch.setattr(
         "app.profiles.papers.cached_data.zilliz_ready", True, raising=False

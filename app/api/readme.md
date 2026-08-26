@@ -13,7 +13,7 @@ HTTP paths are unchanged. Modules are split by dependency boundary:
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/health` | no | Profile name + discovered capability flags. |
+| `GET` | `/health` | no | Profile name + capability flags. Full profile adds `agentRuntime` admission/metrics snapshot (`ready` vs `accepting`); papers returns `agentRuntime: null`. No user/run data. |
 
 ## `public/papers.py`
 

@@ -20,7 +20,7 @@ from app.chat.event_bridge import bridge_agent_events
 from app.chat.events import RunCompleted, TextDelta
 from app.chat.execution import AgentExecutionRuntime
 from app.chat.models import ChatTurnRequest, PreparedChatTurn
-from app.chat.sse import SSEEncoder
+from app.chat.sse import SSEEncoder, encode_keepalive_comment
 from app.profiles import AppProfile
 
 
@@ -77,6 +77,7 @@ def test_papers_asgi_health_via_wsgi_middleware(suppress_lifecycle, monkeypatch)
     assert payload["profile"] == "papers"
     assert payload["capabilities"]["socketIo"] is False
     assert payload["capabilities"]["chat"] is False
+    assert payload["agentRuntime"] is None
 
 
 def test_papers_asgi_chat_routes_are_404(suppress_lifecycle):
@@ -111,6 +112,10 @@ def test_full_asgi_health_and_socket_server(suppress_lifecycle, monkeypatch):
     payload = response.json()
     assert payload["profile"] == "full"
     assert payload["capabilities"]["socketIo"] is True
+    assert payload["agentRuntime"]["ready"] is True
+    assert payload["agentRuntime"]["accepting"] is True
+    assert payload["agentRuntime"]["capacity"] >= 1
+    assert "pendingCapacity" in payload["agentRuntime"]
 
 
 def test_startup_bundle_refreshes_capabilities(suppress_lifecycle, monkeypatch):
@@ -130,10 +135,11 @@ def test_startup_bundle_refreshes_capabilities(suppress_lifecycle, monkeypatch):
 
 def test_startup_bundle_agent_runtime_is_idempotent(suppress_lifecycle):
     bundle = create_application(AppProfile.FULL)
-    first = AgentExecutionRuntime(max_workers=1)
+    first = AgentExecutionRuntime(max_workers=1, max_pending=1)
     bundle.agent_runtime = first
     startup_bundle(bundle)
     assert bundle.agent_runtime is first
+    assert callable(bundle.flask_app.config.get("VITALITY_AGENT_RUNTIME_SNAPSHOT"))
     asyncio.run(first.shutdown())
 
 
@@ -149,14 +155,79 @@ def test_shutdown_bundle_awaits_agent_and_socketio(suppress_lifecycle):
     runtime.shutdown.assert_awaited_once()
     sio.shutdown.assert_awaited_once()
     assert bundle.agent_runtime is None
+    assert bundle.flask_app.config.get("VITALITY_AGENT_RUNTIME_SNAPSHOT") is None
+
+
+def test_agent_runtime_admission_and_snapshot():
+    runtime = AgentExecutionRuntime(max_workers=1, max_pending=1)
+    first = runtime.try_reserve()
+    second = runtime.try_reserve()
+    assert first is not None and second is not None
+    assert runtime.try_reserve() is None
+    snap = runtime.snapshot()
+    assert snap.ready is True
+    assert snap.accepting is False
+    assert snap.capacity == 1
+    assert snap.pending_capacity == 1
+    assert snap.reserved == 2
+    assert snap.rejected == 1
+    first.release()
+    snap = runtime.snapshot()
+    assert snap.accepting is True
+    assert snap.reserved == 1
+    third = runtime.try_reserve()
+    assert third is not None
+    second.release()
+    third.release()
+    asyncio.run(runtime.shutdown())
+
+
+def test_chat_v2_returns_503_when_admission_full(suppress_lifecycle, monkeypatch):
+    async def fake_run(_request: Any) -> AsyncIterator[Any]:
+        yield TextDelta(text="ok")
+
+    monkeypatch.setattr("agents.agent_v2.runner.run", fake_run)
+    bundle = create_application(AppProfile.FULL)
+    with TestClient(bundle.asgi_app) as client:
+        runtime = bundle.agent_runtime
+        assert runtime is not None
+        held = []
+        while True:
+            reservation = runtime.try_reserve()
+            if reservation is None:
+                break
+            held.append(reservation)
+        assert held
+        response = client.post(
+            "/chat/v2",
+            json={
+                "client_request_id": "req-over-capacity",
+                "chat_id": "c-over",
+                "text": "Hello",
+            },
+        )
+        assert response.status_code == 503
+        assert "capacity" in response.json()["detail"].lower()
+        health = client.get("/health").json()
+        assert health["agentRuntime"]["ready"] is True
+        assert health["agentRuntime"]["accepting"] is False
+        assert health["agentRuntime"]["rejected"] >= 1
+        for reservation in held:
+            reservation.release()
 
 
 def test_chat_v2_requires_client_request_id(suppress_lifecycle):
     bundle = create_application(AppProfile.FULL)
     with TestClient(bundle.asgi_app) as client:
+        before = client.get("/health").json()["agentRuntime"]
         response = client.post("/chat/v2", json={"text": "Hello"})
-    assert response.status_code == 400
-    assert response.json() == {"detail": "client_request_id is required"}
+        assert response.status_code == 400
+        assert response.json() == {"detail": "client_request_id is required"}
+        # Failed validation must release admission.
+        after = client.get("/health").json()["agentRuntime"]
+    assert after["reserved"] == before["reserved"]
+    assert after["active"] == before["active"]
+    assert after["pending"] == before["pending"]
 
 
 def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
@@ -198,6 +269,7 @@ def test_sse_encoder_assigns_monotonic_seq():
     assert "id: 2\n" in second
     assert '"seq":1' in first
     assert '"seq":2' in second
+    assert encode_keepalive_comment() == ": keepalive\n\n"
 
 
 def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
@@ -210,14 +282,15 @@ def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
 
     monkeypatch.setattr("app.chat.event_bridge.save_assistant_result", fake_save)
 
-    runtime = AgentExecutionRuntime(max_workers=1)
+    runtime = AgentExecutionRuntime(max_workers=1, max_pending=2)
 
     def blocking_job() -> None:
         started.set()
         release.wait(timeout=5)
 
-    # Occupy the only slot so the chat job stays queued.
-    blocker = runtime.submit(blocking_job)
+    blocker_reservation = runtime.try_reserve()
+    assert blocker_reservation is not None
+    blocker = runtime.submit(blocker_reservation, blocking_job)
     assert started.wait(timeout=2)
 
     prepared = PreparedChatTurn(
@@ -237,6 +310,8 @@ def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
 
     async def exercise() -> None:
         disconnected = asyncio.Event()
+        chat_reservation = runtime.try_reserve()
+        assert chat_reservation is not None
 
         async def is_disconnected() -> bool:
             return disconnected.is_set()
@@ -246,6 +321,7 @@ def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
                 prepared,
                 run_agent=never_run,
                 runtime=runtime,
+                reservation=chat_reservation,
                 logger=logging.getLogger("test-bridge"),
                 is_disconnected=is_disconnected,
             ):
@@ -260,6 +336,7 @@ def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
     asyncio.run(exercise())
     release.set()
     blocker.result(timeout=2)
+    blocker_reservation.mark_completed()
     asyncio.run(runtime.shutdown())
 
     assert saved["conversation_id"] == "queued-1"

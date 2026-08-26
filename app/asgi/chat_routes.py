@@ -14,7 +14,7 @@ from app.chat.event_bridge import bridge_agent_events
 from app.chat.events import RunCompleted, RunFailed, RunStarted
 from app.chat.models import ChatDomainError
 from app.chat.request_service import build_chat_turn_request, prepare_chat_turn
-from app.chat.sse import SSEEncoder
+from app.chat.sse import SSEEncoder, encode_keepalive_comment
 
 if TYPE_CHECKING:
     from app.profiles import ApplicationBundle
@@ -39,56 +39,78 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
                 content={"detail": "Chat execution is unavailable"},
             )
 
-        try:
-            raw = await request.json()
-        except json.JSONDecodeError:
-            return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
-        if not isinstance(raw, dict):
-            return JSONResponse(status_code=400, content={"detail": "JSON body must be an object"})
-
-        client_request_id = raw.get("client_request_id")
-        if not isinstance(client_request_id, str) or not client_request_id.strip():
+        # Admission before any SSE frame (including run.started).
+        reservation = runtime.try_reserve()
+        if reservation is None:
             return JSONResponse(
-                status_code=400,
-                content={"detail": "client_request_id is required"},
+                status_code=503,
+                content={"detail": "Chat is at capacity. Please try again shortly."},
             )
 
-        agent_run_id = str(uuid4())
-        assistant_message_id = str(uuid4())
-        payload = {
-            **raw,
-            "client_request_id": client_request_id.strip(),
-            "agent_run_id": agent_run_id,
-            "assistant_message_id": assistant_message_id,
-        }
         try:
-            turn_request = build_chat_turn_request(
-                payload,
-                pipeline="v2",
-                max_text_length=10_000,
-                authorization_header=request.headers.get("Authorization"),
-                trace_id=agent_run_id,
-            )
-            # Supabase auth/history/message persistence use synchronous clients.
-            prepared = await asyncio.to_thread(prepare_chat_turn, turn_request)
-        except ChatDomainError as error:
-            return _error_response(error)
+            try:
+                raw = await request.json()
+            except json.JSONDecodeError:
+                reservation.release()
+                return JSONResponse(
+                    status_code=400, content={"detail": "Invalid JSON body"}
+                )
+            if not isinstance(raw, dict):
+                reservation.release()
+                return JSONResponse(
+                    status_code=400, content={"detail": "JSON body must be an object"}
+                )
+
+            client_request_id = raw.get("client_request_id")
+            if not isinstance(client_request_id, str) or not client_request_id.strip():
+                reservation.release()
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "client_request_id is required"},
+                )
+
+            agent_run_id = str(uuid4())
+            assistant_message_id = str(uuid4())
+            payload = {
+                **raw,
+                "client_request_id": client_request_id.strip(),
+                "agent_run_id": agent_run_id,
+                "assistant_message_id": assistant_message_id,
+            }
+            try:
+                turn_request = build_chat_turn_request(
+                    payload,
+                    pipeline="v2",
+                    max_text_length=10_000,
+                    authorization_header=request.headers.get("Authorization"),
+                    trace_id=agent_run_id,
+                )
+                # Supabase auth/history/message persistence use synchronous clients.
+                prepared = await asyncio.to_thread(prepare_chat_turn, turn_request)
+            except ChatDomainError as error:
+                reservation.release()
+                return _error_response(error)
+        except Exception:
+            reservation.release()
+            raise
 
         from agents.agent_v2.runner import run as run_agent_v2
 
         async def event_stream():
             encoder = SSEEncoder()
             terminal_sent = False
+            keepalive = runtime.sse_keepalive_seconds
             events = bridge_agent_events(
                 prepared,
                 run_agent=run_agent_v2,
                 runtime=runtime,
+                reservation=reservation,
                 logger=bundle.logger,
                 is_disconnected=request.is_disconnected,
             )
             # Start/queue the job before exposing run.started so an immediate
             # disconnect always has a Future whose persistence owner is known.
-            first_event = asyncio.create_task(events.__anext__())
+            event_task = asyncio.create_task(events.__anext__())
             try:
                 yield encoder.encode(
                     RunStarted(
@@ -99,22 +121,34 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
                         effort=turn_request.effort,
                     )
                 )
-                try:
-                    event = await first_event
-                except StopAsyncIteration:
-                    event = None
 
-                while event is not None:
+                while True:
                     if await request.is_disconnected():
                         return
+
+                    done, _pending = await asyncio.wait(
+                        {event_task},
+                        timeout=keepalive,
+                    )
+                    if not done:
+                        # Keep the same __anext__ task; do not wait_for-cancel it.
+                        yield encode_keepalive_comment()
+                        continue
+
+                    try:
+                        event = event_task.result()
+                    except StopAsyncIteration:
+                        event = None
+
+                    if event is None:
+                        break
+
                     yield encoder.encode(event)
                     if isinstance(event, (RunCompleted, RunFailed)):
                         terminal_sent = True
                         break
-                    try:
-                        event = await events.__anext__()
-                    except StopAsyncIteration:
-                        event = None
+
+                    event_task = asyncio.create_task(events.__anext__())
 
                 if not terminal_sent and not await request.is_disconnected():
                     yield encoder.encode(
@@ -125,10 +159,11 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
                         )
                     )
             finally:
-                if not first_event.done():
-                    first_event.cancel()
-                await asyncio.gather(first_event, return_exceptions=True)
+                if not event_task.done():
+                    event_task.cancel()
+                await asyncio.gather(event_task, return_exceptions=True)
                 await events.aclose()
+                reservation.ensure_closed()
 
         return StreamingResponse(
             event_stream(),

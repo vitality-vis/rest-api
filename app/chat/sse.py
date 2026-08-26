@@ -19,6 +19,11 @@ from app.chat.events import (
 SCHEMA_VERSION = 1
 
 
+def encode_keepalive_comment() -> str:
+    """SSE comment frame; does not advance seq or carry typed Chat events."""
+    return ": keepalive\n\n"
+
+
 def _event_data(event: ChatEvent) -> dict[str, object]:
     if isinstance(event, RunStarted):
         return {
