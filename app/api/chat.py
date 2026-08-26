@@ -1,18 +1,27 @@
-"""Streaming chat endpoint."""
+"""Flask Chat transport: route parsing, error mapping, and text/plain encoding."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-from collections.abc import AsyncIterator, Callable
+import logging
 from datetime import datetime
-from time import monotonic
 from typing import Any
 from uuid import UUID
 
 from flask import Blueprint, Response, current_app, jsonify, request
 from flask_cors import cross_origin
 
+from agents.agent_v1_legacy import run as run_search_v1_legacy
+from app.chat.events import TextDelta
+from app.chat.models import ChatDomainError
+from app.chat.request_service import (
+    build_chat_turn_request,
+    normalise_context,
+    parse_access_token,
+    prepare_chat_turn,
+)
+from app.chat.runner_adapter import ChatRunner
+from app.chat.service import iter_chat_turn_events
 from repositories.supabase.auth import (
     SupabaseAuthenticationError,
     SupabaseConfigurationError,
@@ -22,26 +31,13 @@ from repositories.supabase.chat_repository import (
     ChatPersistenceError,
     ConversationOwnershipError,
     ensure_conversation,
-    load_completed_history,
     load_user_conversations,
     save_message,
     set_conversation_closed,
 )
-from agents.agent_v1_legacy import AgentRequest, run as run_search_v1_legacy
-from agents.agent_v1_legacy.rag_core import (
-    PAPERS_PAYLOAD_END,
-    PAPERS_PAYLOAD_START,
-)
-
 
 chat_bp = Blueprint("chat", __name__)
 
-# TODO: Replace these fixed client-history limits with recent turns plus a
-# compact summary and on-demand retrieval of relevant older history.
-MAX_HISTORY_MESSAGES = 12
-MAX_HISTORY_MESSAGE_CHARS = 8_000
-MAX_HISTORY_TOTAL_CHARS = 24_000
-MAX_MESSAGE_CONTEXT_CHARS = 6_000
 # TODO: Import oversized guest histories in resumable batches instead of
 # rejecting them at these single-request safety limits.
 MAX_IMPORT_CONVERSATIONS = 100
@@ -49,106 +45,14 @@ MAX_IMPORT_MESSAGES_PER_CONVERSATION = 500
 MAX_IMPORT_MESSAGE_CHARS = 50_000
 
 
-ChatRunner = Callable[[Any], AsyncIterator[str]]
-
-CONTEXT_START = "<CONTEXT>"
-CONTEXT_END = "</CONTEXT>"
-
-
-def _strip_machine_markers(content: str) -> str:
-    """Remove frontend-only markers before feeding history to the agent."""
-    cleaned = content
-    while True:
-        start = cleaned.find(PAPERS_PAYLOAD_START)
-        if start < 0:
-            break
-        end = cleaned.find(PAPERS_PAYLOAD_END, start)
-        if end < 0:
-            cleaned = cleaned[:start]
-            break
-        cleaned = cleaned[:start] + cleaned[end + len(PAPERS_PAYLOAD_END) :]
-    return cleaned.replace("[SIGNAL:SHOW_LOAD_MORE]", "").strip()
-
-
-def _normalise_context(value: object) -> dict[str, object]:
-    """Return bounded JSON-object context attached to one chat message."""
-    if not isinstance(value, dict):
-        return {}
-    try:
-        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded) > MAX_MESSAGE_CONTEXT_CHARS:
-            # Keep a useful, valid paper reference rather than persisting a
-            # partial JSON payload when many/full abstracts were selected.
-            papers = value.get("selectedPapers")
-            if not isinstance(papers, list):
-                return {}
-            compact_papers: list[dict[str, object]] = []
-            for paper in papers:
-                if not isinstance(paper, dict):
-                    continue
-                paper_id = paper.get("id")
-                title = paper.get("title")
-                if not isinstance(paper_id, str) or not isinstance(title, str):
-                    continue
-                compact: dict[str, object] = {"id": paper_id, "title": title}
-                if isinstance(paper.get("abstract"), str):
-                    compact["abstract"] = paper["abstract"][:1_000]
-                candidate = {"selectedPapers": [*compact_papers, compact]}
-                if len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) > MAX_MESSAGE_CONTEXT_CHARS:
-                    break
-                compact_papers.append(compact)
-            value = {"selectedPapers": compact_papers}
-            encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        decoded = json.loads(encoded)
-    except (TypeError, ValueError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
-
-
-def _context_marker(context: dict[str, object]) -> str:
-    if not context:
-        return ""
-    return f"\n{CONTEXT_START}\n{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}\n{CONTEXT_END}"
-
-
-def _normalise_history(value: object) -> list[dict[str, str]]:
-    """Return bounded, user/assistant text turns from an untrusted request body."""
-    if not isinstance(value, list):
-        return []
-
-    turns: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role")
-        content = item.get("content")
-        if role not in {"user", "assistant"} or not isinstance(content, str):
-            continue
-        content = _strip_machine_markers(content)
-        if content:
-            context = _normalise_context(item.get("context"))
-            turns.append({"role": role, "content": f"{content}{_context_marker(context)}"[:MAX_HISTORY_MESSAGE_CHARS]})
-
-    bounded: list[dict[str, str]] = []
-    remaining = MAX_HISTORY_TOTAL_CHARS
-    for turn in reversed(turns[-MAX_HISTORY_MESSAGES:]):
-        if remaining <= 0:
-            break
-        content = turn["content"][:remaining]
-        bounded.append({"role": turn["role"], "content": content})
-        remaining -= len(content)
-    return list(reversed(bounded))
-
-
 def _get_authenticated_user_id() -> str | None:
     """Return the verified Supabase user ID, or None for a guest request."""
-    authorization = request.headers.get("Authorization")
-    if not authorization:
+    try:
+        access_token = parse_access_token(request.headers.get("Authorization"))
+    except ChatDomainError as error:
+        raise SupabaseAuthenticationError(str(error)) from error
+    if not access_token:
         return None
-
-    scheme, _, access_token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not access_token.strip():
-        raise SupabaseAuthenticationError("Malformed authorization header")
     return verify_access_token(access_token.strip())
 
 
@@ -185,7 +89,9 @@ def _importable_message(value: object) -> dict[str, object]:
     text = "".join(
         block.get("text", "")
         for block in content
-        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
     )[:MAX_IMPORT_MESSAGE_CHARS]
     if not text:
         if status != "failed":
@@ -200,7 +106,7 @@ def _importable_message(value: object) -> dict[str, object]:
         "text": text,
         "created_at": _require_timestamp(value.get("createdAt"), "message createdAt"),
         "error_message": error_message[:500] if isinstance(error_message, str) else None,
-        "context": _normalise_context(value.get("context")),
+        "context": normalise_context(value.get("context")),
     }
 
 
@@ -246,8 +152,12 @@ def import_guest_chats():
                 conversation_id=conversation_id,
                 user_id=user_id,
                 title=title.strip()[:200],
-                created_at=_require_timestamp(value.get("createdAt"), "conversation createdAt"),
-                updated_at=_require_timestamp(value.get("updatedAt"), "conversation updatedAt"),
+                created_at=_require_timestamp(
+                    value.get("createdAt"), "conversation createdAt"
+                ),
+                updated_at=_require_timestamp(
+                    value.get("updatedAt"), "conversation updatedAt"
+                ),
                 is_closed=bool(value.get("closed", False)),
             )
             for message in messages:
@@ -271,10 +181,12 @@ def import_guest_chats():
         logger.error("Could not import guest chats: %s", error)
         return Response("Chat import is unavailable", status=503, mimetype="text/plain")
 
-    return jsonify({
-        "imported_conversation_ids": imported_ids,
-        "truncated": len(data.get("conversations", [])) > MAX_IMPORT_CONVERSATIONS,
-    })
+    return jsonify(
+        {
+            "imported_conversation_ids": imported_ids,
+            "truncated": len(data.get("conversations", [])) > MAX_IMPORT_CONVERSATIONS,
+        }
+    )
 
 
 @chat_bp.route("/chat/conversations", methods=["GET"])
@@ -336,197 +248,93 @@ def update_chat_conversation_closed(conversation_id: str):
     return Response(status=204)
 
 
+def _domain_error_response(error: ChatDomainError) -> Response:
+    """Map domain errors to the historical HTTP bodies."""
+    if error.message == "Please Input Your Text":
+        # Preserve the historical bare 400 body (no explicit mimetype).
+        return Response(error.message, status=error.status_code)
+    return Response(error.message, status=error.status_code, mimetype="text/plain")
+
+
+def _encode_text_plain_stream(
+    prepared: Any,
+    run_agent: ChatRunner,
+    *,
+    logger: logging.Logger,
+) -> Response:
+    """Encode internal typed events as the current text/plain chunk stream."""
+    loop = asyncio.new_event_loop()
+
+    def stream_sync():
+        agen = None
+        try:
+            agen = iter_chat_turn_events(
+                prepared,
+                run_agent=run_agent,
+                logger=logger,
+            ).__aiter__()
+            while True:
+                event = loop.run_until_complete(agen.__anext__())
+                if isinstance(event, TextDelta):
+                    yield event.text
+        except StopAsyncIteration:
+            pass
+        finally:
+            # Client disconnect injects GeneratorExit at yield. aclose() so the
+            # Chat service ``finally`` still persists the assistant message.
+            if agen is not None and not loop.is_closed():
+                try:
+                    loop.run_until_complete(agen.aclose())
+                except Exception:
+                    pass
+            if not loop.is_closed():
+                pending = asyncio.all_tasks(loop=loop)
+                for task in pending:
+                    task.cancel()
+                try:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                except Exception:
+                    pass
+                loop.close()
+
+    return Response(stream_sync(), status=200, mimetype="text/plain")
+
+
 def _chat_response(
     run_agent: ChatRunner,
     *,
+    pipeline: str = "v1",
     max_text_length: int | None = None,
     trace_id: str | None = None,
-    use_v2_request: bool = False,
 ) -> Response:
-    """Run one chat turn with shared request, persistence, and streaming behavior."""
+    """Flask transport for one Chat turn (parse → service → encode)."""
     data = request.get_json(force=True) or {}
-    text = data.get("text", "")
-    text = text.strip() if isinstance(text, str) else ""
-    chat_id = data.get("chat_id", "default")
-    chat_id = str(chat_id)
-    title = data.get("title", "New chat")
-    title = title.strip()[:200] if isinstance(title, str) and title.strip() else "New chat"
-    user_message_id = data.get("user_message_id")
-    assistant_message_id = data.get("assistant_message_id")
-    message_created_at = data.get("message_created_at")
-    effort = data.get("effort", "low")
-    effort = effort if effort in {"low", "medium", "high"} else "low"
-    raw_model = data.get("model")
-    if raw_model is None or raw_model == "":
-        model = None
-    elif isinstance(raw_model, str) and raw_model.strip():
-        model = raw_model.strip()
-    else:
-        return Response("model must be a non-empty string", status=400, mimetype="text/plain")
-    if model is not None:
-        import config as app_config
-
-        try:
-            model = app_config.resolve_chat_model(model)
-        except ValueError as error:
-            return Response(str(error), status=400, mimetype="text/plain")
-    user_message_id = str(user_message_id) if user_message_id is not None else None
-    assistant_message_id = str(assistant_message_id) if assistant_message_id is not None else None
-    message_created_at = str(message_created_at) if message_created_at is not None else None
-    message_context = _normalise_context(data.get("context"))
-    requested_mode = "auto"
-    paper_ids: list[str] = []
-    advanced = None
-    if use_v2_request:
-        from agents.agent_v2.models import AdvancedSearchConfig
-
-        try:
-            advanced = AdvancedSearchConfig.model_validate(data.get("advanced") or {})
-        except Exception as error:
-            return Response(f"advanced configuration is invalid: {error}", status=400, mimetype="text/plain")
-        requested_mode = data.get("mode", "auto")
-        if requested_mode not in {"auto", "chat", "search", "synthesis"}:
-            return Response(
-                "mode must be one of: auto, chat, search, synthesis",
-                status=400,
-                mimetype="text/plain",
-            )
-        paper_ids = data.get("paper_ids", [])
-        if not isinstance(paper_ids, list) or not all(isinstance(item, str) and item for item in paper_ids):
-            return Response("paper_ids must be an array of strings", status=400, mimetype="text/plain")
-    if not text:
-        return Response("Please Input Your Text", status=400)
-    if max_text_length is not None and len(text) > max_text_length:
-        return Response(
-            f"Your message is too long. Please keep it within {max_text_length:,} characters.",
-            status=400,
-            mimetype="text/plain",
-        )
-
-    logger = current_app.logger
     try:
-        user_id = _get_authenticated_user_id()
-    except SupabaseConfigurationError:
-        logger.error("Supabase is not configured for authenticated chat")
-        return Response("Authenticated chat is unavailable", status=503, mimetype="text/plain")
-    except SupabaseAuthenticationError:
-        return Response("Unauthorized", status=401, mimetype="text/plain")
+        turn_request = build_chat_turn_request(
+            data,
+            pipeline=pipeline,  # type: ignore[arg-type]
+            max_text_length=max_text_length,
+            authorization_header=request.headers.get("Authorization"),
+            trace_id=trace_id,
+        )
+        prepared = prepare_chat_turn(turn_request)
+    except ChatDomainError as error:
+        return _domain_error_response(error)
 
-    if user_id:
-        try:
-            ensure_conversation(conversation_id=chat_id, user_id=user_id, title=title)
-            # Read history before inserting this turn so the Agent does not see
-            # the current question both in history and as its explicit input.
-            history = _normalise_history(
-                load_completed_history(conversation_id=chat_id, user_id=user_id)
-            )
-            save_message(
-                conversation_id=chat_id,
-                role="user",
-                text=text,
-                message_id=user_message_id,
-                created_at=message_created_at,
-                context=message_context,
-            )
-        except ConversationOwnershipError:
-            return Response("Forbidden", status=403, mimetype="text/plain")
-        except ChatPersistenceError as error:
-            logger.error("Could not initialise authenticated chat: %s", error)
-            return Response("Authenticated chat is unavailable", status=503, mimetype="text/plain")
-    else:
-        history = _normalise_history(data.get("history"))
-
-    loop = asyncio.new_event_loop()
-    started_at = monotonic()
-
-    async def agen():
-        if use_v2_request:
-            from agents.agent_v2.models import V2ChatRequest
-
-            agent_request = V2ChatRequest(
-                text=text,
-                chat_id=chat_id,
-                history=history,
-                selected_paper_ids=paper_ids,
-                context=message_context,
-                effort=effort,
-                model=model,
-                trace_id=trace_id,
-                user_message_id=user_message_id,
-                assistant_message_id=assistant_message_id,
-                requested_mode=requested_mode,
-                user_id=user_id,
-                advanced=advanced,
-            )
-        else:
-            agent_request = AgentRequest(
-                text=text,
-                chat_id=chat_id,
-                history=history,
-                effort=effort,
-                model=model,
-                trace_id=trace_id,
-                user_message_id=user_message_id,
-                assistant_message_id=assistant_message_id,
-            )
-        async for chunk in run_agent(agent_request):
-            yield chunk
-
-    def stream_sync():
-        assistant_chunks: list[str] = []
-        stream_completed = False
-        stream_error: str | None = None
-        try:
-            agen_obj = agen().__aiter__()
-            while True:
-                chunk = loop.run_until_complete(agen_obj.__anext__())
-                text_chunk = str(chunk)
-                assistant_chunks.append(text_chunk)
-                yield text_chunk
-        except StopAsyncIteration:
-            stream_completed = True
-        except Exception as error:  # pylint: disable=broad-except
-            # Status 200 and earlier chunks are already sent, so no failure may escape:
-            # every error has to degrade into fallback text plus a "failed" saved message.
-            logger.warning("Chat stream error: %s", error, exc_info=True)
-            stream_error = str(error)[:500]
-            fallback_text = "I'm sorry, something went wrong on our side. Please try again."
-            assistant_chunks.append(fallback_text)
-            yield fallback_text
-        finally:
-            if user_id:
-                response_text = "".join(assistant_chunks)
-                try:
-                    # created_at is when the reply finishes — leave unset so DB uses now().
-                    save_message(
-                        conversation_id=chat_id,
-                        role="assistant",
-                        text=response_text,
-                        status="completed" if stream_completed else "failed",
-                        duration_ms=round((monotonic() - started_at) * 1000),
-                        error_message=stream_error,
-                        message_id=assistant_message_id,
-                    )
-                except ChatPersistenceError as error:
-                    logger.error("Could not save assistant chat message: %s", error)
-
-            pending = asyncio.all_tasks(loop=loop)
-            for task in pending:
-                task.cancel()
-            try:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            except Exception:
-                pass
-            loop.close()
-
-    return Response(stream_sync(), status=200, mimetype="text/plain")
+    return _encode_text_plain_stream(
+        prepared,
+        run_agent,
+        logger=current_app.logger,
+    )
 
 
 @chat_bp.route("/chat", methods=["POST"])
 @cross_origin()
 def chat():
     """Stream a research-assistant response using the production legacy runner."""
-    return _chat_response(run_search_v1_legacy)
+    return _chat_response(run_search_v1_legacy, pipeline="v1")
 
 
 def _get_chat_v2_runner() -> ChatRunner:
@@ -545,9 +353,9 @@ def chat_v2():
     trace = SearchV2Trace.create()
     response = _chat_response(
         _get_chat_v2_runner(),
+        pipeline="v2",
         max_text_length=10_000,
         trace_id=trace.trace_id,
-        use_v2_request=True,
     )
     response.headers["X-Trace-Id"] = trace.trace_id
     return response
