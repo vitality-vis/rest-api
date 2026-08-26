@@ -6,6 +6,7 @@ Run against an already-running API server:
 
 from __future__ import annotations
 
+import json
 import os
 from uuid import uuid4
 
@@ -14,6 +15,14 @@ import requests
 
 
 pytestmark = pytest.mark.live
+
+
+def _sse_events(response: requests.Response) -> list[dict]:
+    return [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
 
 
 @pytest.fixture(scope="session")
@@ -28,6 +37,7 @@ def api_base_url() -> str:
 def test_chat_v2_returns_text_for_hello(api_base_url: str):
     """A non-search turn can fall back to the legacy chat path and stream text."""
     payload = {
+        "client_request_id": str(uuid4()),
         "chat_id": f"api-chat-v2-smoke-{uuid4()}",
         "text": "Hello",
     }
@@ -38,13 +48,17 @@ def test_chat_v2_returns_text_for_hello(api_base_url: str):
         pytest.fail(f"Could not reach API_BASE_URL at /chat/v2: {error}")
 
     assert response.status_code == 200, response.text
-    assert response.headers.get("Content-Type", "").startswith("text/plain")
-    assert response.text.strip()
+    assert response.headers.get("Content-Type", "").startswith("text/event-stream")
+    events = _sse_events(response)
+    assert events[0]["type"] == "run.started"
+    assert events[-1]["type"] == "run.completed"
+    assert any(event["type"] == "text.delta" for event in events)
 
 
 def test_chat_v2_finds_papers(api_base_url: str):
     """A paper-finding turn reaches v2 and emits the paper-panel payload."""
     payload = {
+        "client_request_id": str(uuid4()),
         "chat_id": f"api-chat-v2-paper-search-{uuid4()}",
         "text": (
             "Find papers about using large language models to support literature "
@@ -59,6 +73,9 @@ def test_chat_v2_finds_papers(api_base_url: str):
         pytest.fail(f"Could not reach API_BASE_URL at /chat/v2: {error}")
 
     assert response.status_code == 200, response.text
-    assert response.headers.get("Content-Type", "").startswith("text/plain")
+    assert response.headers.get("Content-Type", "").startswith("text/event-stream")
     print(f"\n[chat v2 paper search]\n{response.text.strip()}")
-    assert "[[VITALITY_PAPERS_JSON]]" in response.text, response.text
+    events = _sse_events(response)
+    assert events[0]["type"] == "run.started"
+    assert events[-1]["type"] == "run.completed"
+    assert any(event["type"] == "papers.result" for event in events), response.text

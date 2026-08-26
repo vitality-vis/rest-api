@@ -94,6 +94,7 @@ def test_get_papers_responds_while_chat_v2_in_flight(api_base_url: str):
             "done_s": None,
         }
         payload = {
+            "client_request_id": str(uuid4()),
             "chat_id": f"api-concurrency-chat-{index}-{uuid4()}",
             "text": (
                 "Find papers about using large language models to support "

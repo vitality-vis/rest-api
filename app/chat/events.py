@@ -1,14 +1,33 @@
-"""Internal typed Chat stream events (not yet on the wire as SSE)."""
+"""Transport-independent typed Chat stream events."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Union
 
 
 @dataclass(frozen=True)
+class RunStarted:
+    client_request_id: str
+    agent_run_id: str
+    conversation_id: str
+    assistant_message_id: str
+    effort: str
+    pipeline: Literal["v2"] = "v2"
+    type: Literal["run.started"] = "run.started"
+
+
+@dataclass(frozen=True)
+class AgentAction:
+    action_id: str
+    action: str
+    status: Literal["started", "completed", "failed"]
+    data: dict[str, object] = field(default_factory=dict)
+    type: Literal["agent.action"] = "agent.action"
+
+
+@dataclass(frozen=True)
 class TextDelta:
-    """Append assistant answer text (future wire type ``text.delta``)."""
 
     text: str
     type: Literal["text.delta"] = "text.delta"
@@ -16,19 +35,37 @@ class TextDelta:
 
 @dataclass(frozen=True)
 class RunCompleted:
-    """Successful terminal state (future wire type ``run.completed``)."""
-
     duration_ms: int
+    degraded: bool = False
     type: Literal["run.completed"] = "run.completed"
 
 
 @dataclass(frozen=True)
+class PapersResult:
+    ids: list[str]
+    ranked_ids: list[str]
+    policy: str
+    effort: str
+    count_known: bool = False
+    type: Literal["papers.result"] = "papers.result"
+
+
+@dataclass(frozen=True)
 class RunFailed:
-    """Failed terminal state (future wire type ``run.failed``)."""
 
     message: str
     duration_ms: int
+    error_code: str = "agent_execution_failed"
+    retryable: bool = True
     type: Literal["run.failed"] = "run.failed"
 
 
-ChatEvent = Union[TextDelta, RunCompleted, RunFailed]
+RunnerEvent = Union[AgentAction, TextDelta, PapersResult]
+ChatEvent = Union[
+    RunStarted,
+    AgentAction,
+    TextDelta,
+    PapersResult,
+    RunCompleted,
+    RunFailed,
+]

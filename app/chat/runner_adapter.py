@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from app.chat.events import TextDelta
+from app.chat.events import AgentAction, PapersResult, RunnerEvent, TextDelta
 from app.chat.models import PreparedChatTurn
 
-ChatRunner = Callable[[Any], AsyncIterator[str]]
+ChatRunner = Callable[[Any], AsyncIterator[Any]]
 
 
 def build_agent_request(prepared: PreparedChatTurn) -> Any:
@@ -50,8 +50,11 @@ def build_agent_request(prepared: PreparedChatTurn) -> Any:
 async def adapt_runner_output(
     run_agent: ChatRunner,
     prepared: PreparedChatTurn,
-) -> AsyncIterator[TextDelta]:
-    """Run the Agent and wrap plain-text chunks as ``TextDelta`` events."""
+) -> AsyncIterator[RunnerEvent]:
+    """Pass typed runner output through and wrap legacy strings as text deltas."""
     agent_request = build_agent_request(prepared)
     async for chunk in run_agent(agent_request):
-        yield TextDelta(text=str(chunk))
+        if isinstance(chunk, (AgentAction, TextDelta, PapersResult)):
+            yield chunk
+        else:
+            yield TextDelta(text=str(chunk))

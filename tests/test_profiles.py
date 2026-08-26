@@ -228,13 +228,19 @@ def test_full_profile_includes_user_and_chat_routes(suppress_lifecycle):
     assert "/health" in rules
     assert "/getPapers" in rules
     assert "/chat" in rules
-    assert "/chat/v2" in rules
+    assert "/chat/v2" not in rules
     assert "/library/papers" in rules
     assert "/notes" in rules
     assert "/papers/resolve" in rules
     assert bundle.socketio is not None
     assert bundle.asgi_app is not None
     assert callable(bundle.asgi_app)
+
+    # The native FastAPI route owns the typed SSE protocol before the catch-all
+    # Flask mount. Socket.IO keeps that HTTP app as its ASGI fallback.
+    http_app = bundle.asgi_app.other_asgi_app
+    asgi_routes = {route.path for route in http_app.routes}
+    assert "/chat/v2" in asgi_routes
 
 
 def test_papers_factory_import_skips_agents_and_socketio():

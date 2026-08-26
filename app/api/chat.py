@@ -335,27 +335,3 @@ def _chat_response(
 def chat():
     """Stream a research-assistant response using the production legacy runner."""
     return _chat_response(run_search_v1_legacy, pipeline="v1")
-
-
-def _get_chat_v2_runner() -> ChatRunner:
-    """Lazy import keeps the experimental v2 stack out of the production route startup."""
-    from agents.agent_v2.runner import run as run_chat_v2
-
-    return run_chat_v2
-
-
-@chat_bp.route("/chat/v2", methods=["POST"])
-@cross_origin()
-def chat_v2():
-    """Experimental chat route that uses v2 for explicit paper-finding turns."""
-    from agents.agent_v2.logging import SearchV2Trace
-
-    trace = SearchV2Trace.create()
-    response = _chat_response(
-        _get_chat_v2_runner(),
-        pipeline="v2",
-        max_text_length=10_000,
-        trace_id=trace.trace_id,
-    )
-    response.headers["X-Trace-Id"] = trace.trace_id
-    return response

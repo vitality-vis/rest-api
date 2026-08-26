@@ -42,7 +42,7 @@ def create_papers_bundle() -> ApplicationBundle:
         capabilities=capabilities,
         logger=logger,
     )
-    attach_asgi(bundle, enable_socketio=False)
+    attach_asgi(bundle, enable_chat=False, enable_socketio=False)
     return bundle
 
 

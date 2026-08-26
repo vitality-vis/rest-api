@@ -127,7 +127,8 @@ def normalise_history(value: object) -> list[dict[str, str]]:
             continue
         content = strip_machine_markers(content)
         if content:
-            context = normalise_context(item.get("context"))
+            # Assistant attachments belong to rendering, not future prompts.
+            context = normalise_context(item.get("context")) if role == "user" else {}
             turns.append(
                 {
                     "role": role,
@@ -178,6 +179,8 @@ def build_chat_turn_request(
     )
     user_message_id = data.get("user_message_id")
     assistant_message_id = data.get("assistant_message_id")
+    client_request_id = data.get("client_request_id")
+    agent_run_id = data.get("agent_run_id")
     message_created_at = data.get("message_created_at")
     effort = data.get("effort", "low")
     effort = effort if effort in {"low", "medium", "high"} else "low"
@@ -200,6 +203,10 @@ def build_chat_turn_request(
     assistant_message_id = (
         str(assistant_message_id) if assistant_message_id is not None else None
     )
+    client_request_id = (
+        str(client_request_id) if client_request_id is not None else None
+    )
+    agent_run_id = str(agent_run_id) if agent_run_id is not None else None
     message_created_at = (
         str(message_created_at) if message_created_at is not None else None
     )
@@ -252,6 +259,8 @@ def build_chat_turn_request(
         pipeline=pipeline,
         max_text_length=max_text_length,
         trace_id=trace_id,
+        client_request_id=client_request_id,
+        agent_run_id=agent_run_id,
         requested_mode=requested_mode,
         paper_ids=paper_ids,
         advanced=advanced,

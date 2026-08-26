@@ -17,6 +17,7 @@ def save_assistant_result(
     duration_ms: int,
     error_message: str | None,
     message_id: str | None,
+    context: dict[str, object] | None = None,
     log: logging.Logger | None = None,
 ) -> None:
     """Persist assistant completed/failed. Log failures without raising."""
@@ -31,6 +32,7 @@ def save_assistant_result(
             duration_ms=duration_ms,
             error_message=error_message,
             message_id=message_id,
+            context=context,
         )
     except ChatPersistenceError as error:
         active_logger.error("Could not save assistant chat message: %s", error)

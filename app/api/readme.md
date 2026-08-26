@@ -55,15 +55,23 @@ HTTP paths are unchanged. Modules are split by dependency boundary:
 | --- | --- | --- | --- |
 | `POST` | `/papers/resolve` | optional | Resolve public + authenticated library paper IDs. |
 
-## `chat.py`
+## `chat.py` (Flask) and ASGI `/chat/v2`
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | `POST` | `/chat/import` | required | Body `{ conversations: [...] }`. Idempotent guest→cloud import. |
 | `GET` | `/chat/conversations` | required | User's cloud chat history. |
 | `PUT` | `/chat/conversations/{id}/closed` | required | Body `{ is_closed: boolean }`; saves the tab visibility state. |
-| `POST` | `/chat` | optional | Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`/`model`. `model` is a key from `AZURE_OPENAI_AVAILABLE_MODELS` (default: `AZURE_OPENAI_DEFAULT_MODEL`). `context` is a non-visible JSON object attached to this user message. Streams the legacy assistant response; persists when authenticated. |
-| `POST` | `/chat/v2` | optional | Same body as `/chat`, with a 10,000-character message limit. `agent_v2` owns talk, clarification, paper search, and selected-paper synthesis. |
+| `POST` | `/chat` | optional | Legacy Flask `text/plain` stream (v1). Body: `text`, `chat_id`, `title`, message ids/timestamps, optional `history`/`context`/`effort`/`model`. |
+| `POST` | `/chat/v2` | optional | **ASGI-only** typed SSE (`text/event-stream`). Requires `client_request_id`. Backend assigns `agentRunId` / `assistantMessageId` in `run.started`. Message limit 10,000 chars. `agent_v2` owns talk, clarification, paper search, and selected-paper synthesis. |
+
+Pre-stream failures on `/chat/v2` (validation, auth, unavailable executor) return JSON:
+
+```json
+{"detail": "client_request_id is required"}
+```
+
+with the usual HTTP status (`400` / `401` / `403` / `503`). After headers are sent, failures are terminal SSE `run.failed` events instead.
 
 ## `user/library.py`
 

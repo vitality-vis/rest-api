@@ -1,12 +1,13 @@
 """Chat-v2 runner for talk, clarification, search, and synthesis turns."""
 from __future__ import annotations
 
-import json
-from typing import AsyncIterator
+from time import monotonic
+from typing import AsyncIterator, Literal
+from uuid import uuid4
 
-from agents.agent_v1_legacy.rag_core import PAPERS_PAYLOAD_END, PAPERS_PAYLOAD_START
 from langchain_core.messages import HumanMessage
 
+from app.chat.events import AgentAction, PapersResult, TextDelta
 from .models import SearchV2Request, V2ChatRequest
 from .query_planner import plan_medium_retrieval
 from .router import route
@@ -36,16 +37,19 @@ def _format_search_intro() -> str:
     return "Below are the papers I found."
 
 
-def _papers_payload(ids: list[str], *, policy: str, effort: str) -> str:
-    body = {
-        "ids": ids,
-        "ranked_ids": ids,
-        "count_known": False,
-        "search_version": "v2",
-        "policy": policy,
-        "effort": effort,
-    }
-    return f"{PAPERS_PAYLOAD_START}{json.dumps(body, separators=(',', ':'))}{PAPERS_PAYLOAD_END}"
+def _action(
+    action: str,
+    status: Literal["started", "completed", "failed"],
+    *,
+    action_id: str | None = None,
+    data: dict[str, object] | None = None,
+) -> AgentAction:
+    return AgentAction(
+        action_id=action_id or uuid4().hex,
+        action=action,
+        status=status,
+        data=data or {},
+    )
 
 
 def _paper_evidence(papers: list[dict], *, limit: int = 8) -> str:
@@ -100,7 +104,7 @@ contains that detail. Give a concise, direct research-oriented answer.
     return replace_numbered_citations(answer, _citation_ids(papers))
 
 
-async def run(request: V2ChatRequest) -> AsyncIterator[str]:
+async def run(request: V2ChatRequest) -> AsyncIterator[object]:
     trace = SearchV2Trace.create(
         trace_id=request.trace_id,
         chat_id=request.chat_id,
@@ -109,33 +113,52 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     )
     effort = request.effort if request.effort in {"low", "medium", "high"} else "low"
     decision = route(request, trace=trace)
+    route_degraded = decision.decision_status not in {
+        "model_decision",
+        "explicit_mode",
+    }
+    yield _action(
+        "route",
+        "failed" if route_degraded else "completed",
+        data={
+            "route": decision.route,
+            "decisionStatus": decision.decision_status,
+            **(
+                {"responseMode": decision.response_mode}
+                if decision.response_mode is not None
+                else {}
+            ),
+        },
+    )
     if decision.route == "talk":
-        if decision.decision_status not in {"model_decision", "explicit_mode"}:
-            yield ROUTER_FAILURE_CLARIFICATION
+        if route_degraded:
+            yield TextDelta(text=ROUTER_FAILURE_CLARIFICATION)
             return
         async for chunk in respond_to_talk(request):
-            yield chunk
+            yield TextDelta(text=str(chunk))
         return
     if decision.route == "clarify":
-        yield decision.clarification_question or DEFAULT_CLARIFICATION
+        yield TextDelta(text=decision.clarification_question or DEFAULT_CLARIFICATION)
         return
     if decision.route == "synthesis":
         try:
-            yield answer_selected_papers(
-                user_id=request.user_id,
-                paper_ids=[str(item) for item in request.selected_paper_ids or []],
-                text=request.text,
-                # Guest requests may use public corpus metadata, but never a
-                # user vector store or uploaded full-text file.
-                use_file_search=bool(request.user_id) and decision.use_file_search,
-                model=request.model,
-                trace=trace,
+            yield TextDelta(
+                text=answer_selected_papers(
+                    user_id=request.user_id,
+                    paper_ids=[str(item) for item in request.selected_paper_ids or []],
+                    text=request.text,
+                    # Guest requests may use public corpus metadata, but never a
+                    # user vector store or uploaded full-text file.
+                    use_file_search=bool(request.user_id) and decision.use_file_search,
+                    model=request.model,
+                    trace=trace,
+                )
             )
         except PaperQAError as error:
-            yield str(error)
+            yield TextDelta(text=str(error))
         return
     if decision.search_intent is None:
-        yield ROUTER_FAILURE_CLARIFICATION
+        yield TextDelta(text=ROUTER_FAILURE_CLARIFICATION)
         return
 
     # Chat sends the full bounded ranked list to the paper panel.
@@ -147,6 +170,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
     retrieval_plan = None
     medium_fallback_reason = None
     if effort == "medium":
+        plan_started = monotonic()
         planner_outcome = plan_medium_retrieval(
             user_request=request.text,
             retrieval_query=retrieval_query,
@@ -172,6 +196,17 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
                 if planner_outcome.status != "complete"
                 else "missing_medium_plan"
             )
+        yield _action(
+            "plan",
+            "completed" if planner_outcome.status == "complete" else "failed",
+            data={
+                "durationMs": round((monotonic() - plan_started) * 1000),
+                "status": planner_outcome.status,
+            },
+        )
+    search_action_id = uuid4().hex
+    search_started = monotonic()
+    yield _action("search", "started", action_id=search_action_id)
     try:
         result = run_search(
             SearchV2Request(query=retrieval_query, effort=effort, result_limit=CHAT_RESULT_LIMIT),
@@ -183,25 +218,55 @@ async def run(request: V2ChatRequest) -> AsyncIterator[str]:
             model=request.model,
         )
     except SearchCriteriaRequiredError as error:
-        yield str(error)
+        yield _action(
+            "search",
+            "failed",
+            action_id=search_action_id,
+            data={"durationMs": round((monotonic() - search_started) * 1000)},
+        )
+        yield TextDelta(text=str(error))
         return
     ids: list[str] = []
     for item in result.papers:
         paper_id = _paper_id(item.paper)
         if paper_id:
             ids.append(paper_id)
+    yield _action(
+        "search",
+        "completed",
+        action_id=search_action_id,
+        data={
+            "resultCount": len(ids),
+            "policy": result.policy,
+            "durationMs": round((monotonic() - search_started) * 1000),
+        },
+    )
     if decision.response_mode == "grounded_answer" and result.papers:
-        yield _answer_from_search(
-            request.text,
-            [item.paper for item in result.papers],
-            model=request.model,
+        yield TextDelta(
+            text=_answer_from_search(
+                request.text,
+                [item.paper for item in result.papers],
+                model=request.model,
+            )
         )
         if ids:
-            yield "\n\n"
-            yield _papers_payload(ids, policy=result.policy, effort=effort)
+            yield TextDelta(text="\n\n")
+            yield PapersResult(
+                ids=ids,
+                ranked_ids=ids,
+                policy=result.policy,
+                effort=effort,
+            )
     elif ids:
-        yield _format_search_intro()
-        yield "\n\n"
-        yield _papers_payload(ids, policy=result.policy, effort=effort)
+        yield TextDelta(text=_format_search_intro())
+        yield TextDelta(text="\n\n")
+        yield PapersResult(
+            ids=ids,
+            ranked_ids=ids,
+            policy=result.policy,
+            effort=effort,
+        )
     else:
-        yield "I couldn't find papers matching that request. Try broadening the topic or filters."
+        yield TextDelta(
+            text="I couldn't find papers matching that request. Try broadening the topic or filters."
+        )

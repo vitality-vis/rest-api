@@ -1,14 +1,26 @@
-"""ASGI composition smoke tests."""
+"""ASGI composition and native /chat/v2 smoke tests."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import threading
+from collections.abc import AsyncIterator
+from typing import Any
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from starlette.testclient import TestClient
 
 from app.application import create_application
-from app.asgi.lifespan import startup_bundle
+from app.asgi.lifespan import shutdown_bundle, startup_bundle
+from app.chat.event_bridge import bridge_agent_events
+from app.chat.events import RunCompleted, TextDelta
+from app.chat.execution import AgentExecutionRuntime
+from app.chat.models import ChatTurnRequest, PreparedChatTurn
+from app.chat.sse import SSEEncoder
 from app.profiles import AppProfile
 
 
@@ -20,6 +32,20 @@ def _fake_logger():
     return logger
 
 
+def _parse_sse_events(body: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for block in body.replace("\r\n", "\n").split("\n\n"):
+        data_lines = [
+            line.removeprefix("data: ")
+            for line in block.split("\n")
+            if line.startswith("data: ")
+        ]
+        if not data_lines:
+            continue
+        events.append(json.loads("\n".join(data_lines)))
+    return events
+
+
 @pytest.fixture
 def suppress_lifecycle(monkeypatch):
     monkeypatch.setattr(
@@ -28,9 +54,7 @@ def suppress_lifecycle(monkeypatch):
     monkeypatch.setattr(
         "app.profiles.full.initialize_runtime", lambda **_kwargs: _fake_logger()
     )
-    monkeypatch.setattr(
-        "app.asgi.lifespan.cached_data.init", lambda *_a, **_k: None
-    )
+    monkeypatch.setattr("app.asgi.lifespan.cached_data.init", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "app.asgi.lifespan.cached_data.zilliz_ready", True, raising=False
     )
@@ -55,11 +79,17 @@ def test_papers_asgi_health_via_wsgi_middleware(suppress_lifecycle, monkeypatch)
     assert payload["capabilities"]["chat"] is False
 
 
-def test_papers_asgi_chat_is_404(suppress_lifecycle):
+def test_papers_asgi_chat_routes_are_404(suppress_lifecycle):
     bundle = create_application(AppProfile.PAPERS)
     with TestClient(bundle.asgi_app) as client:
-        response = client.post("/chat", json={"text": "hi"})
-    assert response.status_code == 404
+        assert client.post("/chat", json={"text": "hi"}).status_code == 404
+        assert (
+            client.post(
+                "/chat/v2",
+                json={"client_request_id": str(uuid4()), "text": "hi"},
+            ).status_code
+            == 404
+        )
 
 
 def test_full_asgi_health_and_socket_server(suppress_lifecycle, monkeypatch):
@@ -98,14 +128,141 @@ def test_startup_bundle_refreshes_capabilities(suppress_lifecycle, monkeypatch):
     assert bundle.flask_app.config["VITALITY_CAPABILITIES"]["paperSearch"] is True
 
 
-def test_shutdown_bundle_awaits_socketio_shutdown(suppress_lifecycle):
-    import asyncio
-    from unittest.mock import AsyncMock
-
-    from app.asgi.lifespan import shutdown_bundle
-
+def test_startup_bundle_agent_runtime_is_idempotent(suppress_lifecycle):
     bundle = create_application(AppProfile.FULL)
-    bundle.socketio = AsyncMock()
-    bundle.socketio.shutdown = AsyncMock()
+    first = AgentExecutionRuntime(max_workers=1)
+    bundle.agent_runtime = first
+    startup_bundle(bundle)
+    assert bundle.agent_runtime is first
+    asyncio.run(first.shutdown())
+
+
+def test_shutdown_bundle_awaits_agent_and_socketio(suppress_lifecycle):
+    bundle = create_application(AppProfile.FULL)
+    runtime = AsyncMock()
+    runtime.shutdown = AsyncMock()
+    sio = AsyncMock()
+    sio.shutdown = AsyncMock()
+    bundle.agent_runtime = runtime
+    bundle.socketio = sio
     asyncio.run(shutdown_bundle(bundle))
-    bundle.socketio.shutdown.assert_awaited_once()
+    runtime.shutdown.assert_awaited_once()
+    sio.shutdown.assert_awaited_once()
+    assert bundle.agent_runtime is None
+
+
+def test_chat_v2_requires_client_request_id(suppress_lifecycle):
+    bundle = create_application(AppProfile.FULL)
+    with TestClient(bundle.asgi_app) as client:
+        response = client.post("/chat/v2", json={"text": "Hello"})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "client_request_id is required"}
+
+
+def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
+    async def fake_run(_request: Any) -> AsyncIterator[Any]:
+        yield TextDelta(text="Hello")
+        yield TextDelta(text="!")
+
+    monkeypatch.setattr("agents.agent_v2.runner.run", fake_run)
+    bundle = create_application(AppProfile.FULL)
+    with TestClient(bundle.asgi_app) as client:
+        response = client.post(
+            "/chat/v2",
+            json={
+                "client_request_id": "req-1",
+                "chat_id": "c1",
+                "text": "Hello",
+            },
+        )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse_events(response.text)
+    assert [event["type"] for event in events] == [
+        "run.started",
+        "text.delta",
+        "text.delta",
+        "run.completed",
+    ]
+    assert [event["seq"] for event in events] == [1, 2, 3, 4]
+    assert events[0]["data"]["clientRequestId"] == "req-1"
+    assert events[1]["data"]["text"] == "Hello"
+    assert events[2]["data"]["text"] == "!"
+
+
+def test_sse_encoder_assigns_monotonic_seq():
+    encoder = SSEEncoder()
+    first = encoder.encode(TextDelta(text="a"))
+    second = encoder.encode(RunCompleted(duration_ms=1))
+    assert "id: 1\n" in first
+    assert "id: 2\n" in second
+    assert '"seq":1' in first
+    assert '"seq":2' in second
+
+
+def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
+    saved: dict[str, Any] = {}
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_save(**kwargs):
+        saved.update(kwargs)
+
+    monkeypatch.setattr("app.chat.event_bridge.save_assistant_result", fake_save)
+
+    runtime = AgentExecutionRuntime(max_workers=1)
+
+    def blocking_job() -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    # Occupy the only slot so the chat job stays queued.
+    blocker = runtime.submit(blocking_job)
+    assert started.wait(timeout=2)
+
+    prepared = PreparedChatTurn(
+        request=ChatTurnRequest(
+            text="Hello",
+            chat_id="queued-1",
+            assistant_message_id="asst-queued",
+        ),
+        user_id="user-1",
+        history=[],
+    )
+
+    async def never_run(_request: Any) -> AsyncIterator[Any]:
+        if False:  # pragma: no cover
+            yield TextDelta(text="")
+        raise AssertionError("queued job should be cancelled before start")
+
+    async def exercise() -> None:
+        disconnected = asyncio.Event()
+
+        async def is_disconnected() -> bool:
+            return disconnected.is_set()
+
+        async def consume() -> None:
+            async for _event in bridge_agent_events(
+                prepared,
+                run_agent=never_run,
+                runtime=runtime,
+                logger=logging.getLogger("test-bridge"),
+                is_disconnected=is_disconnected,
+            ):
+                pass
+
+        task = asyncio.create_task(consume())
+        # Allow submit() so the chat job sits queued behind the blocker.
+        await asyncio.sleep(0.05)
+        disconnected.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(exercise())
+    release.set()
+    blocker.result(timeout=2)
+    asyncio.run(runtime.shutdown())
+
+    assert saved["conversation_id"] == "queued-1"
+    assert saved["status"] == "failed"
+    assert saved["message_id"] == "asst-queued"
+    assert "disconnected" in (saved["error_message"] or "").lower()

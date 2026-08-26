@@ -35,6 +35,13 @@ def startup_bundle(bundle: ApplicationBundle) -> None:
     )
     bundle.capabilities = capabilities
 
+    if bundle.profile is AppProfile.FULL:
+        from app.chat.execution import create_agent_runtime
+
+        # Idempotent: repeated startup must not orphan a live ThreadPoolExecutor.
+        if bundle.agent_runtime is None:
+            bundle.agent_runtime = create_agent_runtime()
+
     if bundle.profile is AppProfile.PAPERS:
         logger.info(
             "Papers profile ready (paperSearch=%s vectorSearch=%s)",
@@ -52,7 +59,10 @@ def startup_bundle(bundle: ApplicationBundle) -> None:
 
 
 async def shutdown_bundle(bundle: ApplicationBundle) -> None:
-    """Stop Socket.IO background tasks (if any) and log shutdown."""
+    """Stop Agent and Socket.IO resources, then log shutdown."""
+    if bundle.agent_runtime is not None:
+        await bundle.agent_runtime.shutdown()
+        bundle.agent_runtime = None
     if bundle.socketio is not None:
         await bundle.socketio.shutdown()
     bundle.logger.info(

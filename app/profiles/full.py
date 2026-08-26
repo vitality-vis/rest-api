@@ -17,10 +17,11 @@ from service.static_cache import cached_data
 
 
 def create_full_bundle() -> ApplicationBundle:
-    """Build the full Flask app and ASGI(+Socket.IO) shell.
+    """Build the full Flask app and ASGI(+Chat/Socket.IO) shell.
 
-    Cache init and chat session reset run in ASGI lifespan, not at import time.
-    ``flask_app`` is HTTP-only (no Flask-SocketIO); provenance uses ASGI Socket.IO.
+    Cache init, chat session reset, and the Agent executor run in ASGI lifespan.
+    ``flask_app`` is an internal WSGI sub-app for middleware mounting only — not a
+    production entrypoint. Provenance uses ASGI Socket.IO.
     """
     logger = initialize_runtime(enable_gcp=True)
     flask_app = create_flask_app(serve_frontend=True)
@@ -52,7 +53,7 @@ def create_full_bundle() -> ApplicationBundle:
         capabilities=capabilities,
         logger=logger,
     )
-    attach_asgi(bundle, enable_socketio=True)
+    attach_asgi(bundle, enable_chat=True, enable_socketio=True)
     return bundle
 
 

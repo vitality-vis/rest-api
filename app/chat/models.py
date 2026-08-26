@@ -56,6 +56,8 @@ class ChatTurnRequest:
     pipeline: ChatPipeline = "v1"
     max_text_length: int | None = None
     trace_id: str | None = None
+    client_request_id: str | None = None
+    agent_run_id: str | None = None
     # v2-only fields (ignored for v1)
     requested_mode: ChatMode = "auto"
     paper_ids: list[str] = field(default_factory=list)

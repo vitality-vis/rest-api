@@ -76,8 +76,9 @@ def discover_capabilities(
 @dataclass
 class ApplicationBundle:
     profile: AppProfile
-    flask_app: Any
+    flask_app: Any  # Internal WSGI sub-app for ASGI mount only; not a prod entry.
     asgi_app: Any
     socketio: Any | None  # socketio.AsyncServer for full; None for papers
     capabilities: Capabilities
     logger: Any
+    agent_runtime: Any | None = None  # full-profile AgentExecutionRuntime

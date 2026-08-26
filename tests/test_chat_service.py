@@ -116,7 +116,8 @@ def test_iter_chat_turn_events_fallback_on_runner_error():
     deltas = [e.text for e in events if isinstance(e, TextDelta)]
     assert deltas == ["partial ", FALLBACK_TEXT]
     assert isinstance(events[-1], RunFailed)
-    assert "boom" in events[-1].message
+    assert events[-1].message == FALLBACK_TEXT
+    assert "boom" not in events[-1].message
 
 
 def test_authenticated_turn_persists_assistant_on_completion(monkeypatch):
