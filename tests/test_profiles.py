@@ -7,7 +7,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -32,13 +31,17 @@ def suppress_lifecycle(monkeypatch):
     monkeypatch.setattr(
         "app.profiles.papers.initialize_runtime", lambda **_kwargs: _fake_logger()
     )
-    monkeypatch.setattr("app.profiles.papers.cached_data.init", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "app.profiles.full.initialize_runtime", lambda **_kwargs: _fake_logger()
     )
-    monkeypatch.setattr("app.profiles.full.cached_data.init", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "app.profiles.papers.cached_data.zilliz_ready", True, raising=False
+    )
+    monkeypatch.setattr(
+        "app.asgi.lifespan.startup_bundle", lambda _bundle: None
+    )
+    monkeypatch.setattr(
+        "app.asgi.lifespan.shutdown_bundle", lambda _bundle: None
     )
     monkeypatch.setattr(
         "agents.agent_v1_legacy.runner.reset_all_sessions", lambda: None
@@ -79,8 +82,8 @@ def test_external_capability_configuration_requires_every_value(monkeypatch):
     embedding_values = {
         "AZURE_OPENAI_ENDPOINT": "https://azure.example",
         "AZURE_OPENAI_API_KEY": "key",
-        "AZURE_OPENAI_EMBED_DEPLOYMENT": "embedding",
         "AZURE_OPENAI_EMBED_API_VERSION": "2024-02-01",
+        "AZURE_OPENAI_EMBED_DEPLOYMENT": "embed",
     }
     for name, value in embedding_values.items():
         monkeypatch.setattr(config, name, value)
@@ -90,20 +93,19 @@ def test_external_capability_configuration_requires_every_value(monkeypatch):
         assert config.is_azure_embedding_configured() is False
         monkeypatch.setattr(config, name, value)
 
-    monkeypatch.setattr(config, "SUPABASE_URL", "https://supabase.example")
-    monkeypatch.setattr(config, "SUPABASE_SERVICE_ROLE_KEY", "secret")
+    monkeypatch.setattr(config, "SUPABASE_URL", "https://sb")
+    monkeypatch.setattr(config, "SUPABASE_SERVICE_ROLE_KEY", "key")
     assert config.is_supabase_configured() is True
-    monkeypatch.setattr(config, "SUPABASE_SERVICE_ROLE_KEY", "")
+    monkeypatch.setattr(config, "SUPABASE_URL", "")
     assert config.is_supabase_configured() is False
 
 
-def test_discover_capabilities_requires_zilliz_readiness(monkeypatch):
+def test_discover_capabilities_requires_zilliz_probe(monkeypatch):
     monkeypatch.setattr(
         "app.profiles.config.is_azure_embedding_configured", lambda: True
     )
-    monkeypatch.setattr("app.profiles.config.SUPABASE_URL", "")
-    monkeypatch.setattr("app.profiles.config.SUPABASE_SERVICE_ROLE_KEY", "")
-    monkeypatch.setattr("app.profiles.config.AZURE_OPENAI_AVAILABLE_MODELS", {})
+    monkeypatch.setattr("app.profiles.config.is_azure_chat_configured", lambda: False)
+    monkeypatch.setattr("app.profiles.config.is_supabase_configured", lambda: False)
 
     papers = discover_capabilities(
         AppProfile.PAPERS,
@@ -120,13 +122,12 @@ def test_discover_capabilities_requires_zilliz_readiness(monkeypatch):
     }
 
 
-def test_discover_capabilities_reflects_runtime_snapshot(monkeypatch):
+def test_discover_capabilities_reflects_runtime_probes(monkeypatch):
     monkeypatch.setattr(
         "app.profiles.config.is_azure_embedding_configured", lambda: False
     )
-    monkeypatch.setattr("app.profiles.config.SUPABASE_URL", "")
-    monkeypatch.setattr("app.profiles.config.SUPABASE_SERVICE_ROLE_KEY", "")
-    monkeypatch.setattr("app.profiles.config.AZURE_OPENAI_AVAILABLE_MODELS", {})
+    monkeypatch.setattr("app.profiles.config.is_azure_chat_configured", lambda: False)
+    monkeypatch.setattr("app.profiles.config.is_supabase_configured", lambda: False)
 
     papers = discover_capabilities(
         AppProfile.PAPERS,
@@ -193,6 +194,8 @@ def test_papers_profile_route_table(suppress_lifecycle):
     present = {rule for rule, _ in rules}
     assert present.isdisjoint(forbidden)
     assert bundle.socketio is None
+    assert bundle.asgi_app is not None
+    assert callable(bundle.asgi_app)
 
 
 def test_papers_health_endpoint(suppress_lifecycle, monkeypatch):
@@ -215,18 +218,11 @@ def test_papers_health_endpoint(suppress_lifecycle, monkeypatch):
     )
     response = client.get("/health")
     payload = response.get_json()
+    # Health returns the startup/provisional snapshot, not a live re-probe.
     assert payload["capabilities"]["paperSearch"] is False
 
 
-def test_full_profile_includes_user_and_chat_routes(suppress_lifecycle, monkeypatch):
-    monkeypatch.setattr(
-        "app.profiles.full.SocketIO",
-        lambda *args, **kwargs: MagicMock(name="socketio"),
-    )
-    # Avoid registering real socket handlers against a MagicMock oddly; patch handlers.
-    monkeypatch.setattr("app.profiles.full._register_socket_handlers", lambda *_a, **_k: None)
-    monkeypatch.setattr("app.profiles.full._create_socketio", lambda _app: MagicMock())
-
+def test_full_profile_includes_user_and_chat_routes(suppress_lifecycle):
     bundle = create_application(AppProfile.FULL)
     rules = {rule.rule for rule in bundle.flask_app.url_map.iter_rules()}
     assert "/health" in rules
@@ -237,16 +233,14 @@ def test_full_profile_includes_user_and_chat_routes(suppress_lifecycle, monkeypa
     assert "/notes" in rules
     assert "/papers/resolve" in rules
     assert bundle.socketio is not None
+    assert bundle.asgi_app is not None
+    assert callable(bundle.asgi_app)
 
 
 def test_papers_factory_import_skips_agents_and_socketio():
     script = """
 import sys
-from unittest.mock import MagicMock
 import logging
-
-class L(logging.Logger):
-    pass
 
 fake = logging.getLogger("t")
 fake.handlers = []
@@ -254,7 +248,6 @@ fake.setLevel(logging.INFO)
 
 import app.profiles.papers as papers_mod
 papers_mod.initialize_runtime = lambda **k: fake
-papers_mod.cached_data.init = lambda *a, **k: None
 
 from app.application import create_application
 from app.profiles import AppProfile
@@ -264,6 +257,7 @@ forbidden = [
     name for name in sys.modules
     if name == "agents" or name.startswith("agents.")
     or name == "flask_socketio" or name.startswith("flask_socketio.")
+    or name == "socketio" or name.startswith("socketio.")
     or name == "repositories.supabase" or name.startswith("repositories.supabase.")
 ]
 if forbidden:

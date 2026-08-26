@@ -1,4 +1,4 @@
-"""Unique process entry: profile-aware Flask (and Socket.IO) composition root."""
+"""Unique process entry: profile-aware ASGI composition root."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ import config
 config.load_project_environment()
 
 from app.application import create_application
+from app.runtime import run_local
 
 _bundle = create_application()
-app = _bundle.flask_app
-socketio = _bundle.socketio
+app = _bundle.asgi_app
+socketio = _bundle.socketio  # ASGI AsyncServer for full; None for papers
 logger = _bundle.logger
 
 
@@ -28,29 +29,13 @@ if __name__ == "__main__":
         "--debug",
         action="store_true",
         default=False,
-        help="Enable debug mode (default: False)",
+        help="Set Uvicorn log level to debug (default: False)",
     )
     args = parser.parse_args()
 
     port = int(os.environ.get("PORT", 3000))
-    debug_mode = args.debug
     profile = _bundle.profile.value
     print(f"Starting VitaLITy API profile={profile} on http://localhost:{port}")
-    print(f"Debug mode: {debug_mode}")
-
-    if socketio is not None:
-        socketio.run(
-            app,
-            host="0.0.0.0",
-            port=port,
-            debug=debug_mode,
-            use_reloader=debug_mode,
-            allow_unsafe_werkzeug=True,
-        )
-    else:
-        app.run(
-            host="0.0.0.0",
-            port=port,
-            debug=debug_mode,
-            use_reloader=debug_mode,
-        )
+    print(f"Uvicorn log level: {'debug' if args.debug else 'info'}")
+    # Pass the app object (not "main:app") to avoid a second import of this module.
+    run_local(app, port=port, debug=args.debug)

@@ -1,16 +1,14 @@
-"""Full profile: papers + user/chat/Socket.IO/SPA."""
+"""Full profile: papers + user/chat + ASGI Socket.IO + SPA."""
 
 from __future__ import annotations
 
 import asyncio
-import logging as logging_module
 import os
-from datetime import datetime
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import cross_origin
-from flask_socketio import SocketIO, emit
 
+from app.asgi import attach_asgi
 from app.api.route_allowlist import load_full_blueprints
 from app.profiles import AppProfile, ApplicationBundle, discover_capabilities
 from app.wsgi import apply_profile_config, create_flask_app
@@ -19,119 +17,48 @@ from service.static_cache import cached_data
 
 
 def create_full_bundle() -> ApplicationBundle:
-    """Build the full Flask + Socket.IO app and run full lifecycle."""
+    """Build the full Flask app and ASGI(+Socket.IO) shell.
+
+    Cache init and chat session reset run in ASGI lifespan, not at import time.
+    ``flask_app`` is HTTP-only (no Flask-SocketIO); provenance uses ASGI Socket.IO.
+    """
     logger = initialize_runtime(enable_gcp=True)
-    app = create_flask_app(serve_frontend=True)
+    flask_app = create_flask_app(serve_frontend=True)
     for blueprint in load_full_blueprints():
-        app.register_blueprint(blueprint)
+        flask_app.register_blueprint(blueprint)
 
-    socketio = _create_socketio(app)
-    _register_socket_handlers(socketio, logger)
-    _register_full_only_http_routes(app)
-    _register_spa_routes(app)
+    _register_full_only_http_routes(flask_app)
+    _register_spa_routes(flask_app)
 
-    from agents.agent_v1_legacy.runner import reset_all_sessions
-
-    reset_all_sessions()
-    print("[startup] Cleared all chat sessions (docs + memory).")
-
-    cached_data.init()
+    # Provisional snapshot; lifespan refreshes after cache init / session reset.
     capabilities = discover_capabilities(
         AppProfile.FULL,
-        zilliz_ready=cached_data.zilliz_ready,
+        zilliz_ready=bool(getattr(cached_data, "zilliz_ready", False)),
         socket_io_enabled=True,
     )
     apply_profile_config(
-        app,
+        flask_app,
         profile=AppProfile.FULL,
         capabilities=capabilities,
         socket_io_enabled=True,
     )
-    _attach_logger(app, logger)
-    logging_module.getLogger("socketio").setLevel(logging_module.WARNING)
-    logging_module.getLogger("engineio").setLevel(logging_module.WARNING)
+    _attach_logger(flask_app, logger)
 
-    logger.info(
-        "Full profile ready (paperSearch=%s chat=%s userLibrary=%s vectorSearch=%s)",
-        capabilities.paper_search,
-        capabilities.chat,
-        capabilities.user_library,
-        capabilities.vector_search,
-    )
-    return ApplicationBundle(
+    bundle = ApplicationBundle(
         profile=AppProfile.FULL,
-        flask_app=app,
-        socketio=socketio,
+        flask_app=flask_app,
+        asgi_app=None,
+        socketio=None,
         capabilities=capabilities,
         logger=logger,
     )
+    attach_asgi(bundle, enable_socketio=True)
+    return bundle
 
 
 def _attach_logger(app: Flask, logger) -> None:
     app.logger.handlers = logger.handlers
     app.logger.setLevel(logger.level)
-
-
-def _create_socketio(app: Flask) -> SocketIO:
-    return SocketIO(
-        app,
-        # Keep ``python main.py`` compatible with the synchronous/asyncio chat
-        # bridge. Eventlet runs all greenlets on one OS thread, so a blocking chat
-        # turn can otherwise prevent unrelated HTTP routes from being scheduled.
-        async_mode="threading",
-        cors_allowed_origins=[
-            "http://localhost:8080",  # User study dev server
-            "http://localhost:8081",  # standalone
-            "http://localhost:5173",  # rebuild Vite dev server
-            "https://vitality.mathcs.emory.edu",  # Production server
-        ],
-    )
-
-
-def _register_socket_handlers(socketio: SocketIO, logger) -> None:
-    @socketio.on("connect")
-    def handle_connect(auth):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logger.info("[%s] WebSocket Client connected: %s", timestamp, request.sid)
-        emit("connected", {"data": "Connected to Flask-SocketIO server"})
-
-    @socketio.on("disconnect")
-    def handle_disconnect():
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logger.info("[%s] WebSocket Client disconnected: %s", timestamp, request.sid)
-
-    @socketio.on("log_event")
-    def handle_log_event(data):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            if not isinstance(data, dict):
-                raise ValueError("event must be an object")
-
-            event_id = data.get("eventId")
-            session_id = data.get("sessionId")
-            action = data.get("action")
-            event_data = data.get("eventData")
-            if not all(
-                isinstance(value, str) and value
-                for value in (event_id, session_id, action)
-            ):
-                raise ValueError("eventId, sessionId, and action are required")
-            if not isinstance(event_data, dict):
-                raise ValueError("eventData must be an object")
-
-            overview = (
-                f"Socket Event - Actor Type: {data.get('actorType', 'unknown')} "
-                f"| Action: {action}"
-            )
-            logger.info(
-                {"message": overview, **data},
-                extra={"provenance_event": True},
-            )
-            return {"status": "success", "timestamp": timestamp}
-        except Exception as error:
-            logger.error("[%s] An error occured during logging event: %s", timestamp, error)
-            logger.info("Raw data received: %s", data)
-            return {"status": "error", "message": str(error)}
 
 
 def _register_full_only_http_routes(app: Flask) -> None:

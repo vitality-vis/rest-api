@@ -12,6 +12,9 @@ dependencies = [
   "flask",
   "flask-cors",
   "flask-compress",
+  "fastapi",
+  "uvicorn",
+  "a2wsgi",
   "pydantic>=2,<3",
   "typing-extensions",
   "requests",
@@ -25,8 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 full = [
-  "Flask-SocketIO",
   "python-socketio",
+  "Flask-SocketIO",
   "gunicorn>=23,<26",
   "eventlet",
   "langchain==0.3.25",

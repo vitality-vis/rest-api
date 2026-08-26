@@ -91,17 +91,14 @@ This is optional: if the cache is missing or outdated, the API downloads fresh d
 
 ```bash
 python main.py
-# With auto-reload:
-python main.py --debug
 ```
 
 Server runs at **http://localhost:3000** (or the port in `PORT`).
 
-**Production (Gunicorn):**
+**Production:**
 
 ```bash
-pip install gunicorn
-gunicorn --worker-class gthread --workers 1 --threads 4 --bind 127.0.0.1:8000 --timeout 600 main:app
+uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
 ---

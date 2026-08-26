@@ -6,7 +6,7 @@ from app.profiles import AppProfile, ApplicationBundle, resolve_profile
 
 
 def create_application(profile: str | AppProfile | None = None) -> ApplicationBundle:
-    """Create the Flask (and optional Socket.IO) bundle for the selected profile.
+    """Create the Flask + ASGI bundle for the selected profile.
 
     ``profile`` may be an ``AppProfile``, a raw string, or ``None`` to read
     ``VITALITY_APP_PROFILE`` (default ``full``).

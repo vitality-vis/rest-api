@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from flask import Flask
 
+from app.asgi import attach_asgi
 from app.api.route_allowlist import load_papers_blueprints
 from app.profiles import AppProfile, ApplicationBundle, discover_capabilities
 from app.wsgi import apply_profile_config, create_flask_app
@@ -12,39 +13,37 @@ from service.static_cache import cached_data
 
 
 def create_papers_bundle() -> ApplicationBundle:
-    """Build the papers Flask app and run papers-only lifecycle."""
+    """Build the papers Flask app and ASGI shell (lifecycle runs in lifespan)."""
     # GCP logging is a full-profile dependency; keep papers local-console only.
     logger = initialize_runtime(enable_gcp=False)
-    app = create_flask_app(serve_frontend=False)
+    flask_app = create_flask_app(serve_frontend=False)
     for blueprint in load_papers_blueprints():
-        app.register_blueprint(blueprint)
+        flask_app.register_blueprint(blueprint)
 
-    cached_data.init()
+    # Provisional snapshot; lifespan refreshes after cache init.
     capabilities = discover_capabilities(
         AppProfile.PAPERS,
-        zilliz_ready=cached_data.zilliz_ready,
+        zilliz_ready=bool(getattr(cached_data, "zilliz_ready", False)),
         socket_io_enabled=False,
     )
     apply_profile_config(
-        app,
+        flask_app,
         profile=AppProfile.PAPERS,
         capabilities=capabilities,
         socket_io_enabled=False,
     )
-    _attach_logger(app, logger)
+    _attach_logger(flask_app, logger)
 
-    logger.info(
-        "Papers profile ready (paperSearch=%s vectorSearch=%s)",
-        capabilities.paper_search,
-        capabilities.vector_search,
-    )
-    return ApplicationBundle(
+    bundle = ApplicationBundle(
         profile=AppProfile.PAPERS,
-        flask_app=app,
+        flask_app=flask_app,
+        asgi_app=None,
         socketio=None,
         capabilities=capabilities,
         logger=logger,
     )
+    attach_asgi(bundle, enable_socketio=False)
+    return bundle
 
 
 def _attach_logger(app: Flask, logger) -> None:

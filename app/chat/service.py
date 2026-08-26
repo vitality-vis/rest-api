@@ -24,7 +24,7 @@ async def iter_chat_turn_events(
 
     Callable without Flask ``request`` / ``current_app``. Assistant persistence
     runs in ``finally`` so client disconnect (``GeneratorExit`` / ``aclose``)
-    still saves a ``failed`` message, matching the pre-Phase-4 Flask behavior.
+    still saves a ``failed`` message, matching the previous Flask behavior.
     Persistence failures after streaming starts are logged and do not abort the
     event stream.
     """

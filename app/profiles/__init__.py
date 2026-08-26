@@ -77,6 +77,7 @@ def discover_capabilities(
 class ApplicationBundle:
     profile: AppProfile
     flask_app: Any
-    socketio: Any | None
+    asgi_app: Any
+    socketio: Any | None  # socketio.AsyncServer for full; None for papers
     capabilities: Capabilities
     logger: Any

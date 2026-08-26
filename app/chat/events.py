@@ -1,4 +1,4 @@
-"""Internal typed Chat stream events (Phase 4; not yet on the wire as SSE)."""
+"""Internal typed Chat stream events (not yet on the wire as SSE)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Literal, Union
 
 @dataclass(frozen=True)
 class TextDelta:
-    """Append assistant answer text (wire type ``text.delta`` in Phase 6)."""
+    """Append assistant answer text (future wire type ``text.delta``)."""
 
     text: str
     type: Literal["text.delta"] = "text.delta"
@@ -16,7 +16,7 @@ class TextDelta:
 
 @dataclass(frozen=True)
 class RunCompleted:
-    """Successful terminal state (wire type ``run.completed`` in Phase 6)."""
+    """Successful terminal state (future wire type ``run.completed``)."""
 
     duration_ms: int
     type: Literal["run.completed"] = "run.completed"
@@ -24,7 +24,7 @@ class RunCompleted:
 
 @dataclass(frozen=True)
 class RunFailed:
-    """Failed terminal state (wire type ``run.failed`` in Phase 6)."""
+    """Failed terminal state (future wire type ``run.failed``)."""
 
     message: str
     duration_ms: int

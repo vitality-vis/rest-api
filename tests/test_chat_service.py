@@ -1,4 +1,4 @@
-"""Flask-free Chat application service tests (Phase 4)."""
+"""Flask-free Chat application service tests."""
 
 from __future__ import annotations
 

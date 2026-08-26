@@ -6,7 +6,7 @@ HTTP paths are unchanged. Modules are split by dependency boundary:
 
 - `public/` — papers profile; no Supabase auth, Chat, or agents
 - `user/` — full-app auth/library/notes/resolution/export/config
-- `chat.py` — full-app chat (still top-level until Phase 4)
+- `chat.py` — full-app chat transport (application logic lives in `app/chat/`)
 - `route_allowlist.py` — explicit papers vs full blueprint registration lists
 
 ## `public/health.py`
