@@ -5,9 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.provenance.emit import emit_provenance_event, validate_ui_event
 from config import PUBLIC_CORS_ORIGINS
-
-SOCKET_CORS_ORIGINS = PUBLIC_CORS_ORIGINS
 
 
 def create_async_server():
@@ -16,7 +15,7 @@ def create_async_server():
 
     return socketio.AsyncServer(
         async_mode="asgi",
-        cors_allowed_origins=SOCKET_CORS_ORIGINS,
+        cors_allowed_origins=PUBLIC_CORS_ORIGINS,
     )
 
 
@@ -50,29 +49,8 @@ def register_socket_handlers(sio: Any, logger: Any) -> None:
     async def log_event(sid, data):  # noqa: ARG001
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            if not isinstance(data, dict):
-                raise ValueError("event must be an object")
-
-            event_id = data.get("eventId")
-            session_id = data.get("sessionId")
-            action = data.get("action")
-            event_data = data.get("eventData")
-            if not all(
-                isinstance(value, str) and value
-                for value in (event_id, session_id, action)
-            ):
-                raise ValueError("eventId, sessionId, and action are required")
-            if not isinstance(event_data, dict):
-                raise ValueError("eventData must be an object")
-
-            overview = (
-                f"Socket Event - Actor Type: {data.get('actorType', 'unknown')} "
-                f"| Action: {action}"
-            )
-            logger.info(
-                {"message": overview, **data},
-                extra={"provenance_event": True},
-            )
+            event = validate_ui_event(data)
+            emit_provenance_event(event)
             return {"status": "success", "timestamp": timestamp}
         except Exception as error:
             logger.error(

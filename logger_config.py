@@ -11,6 +11,7 @@ from typing import Optional
 
 # Global logger instance
 _logger: Optional[logging.Logger] = None
+_gcp_handler_attached = False
 
 
 class _ProvenanceConsoleFormatter(logging.Formatter):
@@ -29,6 +30,52 @@ class _ProvenanceConsoleFormatter(logging.Formatter):
         return super().format(console_record)
 
 
+def _has_cloud_logging_handler(logger: logging.Logger) -> bool:
+    try:
+        from google.cloud.logging.handlers import CloudLoggingHandler
+    except ImportError:
+        return False
+    return any(isinstance(handler, CloudLoggingHandler) for handler in logger.handlers)
+
+
+def _attach_gcp_handler(logger: logging.Logger, name: str) -> None:
+    """Attach Cloud Logging when credentials and dependencies are available."""
+    global _gcp_handler_attached
+
+    if _gcp_handler_attached or _has_cloud_logging_handler(logger):
+        _gcp_handler_attached = True
+        return
+
+    try:
+        import google.cloud.logging  # noqa: F401
+        from google.cloud.logging.handlers import CloudLoggingHandler
+
+        # Credentials are automatically detected from:
+        # 1. GOOGLE_APPLICATION_CREDENTIALS environment variable
+        # 2. Application Default Credentials (ADC)
+        # 3. Metadata service (when running on GCP)
+        # Prefer HTTP transport for Cloud Logging under Uvicorn. gRPC has been
+        # flaky in some long-running process layouts; REST remains stable.
+        client = google.cloud.logging.Client(_use_grpc=False)
+        cloud_handler = CloudLoggingHandler(client, name=name)
+        cloud_handler.setLevel(logging.INFO)
+        logger.addHandler(cloud_handler)
+        _gcp_handler_attached = True
+        logger.info("✅ Google Cloud Logging initialized successfully")
+    except ImportError:
+        logger.warning(
+            "⚠️ google-cloud-logging not installed. "
+            "Install with: pip install google-cloud-logging"
+        )
+    except Exception as error:
+        logger.warning(
+            "⚠️ Could not initialize Google Cloud Logging: %s\n"
+            "Logs will only appear in terminal. "
+            "To enable GCP logging, set GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+            error,
+        )
+
+
 def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Logger:
     """
     Set up a logger that outputs to both console and Google Cloud Logging.
@@ -42,8 +89,11 @@ def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Lo
     """
     global _logger
 
-    # Return existing logger if already configured
+    # Import-time callers may create a console-only logger first. Upgrade it
+    # when the application entry point requests GCP logging.
     if _logger is not None:
+        if enable_gcp:
+            _attach_gcp_handler(_logger, name)
         return _logger
 
     # Create logger
@@ -65,41 +115,8 @@ def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Lo
     ))
     logger.addHandler(console_handler)
 
-    # Add Google Cloud Logging handler if enabled
     if enable_gcp:
-        try:
-            import google.cloud.logging
-            from google.cloud.logging.handlers import CloudLoggingHandler
-
-            # Initialize Google Cloud Logging client
-            # Credentials are automatically detected from:
-            # 1. GOOGLE_APPLICATION_CREDENTIALS environment variable
-            # 2. Application Default Credentials (ADC)
-            # 3. Metadata service (when running on GCP)
-            # Prefer HTTP transport for Cloud Logging under Uvicorn. gRPC has been
-            # flaky in some long-running process layouts; REST remains stable.
-            client = google.cloud.logging.Client(_use_grpc=False)
-
-            # Create Cloud Logging handler
-            # Note: Shutdown warnings in short-lived scripts are harmless
-            # Long-running apps (like Flask) don't have this issue
-            cloud_handler = CloudLoggingHandler(client, name=name)
-            cloud_handler.setLevel(logging.INFO)
-            logger.addHandler(cloud_handler)
-
-            logger.info("✅ Google Cloud Logging initialized successfully")
-
-        except ImportError:
-            logger.warning(
-                "⚠️ google-cloud-logging not installed. "
-                "Install with: pip install google-cloud-logging"
-            )
-        except Exception as e:
-            logger.warning(
-                f"⚠️ Could not initialize Google Cloud Logging: {e}\n"
-                f"Logs will only appear in terminal. "
-                f"To enable GCP logging, set GOOGLE_APPLICATION_CREDENTIALS environment variable."
-            )
+        _attach_gcp_handler(logger, name)
 
     # Store global logger
     _logger = logger

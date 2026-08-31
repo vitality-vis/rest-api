@@ -23,6 +23,7 @@ from service.search import (
     search,
 )
 
+from app.mcp.provenance import mcp_tool_logged
 from app.mcp.schemas import (
     CitationGroup,
     CitationResult,
@@ -52,6 +53,7 @@ def register_public_tools(server: MCPServer) -> None:
     """Register the public corpus tools on ``server``."""
 
     @server.tool(annotations=READ_ONLY)
+    @mcp_tool_logged("search_papers_bm25")
     def search_papers_bm25(
         query: str,
         authors: list[str] | None = None,
@@ -76,6 +78,7 @@ def register_public_tools(server: MCPServer) -> None:
         )
 
     @server.tool(annotations=READ_ONLY)
+    @mcp_tool_logged("search_papers_semantic")
     def search_papers_semantic(
         query: str,
         authors: list[str] | None = None,
@@ -100,6 +103,7 @@ def register_public_tools(server: MCPServer) -> None:
         )
 
     @server.tool(annotations=READ_ONLY)
+    @mcp_tool_logged("filter_papers")
     def filter_papers(
         title: str | None = None,
         abstract: str | None = None,
@@ -141,6 +145,7 @@ def register_public_tools(server: MCPServer) -> None:
         return _execute_search(request)
 
     @server.tool(annotations=READ_ONLY)
+    @mcp_tool_logged("find_similar_papers")
     def find_similar_papers(
         paper_ids: list[str],
         authors: list[str] | None = None,
@@ -181,6 +186,7 @@ def register_public_tools(server: MCPServer) -> None:
         return _to_search_result(result)
 
     @server.tool(annotations=READ_ONLY)
+    @mcp_tool_logged("get_paper")
     def get_paper(paper_id: str) -> McpPaper:
         """Get one paper from the VitaLITy corpus by its stable paper ID."""
         normalized_id = paper_id.strip()
@@ -195,6 +201,7 @@ def register_public_tools(server: MCPServer) -> None:
         return paper_from_api(paper)
 
     @server.tool(annotations=OPEN_WORLD_READ_ONLY)
+    @mcp_tool_logged("get_paper_citations")
     def get_paper_citations(
         doi: str,
         direction: Literal["references", "cited_by"] | None = None,
