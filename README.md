@@ -119,6 +119,25 @@ uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 | `/getUmapPoints` | GET | 2D UMAP coordinates for visualization |
 | `/getMetaData` | GET | Metadata for UI filters |
 
+### Public MCP
+
+Both the `papers` and `full` profiles expose the same public, read-only MCP
+server at `/mcp`. It uses Streamable HTTP and calls the same application
+services as the REST paper endpoints.
+
+| Tool | Description |
+|------|-------------|
+| `search_papers_bm25` | Lexical BM25 search with metadata filters |
+| `search_papers_semantic` | Dense semantic search with metadata filters |
+| `filter_papers` | Metadata-only paper filtering |
+| `find_similar_papers` | Similar papers from up to 10 seed IDs, with filters |
+| `get_paper` | Fetch one corpus paper by stable ID |
+| `get_paper_citations` | OpenAlex references and cited-by papers for a DOI |
+
+Production host and browser origins for `/mcp`, Socket.IO, and related
+allowlists are hard-coded in `config.py` (`VITALITY_PUBLIC_HOST`). Localhost dev
+origins are included automatically.
+
 ### LLM
 
 | Endpoint | Method | Description |

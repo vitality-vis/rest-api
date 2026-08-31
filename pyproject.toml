@@ -21,6 +21,7 @@ dependencies = [
   "python-dotenv",
   "packaging",
   "openai",
+  "mcp>=2,<3",
   "numpy<2",
   "pymilvus==3.0.0",
   "tqdm",

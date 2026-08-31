@@ -34,6 +34,18 @@ def _format_result(page) -> SearchResult:
     return SearchResult(papers=papers, total=page.total, has_more=page.has_more)
 
 
+def find_paper_by_id(paper_id: str) -> dict | None:
+    """Return one API-formatted paper by stable corpus ID."""
+    try:
+        record = paper_repository.get_paper_by_id(str(paper_id).strip())
+        return paper_to_api_response(record) if record else None
+    except paper_repository.RepositoryUnavailableError as error:
+        raise SearchUnavailableError(str(error)) from error
+    except Exception as error:
+        logging.error("Paper lookup failed: %s", error, exc_info=True)
+        raise SearchUnavailableError("Paper lookup is temporarily unavailable.") from error
+
+
 def search(
     request: SearchRequest,
     *,

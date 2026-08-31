@@ -5,12 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-SOCKET_CORS_ORIGINS = [
-    "http://localhost:8080",  # User study dev server
-    "http://localhost:8081",  # standalone
-    "http://localhost:5173",  # rebuild Vite dev server
-    "https://vitality.mathcs.emory.edu",  # Production server
-]
+from config import PUBLIC_CORS_ORIGINS
+
+SOCKET_CORS_ORIGINS = PUBLIC_CORS_ORIGINS
 
 
 def create_async_server():

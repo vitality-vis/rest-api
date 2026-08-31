@@ -52,7 +52,9 @@ def create_full_bundle() -> ApplicationBundle:
         capabilities=capabilities,
         logger=logger,
     )
-    attach_asgi(bundle, enable_chat=True, enable_socketio=True)
+    # Public/read-only MCP can run on today's full deployment while the
+    # standalone papers deployment is introduced.
+    attach_asgi(bundle, enable_chat=True, enable_mcp=True, enable_socketio=True)
     return bundle
 
 

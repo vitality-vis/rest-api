@@ -49,6 +49,39 @@ def is_supabase_configured() -> bool:
     """Whether authenticated user persistence is configured."""
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
+
+# === Public deployment host (CORS, Socket.IO, MCP) ===
+VITALITY_PUBLIC_HOST = "vitality.mathcs.emory.edu"
+VITALITY_PUBLIC_ORIGIN = f"https://{VITALITY_PUBLIC_HOST}"
+
+LOCAL_DEV_CORS_ORIGINS = [
+    "http://localhost:8080",  # User study dev server
+    "http://localhost:8081",  # standalone
+    "http://localhost:5173",  # rebuild Vite dev server
+]
+PUBLIC_CORS_ORIGINS = [*LOCAL_DEV_CORS_ORIGINS, VITALITY_PUBLIC_ORIGIN]
+
+_MCP_LOCAL_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*", "testserver"]
+_MCP_LOCAL_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+]
+
+
+def mcp_allowed_hosts() -> list[str]:
+    """Host header allowlist for the public /mcp endpoint."""
+    return [
+        *_MCP_LOCAL_ALLOWED_HOSTS,
+        VITALITY_PUBLIC_HOST,
+        f"{VITALITY_PUBLIC_HOST}:*",
+    ]
+
+
+def mcp_allowed_origins() -> list[str]:
+    """Origin allowlist for the public /mcp endpoint."""
+    return [*_MCP_LOCAL_ALLOWED_ORIGINS, *PUBLIC_CORS_ORIGINS]
+
 # === Library PDF uploads ===
 # This is safe to expose through the public bootstrap config: it is a UI limit,
 # not an Azure credential or endpoint. 100 MiB is the default when unset.
