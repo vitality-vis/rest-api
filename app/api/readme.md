@@ -19,7 +19,7 @@ HTTP paths are unchanged. Modules are split by dependency boundary:
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| `GET`/`POST` | `/getPapers` | no | Query via args (GET) or JSON (POST). Params: `search_query`, `search_mode` (`exact`, `bm25`, or `vector`), optional `embedding_model`, `title`, `abstract`, `author`, `source`, `keyword`, year/citation ranges, `id_list`, `offset`, `limit` (max 100). |
+| `GET`/`POST` | `/getPapers` | no | Query via args (GET) or JSON (POST). With `search_mode: bool`, plain `search_query` text is a case-insensitive exact phrase; explicit expressions support quoted phrases, `AND`/`OR`/`NOT`, and parentheses. Other params: `search_mode` (`bool`, `bm25`, or `vector`; legacy `exact` remains accepted), optional `embedding_model`, `title`, `abstract`, `author`, `source`, `keyword`, year/citation ranges, `id_list`, `offset`, `limit` (max 100). |
 | `POST` | `/getSimilarPapers` | no | RRF similarity from seed paper IDs. |
 | `POST` | `/getPaperCitations` | no | OpenAlex references / cited-by. |
 

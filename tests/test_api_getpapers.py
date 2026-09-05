@@ -112,11 +112,12 @@ def test_get_papers_chi_source_total(api_base_url, capsys):
 
 
 def test_get_papers_cross_field_search_query(api_base_url):
-    """Comma-separated search_query terms should match across paper metadata."""
+    """Exact search should accept Boolean terms across paper metadata."""
     payload = {
         "offset": 0,
         "limit": 100,
-        "search_query": "visualization, LLM",
+        "search_query": "visualization AND (LLM OR \"large language model\")",
+        "search_mode": "bool",
     }
     data = _assert_papers_payload(_post_json(api_base_url, "/getPapers", payload))
 

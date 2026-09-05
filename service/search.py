@@ -8,6 +8,7 @@ from logger_config import get_logger
 from model.paper import SearchRequest, SearchResult, SimilarPapersRequest
 from repositories.zilliz import paper_repository
 from repositories.zilliz.mappers import paper_to_api_response
+from repositories.zilliz.query_expressions import BooleanSearchExpressionError
 from service.embed import embed_query
 
 
@@ -22,6 +23,10 @@ class SearchUnavailableError(RuntimeError):
 
 class VectorSearchUnavailableError(SearchUnavailableError):
     """Raised when dense retrieval cannot produce a valid ranked result."""
+
+
+class ExactSearchExpressionError(ValueError):
+    """Raised when an exact Boolean search expression is invalid."""
 
 
 def _format_result(page) -> SearchResult:
@@ -88,6 +93,15 @@ def search(
             )
             return _format_result(page)
 
+        if request.search_mode in {"bool", "exact"} and query_text:
+            page = paper_repository.search_exact_boolean(
+                query_text,
+                request,
+                limit=request.limit,
+                offset=request.offset,
+            )
+            return _format_result(page)
+
         page = paper_repository.search_filtered(
             request,
             query_text=query_text or None,
@@ -95,6 +109,8 @@ def search(
             offset=request.offset,
         )
         return _format_result(page)
+    except BooleanSearchExpressionError as error:
+        raise ExactSearchExpressionError(str(error)) from error
     except paper_repository.InvalidRetrievalScoreError as error:
         raise VectorSearchUnavailableError(str(error)) from error
     except paper_repository.RepositoryUnavailableError as error:
@@ -138,13 +154,15 @@ def find_similar_by_papers(request: SimilarPapersRequest) -> SearchResult:
                 rrf_scores[hit.paper_id] = rrf_scores.get(hit.paper_id, 0.0) + 1.0 / (RRF_K + rank)
 
         requested_limit = min(max(int(request.limit or 25), 1), 100)
+        requested_offset = max(int(request.offset or 0), 0)
         ordered_ids = sorted(rrf_scores, key=lambda paper_id: (-rrf_scores[paper_id], paper_id))
-        selected_ids = ordered_ids[:requested_limit]
+        page_end = requested_offset + requested_limit
+        selected_ids = ordered_ids[requested_offset:page_end]
         hits = paper_repository.hydrate_ranked_papers(selected_ids, rrf_scores)
         return _format_result(
             paper_repository.RepositoryPage(
                 hits=hits,
-                has_more=len(ordered_ids) > requested_limit,
+                has_more=len(ordered_ids) > page_end,
             )
         )
     except paper_repository.InvalidRetrievalScoreError as error:

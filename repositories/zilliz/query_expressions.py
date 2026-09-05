@@ -1,6 +1,7 @@
 """Compilation of application filters into Milvus filter expressions."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Optional
 
 from model.paper import PaperFilters
@@ -18,6 +19,146 @@ _LEGACY_WHERE_FIELD_ALIASES = {
     "Year": "year",
     "CitationCounts": "citation_count",
 }
+
+
+class BooleanSearchExpressionError(ValueError):
+    """Raised when the public exact-search syntax cannot be parsed safely."""
+
+
+@dataclass(frozen=True)
+class _BooleanToken:
+    kind: str
+    value: str = ""
+
+
+def _escape_match_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _tokenize_boolean_search(expression: str) -> List[_BooleanToken]:
+    tokens: List[_BooleanToken] = []
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char == "(":
+            tokens.append(_BooleanToken("LPAREN"))
+            index += 1
+            continue
+        if char == ")":
+            tokens.append(_BooleanToken("RPAREN"))
+            index += 1
+            continue
+        if char == '"':
+            index += 1
+            phrase: List[str] = []
+            while index < len(expression) and expression[index] != '"':
+                if expression[index] == "\\":
+                    index += 1
+                    if index >= len(expression):
+                        raise BooleanSearchExpressionError("A quoted phrase ends with an incomplete escape.")
+                phrase.append(expression[index])
+                index += 1
+            if index >= len(expression):
+                raise BooleanSearchExpressionError("A quoted phrase is missing its closing quote.")
+            index += 1
+            value = "".join(phrase).strip()
+            if not value:
+                raise BooleanSearchExpressionError("Quoted phrases cannot be empty.")
+            tokens.append(_BooleanToken("PHRASE", value))
+            continue
+
+        end = index
+        while end < len(expression) and not expression[end].isspace() and expression[end] not in "()":
+            if expression[end] == '"':
+                raise BooleanSearchExpressionError("Quotes must start at the beginning of a phrase.")
+            end += 1
+        value = expression[index:end]
+        operator = value.upper()
+        tokens.append(_BooleanToken(operator if operator in {"AND", "OR", "NOT"} else "TERM", value))
+        index = end
+    return tokens
+
+
+class _BooleanSearchParser:
+    def __init__(self, tokens: List[_BooleanToken]):
+        self.tokens = tokens
+        self.position = 0
+        self.operands = 0
+
+    def parse(self) -> str:
+        if not self.tokens:
+            raise BooleanSearchExpressionError("The expression is empty.")
+        result = self._parse_or()
+        if self.position != len(self.tokens):
+            token = self.tokens[self.position]
+            raise BooleanSearchExpressionError(f"Unexpected token {token.value or token.kind!r}.")
+        return result
+
+    def _accept(self, kind: str) -> bool:
+        if self.position < len(self.tokens) and self.tokens[self.position].kind == kind:
+            self.position += 1
+            return True
+        return False
+
+    def _parse_or(self) -> str:
+        result = self._parse_and()
+        while self._accept("OR"):
+            result = f"({result} or {self._parse_and()})"
+        return result
+
+    def _parse_and(self) -> str:
+        result = self._parse_not()
+        while self._accept("AND"):
+            result = f"({result} and {self._parse_not()})"
+        return result
+
+    def _parse_not(self) -> str:
+        if self._accept("NOT"):
+            return f"not ({self._parse_not()})"
+        return self._parse_primary()
+
+    def _parse_primary(self) -> str:
+        if self._accept("LPAREN"):
+            result = self._parse_or()
+            if not self._accept("RPAREN"):
+                raise BooleanSearchExpressionError("A parenthesized group is missing its closing parenthesis.")
+            return f"({result})"
+        if self.position >= len(self.tokens):
+            raise BooleanSearchExpressionError("The expression ends before a search term.")
+
+        token = self.tokens[self.position]
+        if token.kind not in {"TERM", "PHRASE"}:
+            raise BooleanSearchExpressionError(f"Expected a search term, found {token.value or token.kind!r}.")
+        self.position += 1
+        self.operands += 1
+        if self.operands > 50:
+            raise BooleanSearchExpressionError("The expression may contain at most 50 terms or phrases.")
+        # Ingestion lower-cases the combined search_text field. Apply the same
+        # normalization explicitly so matching is deterministically
+        # case-insensitive rather than dependent on analyzer configuration.
+        value = _escape_match_value(token.value.lower())
+        if token.kind == "PHRASE":
+            return f'PHRASE_MATCH(search_text, "{value}", 0)'
+        return f'TEXT_MATCH(search_text, "{value}")'
+
+
+def compile_boolean_search_expr(expression: str) -> str:
+    """Compile plain text or Boolean syntax to a search_text-only filter.
+
+    A plain multi-word input is treated as one exact phrase. Once explicit
+    Boolean syntax or quoting is present, the full parser is used.
+    """
+    normalized = str(expression or "").strip()
+    if len(normalized) > 1_000:
+        raise BooleanSearchExpressionError("The expression must be at most 1000 characters.")
+    tokens = _tokenize_boolean_search(normalized)
+    if len(tokens) > 1 and all(token.kind == "TERM" for token in tokens):
+        phrase = _escape_match_value(" ".join(token.value for token in tokens).lower())
+        return f'PHRASE_MATCH(search_text, "{phrase}", 0)'
+    return _BooleanSearchParser(tokens).parse()
 
 
 def ids_to_expr(ids: List[str]) -> str:

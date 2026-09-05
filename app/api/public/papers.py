@@ -18,7 +18,12 @@ from service.citations import (
     PaperCitationsUnavailableError,
     get_paper_citations,
 )
-from service.search import SearchUnavailableError, find_similar_by_papers, search
+from service.search import (
+    ExactSearchExpressionError,
+    SearchUnavailableError,
+    find_similar_by_papers,
+    search,
+)
 
 
 MAX_PAPERS_PAGE_SIZE = 100
@@ -41,7 +46,7 @@ def get_papers():
     try:
         query = SearchRequest(
             search_query=input_payload.get("search_query"),
-            search_mode=input_payload.get("search_mode", "exact"),
+            search_mode=input_payload.get("search_mode", "bool"),
             embedding_model=input_payload.get("embedding_model"),
             title=input_payload.get("title"),
             abstract=input_payload.get("abstract"),
@@ -69,6 +74,8 @@ def get_papers():
         return jsonify({"error": "Unsupported embedding_model"}), 400
     try:
         result = search(query)
+    except ExactSearchExpressionError as error:
+        return jsonify({"error": "Invalid exact-search expression", "details": str(error)}), 400
     except SearchUnavailableError:
         return jsonify({"error": "Paper search is temporarily unavailable"}), 503
     response = GetPapersResponse(

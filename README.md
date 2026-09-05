@@ -127,10 +127,11 @@ services as the REST paper endpoints.
 
 | Tool | Description |
 |------|-------------|
-| `search_papers_bm25` | Lexical BM25 search with metadata filters |
-| `search_papers_semantic` | Dense semantic search with metadata filters |
-| `filter_papers` | Metadata-only paper filtering |
-| `find_similar_papers` | Similar papers from up to 10 seed IDs, with filters |
+| `search_papers_bool` | Case-insensitive exact phrase or Boolean search, with `limit`/`offset` pagination |
+| `search_papers_bm25` | Paginated lexical BM25 search with metadata filters |
+| `search_papers_semantic` | Paginated dense semantic search with metadata filters |
+| `filter_papers` | Paginated metadata-only paper filtering |
+| `find_similar_papers` | Paginated similar papers from up to 10 seed IDs, with filters |
 | `get_paper` | Fetch one corpus paper by stable ID |
 | `get_paper_citations` | OpenAlex references and cited-by papers for a DOI |
 

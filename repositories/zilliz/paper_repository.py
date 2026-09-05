@@ -12,6 +12,7 @@ from repositories.zilliz.connection import ensure_collection_loaded, get_client
 from repositories.zilliz.mappers import SCALAR_FIELDS, search_hit_to_id_and_distance
 from repositories.zilliz.query_expressions import (
     build_paper_query_expr,
+    compile_boolean_search_expr,
     dois_to_expr,
     ids_to_expr,
 )
@@ -207,6 +208,7 @@ def search_filtered(
             output_fields=SCALAR_FIELDS,
             limit=safe_limit + 1,
             offset=safe_offset,
+            order_by=["paper_uid:asc"],
         ) or []
         has_more = len(rows) > safe_limit
         hits = [RepositoryHit(paper=row) for row in rows[:safe_limit] if row]
@@ -225,6 +227,44 @@ def search_filtered(
     except Exception as error:
         logging.error("Zilliz filtered search failed: %s", error, exc_info=True)
         raise RepositoryUnavailableError("Zilliz filtered search failed.") from error
+
+
+def search_exact_boolean(
+    expression: str,
+    filters: PaperFilters,
+    *,
+    limit: int,
+    offset: int = 0,
+) -> RepositoryPage:
+    """Run an unranked exact token/phrase Boolean search on ``search_text``."""
+    safe_limit, safe_offset = _safe_limit_offset(limit, offset)
+    text_expression = compile_boolean_search_expr(expression)
+    metadata_expression = build_paper_query_expr(filters, include_query_text=False)
+    compiled = (
+        text_expression
+        if metadata_expression == 'paper_uid != ""'
+        else f"({text_expression}) and ({metadata_expression})"
+    )
+    client = _client()
+    try:
+        rows = client.query(
+            collection_name=config.PAPER_COLLECTION,
+            filter=compiled,
+            output_fields=SCALAR_FIELDS,
+            limit=safe_limit + 1,
+            offset=safe_offset,
+            order_by=["paper_uid:asc"],
+        ) or []
+        return RepositoryPage(
+            hits=[RepositoryHit(paper=row) for row in rows[:safe_limit] if row],
+            total=_count_matching(client, compiled),
+            has_more=len(rows) > safe_limit,
+        )
+    except RepositoryUnavailableError:
+        raise
+    except Exception as error:
+        logging.error("Zilliz exact Boolean search failed: %s", error, exc_info=True)
+        raise RepositoryUnavailableError("Zilliz exact Boolean search failed.") from error
 
 
 def hydrate_ranked_papers(

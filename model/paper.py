@@ -24,7 +24,7 @@ class SearchRequest(PaperFilters):
     search_query: Optional[str] = None
     limit: int = 20
     offset: int = 0
-    search_mode: Literal["exact", "bm25", "vector"] = "exact"
+    search_mode: Literal["bool", "exact", "bm25", "vector"] = "bool"
     embedding_model: Optional[str] = None
 
 
@@ -33,6 +33,7 @@ class SimilarPapersRequest(PaperFilters):
 
     seed_ids: List[str] = Field(default_factory=list)
     limit: int = 25
+    offset: int = 0
 
 
 class UmapCoordinates(BaseModel):

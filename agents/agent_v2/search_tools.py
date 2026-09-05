@@ -1,6 +1,7 @@
 """Typed retrieval actions and adapters shared by low and medium search."""
 from __future__ import annotations
 
+import json
 from collections import Counter
 from typing import Annotated, Any
 
@@ -296,5 +297,6 @@ def build_search_request(action: RetrievalAction, *, intent: SearchIntent, limit
     if isinstance(action, VectorRetrievalAction):
         return SearchRequest(search_query=action.query, search_mode="vector", limit=limit, **kwargs)
     if isinstance(action, ExactTermsRetrievalAction):
-        return SearchRequest(search_query=",".join(action.terms), search_mode="exact", limit=limit, **kwargs)
-    return SearchRequest(search_mode="exact", limit=limit, **kwargs)
+        expression = " AND ".join(json.dumps(term) for term in action.terms)
+        return SearchRequest(search_query=expression, search_mode="bool", limit=limit, **kwargs)
+    return SearchRequest(search_mode="bool", limit=limit, **kwargs)

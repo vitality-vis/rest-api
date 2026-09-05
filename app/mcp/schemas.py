@@ -27,6 +27,7 @@ class PaperSearchResult(BaseModel):
     papers: list[McpPaper] = Field(default_factory=list)
     total: int | None = None
     has_more: bool = False
+    next_offset: int | None = None
 
 
 class CitationGroup(BaseModel):
