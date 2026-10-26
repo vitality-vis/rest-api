@@ -213,6 +213,20 @@ AZURE_OPENAI_EMBED_DEPLOYMENT = (os.environ.get("AZURE_OPENAI_EMBED_DEPLOYMENT")
 AZURE_OPENAI_EMBED_API_VERSION = (os.environ.get("AZURE_OPENAI_EMBED_API_VERSION") or "").strip()
 
 
+# === Chat runtime ===
+# "codex" uses a local `codex app-server` process. "v2" keeps the current runner.
+CHAT_RUNTIME = (os.environ.get("CHAT_RUNTIME") or "codex").strip().lower()
+if CHAT_RUNTIME not in {"codex", "v2"}:
+    raise ValueError("CHAT_RUNTIME must be 'codex' or 'v2'")
+CODEX_BIN = (os.environ.get("CODEX_BIN") or "codex").strip() or "codex"
+CODEX_MODEL = (os.environ.get("CODEX_MODEL") or "").strip()
+# Isolate Vitality's Codex auth/config/threads from the developer CLI home.
+_DEFAULT_CODEX_HOME = os.path.join(PROJ_ROOT_DIR, ".codex-home")
+CODEX_HOME = os.path.abspath(
+    (os.environ.get("CODEX_HOME") or _DEFAULT_CODEX_HOME).strip() or _DEFAULT_CODEX_HOME
+)
+
+
 def is_azure_chat_configured() -> bool:
     """Whether the full-app Azure Chat capability has complete configuration."""
     return bool(

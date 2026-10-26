@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+import logging
+from uuid import UUID, uuid4
 
 import requests
 
@@ -10,6 +11,9 @@ from repositories.supabase.client import get_supabase_settings, service_role_hea
 
 
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
+DATABASE_REQUEST_ATTEMPTS = 2
+
+logger = logging.getLogger(__name__)
 
 # When created_at ties, prefer user before assistant ("user" > "assistant").
 _MESSAGE_ORDER = "created_at.asc,role.desc,id.asc"
@@ -21,6 +25,14 @@ class ChatPersistenceError(RuntimeError):
 
 class ConversationOwnershipError(ChatPersistenceError):
     """Raised when a conversation UUID belongs to a different user."""
+
+
+class ChatAuthenticationError(ChatPersistenceError):
+    """Raised when Supabase rejects the user's bearer token."""
+
+
+class ChatMessageConflictError(ChatPersistenceError):
+    """Raised when an idempotency key is reused for different content."""
 
 
 def _sort_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -88,38 +100,8 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
     ]
 
 
-def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[str, object]]:
-    """Return ordered, user-visible completed turns for one owned conversation."""
-    conversation_id = _normalise_uuid(conversation_id)
-    user_id = _normalise_uuid(user_id)
-    ownership_response = _request(
-        "GET",
-        "chat_conversations",
-        params={
-            "id": f"eq.{conversation_id}",
-            "user_id": f"eq.{user_id}",
-            "select": "id",
-        },
-    )
-    if ownership_response.status_code != 200:
-        raise ChatPersistenceError("Could not verify chat conversation ownership")
-    if not ownership_response.json():
-        raise ConversationOwnershipError("Chat conversation does not belong to this user")
-
-    messages_response = _request(
-        "GET",
-        "chat_messages",
-        params={
-            "conversation_id": f"eq.{conversation_id}",
-            "status": "eq.completed",
-            "select": "role,content,context,created_at,id",
-            "order": _MESSAGE_ORDER,
-        },
-    )
-    if messages_response.status_code != 200:
-        raise ChatPersistenceError("Could not load chat history")
-
-    ordered_messages = _sort_messages(list(messages_response.json()))
+def _messages_to_history(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    ordered_messages = _sort_messages(messages)
     turns: list[dict[str, object]] = []
     for message in ordered_messages:
         role = message.get("role")
@@ -141,20 +123,175 @@ def load_completed_history(*, conversation_id: str, user_id: str) -> list[dict[s
     return turns
 
 
+def load_completed_history(
+    *,
+    conversation_id: str,
+    user_id: str,
+    exclude_message_id: str | None = None,
+    ownership_verified: bool = False,
+) -> list[dict[str, object]]:
+    """Return completed turns, optionally reusing an earlier ownership check."""
+    conversation_id = _normalise_uuid(conversation_id)
+    user_id = _normalise_uuid(user_id)
+    if not ownership_verified:
+        ownership_response = _request(
+            "GET",
+            "chat_conversations",
+            params={
+                "id": f"eq.{conversation_id}",
+                "user_id": f"eq.{user_id}",
+                "select": "id",
+            },
+        )
+        if ownership_response.status_code != 200:
+            raise ChatPersistenceError("Could not verify chat conversation ownership")
+        if not ownership_response.json():
+            raise ConversationOwnershipError(
+                "Chat conversation does not belong to this user"
+            )
+
+    params = {
+        "conversation_id": f"eq.{conversation_id}",
+        "status": "eq.completed",
+        "select": "role,content,context,created_at,id",
+        "order": _MESSAGE_ORDER,
+    }
+    if exclude_message_id:
+        params["id"] = f"neq.{_normalise_uuid(exclude_message_id)}"
+    messages_response = _request("GET", "chat_messages", params=params)
+    if messages_response.status_code != 200:
+        raise ChatPersistenceError("Could not load chat history")
+    return _messages_to_history(list(messages_response.json()))
+
+
+def prepare_chat_turn(
+    *,
+    conversation_id: str,
+    access_token: str,
+    title: str,
+    text: str,
+    message_id: str | None,
+    created_at: str | None,
+    context: dict[str, object] | None,
+    include_history: bool,
+    client_request_id: str | None = None,
+) -> tuple[str, list[dict[str, object]], bool]:
+    """Authenticate and atomically prepare one persisted chat turn."""
+    conversation_id = _normalise_uuid(conversation_id)
+    message_uuid = _normalise_uuid(message_id) if message_id else str(uuid4())
+    request_uuid = _normalise_uuid(client_request_id) if client_request_id else message_uuid
+    response = _request(
+        "POST",
+        "rpc/prepare_chat_turn",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "p_conversation_id": conversation_id,
+            "p_title": title,
+            "p_message_id": message_uuid,
+            "p_message_created_at": created_at,
+            "p_text": text,
+            "p_context": context or {},
+            "p_include_history": include_history,
+            "p_client_request_id": request_uuid,
+        },
+    )
+    if response.status_code == 401:
+        raise ChatAuthenticationError("Invalid or expired access token")
+    if response.status_code == 409:
+        raise ChatMessageConflictError(
+            "This chat request was already submitted or its message ID conflicts"
+        )
+    if response.status_code == 403:
+        raise ConversationOwnershipError(
+            "Chat conversation does not belong to this user"
+        )
+    if response.status_code == 404 and _is_missing_prepare_rpc(response):
+        logger.warning(
+            "prepare_chat_turn RPC is not installed; using compatibility path"
+        )
+        from repositories.supabase.auth import (
+            SupabaseAuthenticationError,
+            verify_access_token,
+        )
+
+        try:
+            user_id = verify_access_token(access_token)
+        except SupabaseAuthenticationError as error:
+            raise ChatAuthenticationError(str(error)) from error
+        ensure_conversation(
+            conversation_id=conversation_id, user_id=user_id, title=title
+        )
+        history = (
+            load_completed_history(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                exclude_message_id=message_uuid,
+                ownership_verified=True,
+            )
+            if include_history
+            else []
+        )
+        inserted = save_message(
+            conversation_id=conversation_id,
+            role="user",
+            text=text,
+            message_id=message_uuid,
+            created_at=created_at,
+            context=context,
+        )
+        return user_id, history, not inserted
+    if response.status_code not in {200, 201}:
+        raise ChatPersistenceError("Could not prepare chat turn")
+    payload = response.json()
+    if isinstance(payload, list):
+        payload = payload[0] if payload else {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("user_id"), str):
+        raise ChatPersistenceError("Chat turn preparation returned no user identity")
+    user_id = _normalise_uuid(payload["user_id"])
+    history = payload.get("history", [])
+    duplicate = payload.get("duplicate", False) is True
+    return (
+        user_id,
+        _messages_to_history(history if isinstance(history, list) else []),
+        duplicate,
+    )
+
+
+def _is_missing_prepare_rpc(response: requests.Response) -> bool:
+    try:
+        payload = response.json()
+    except requests.JSONDecodeError:
+        return False
+    return isinstance(payload, dict) and payload.get("code") == "PGRST202"
+
+
 def _request(method: str, path: str, **kwargs) -> requests.Response:
     settings = get_supabase_settings()
     headers = service_role_headers(settings)
     headers.update(kwargs.pop("headers", {}))
-    try:
-        return requests.request(
-            method,
-            f"{settings.url}/rest/v1/{path}",
-            headers=headers,
-            timeout=DATABASE_REQUEST_TIMEOUT_SECONDS,
-            **kwargs,
-        )
-    except requests.RequestException as error:
-        raise ChatPersistenceError("Could not reach the chat database") from error
+    url = f"{settings.url}/rest/v1/{path}"
+    last_error: requests.RequestException | None = None
+    for attempt in range(1, DATABASE_REQUEST_ATTEMPTS + 1):
+        try:
+            return requests.request(
+                method,
+                url,
+                headers=headers,
+                timeout=DATABASE_REQUEST_TIMEOUT_SECONDS,
+                **kwargs,
+            )
+        except requests.RequestException as error:
+            last_error = error
+            logger.warning(
+                "Chat database %s %s failed (attempt %s/%s): %s",
+                method,
+                path,
+                attempt,
+                DATABASE_REQUEST_ATTEMPTS,
+                error,
+            )
+    assert last_error is not None
+    raise ChatPersistenceError("Could not reach the chat database") from last_error
 
 
 def _normalise_uuid(value: str) -> str:
@@ -240,21 +377,21 @@ def save_message(
     message_id: str | None = None,
     created_at: str | None = None,
     context: dict[str, object] | None = None,
-) -> None:
-    """Append one immutable user-visible text message to a conversation."""
+) -> bool:
+    """Insert a message; return False only for an exact idempotent duplicate."""
     if role not in {"user", "assistant"}:
         raise ValueError("role must be user or assistant")
     if status not in {"streaming", "completed", "failed"}:
         raise ValueError("Unsupported message status")
 
+    stable_message_id = _normalise_uuid(message_id) if message_id else str(uuid4())
     payload: dict[str, object] = {
         "conversation_id": _normalise_uuid(conversation_id),
         "role": role,
         "content": [{"type": "text", "text": text}],
         "status": status,
+        "id": stable_message_id,
     }
-    if message_id is not None:
-        payload["id"] = _normalise_uuid(message_id)
     if created_at is not None:
         payload["created_at"] = created_at
     if duration_ms is not None:
@@ -267,19 +404,55 @@ def save_message(
     response = _request(
         "POST",
         "chat_messages",
-        headers={"Prefer": "resolution=ignore-duplicates"},
+        headers={"Prefer": "resolution=ignore-duplicates,return=representation"},
         json=payload,
     )
     if response.status_code not in {200, 201}:
         raise ChatPersistenceError("Could not save chat message")
+    representation = response.json()
+    if representation:
+        return True
+    # An empty representation means ON CONFLICT ignored an existing row. Verify
+    # immutable identity fields so idempotency never masks a different message.
+    if not representation:
+        existing = _request(
+            "GET",
+            "chat_messages",
+            params={
+                "id": f"eq.{payload['id']}",
+                "select": "conversation_id,role,content,context,status,duration_ms,error_message",
+            },
+        )
+        if existing.status_code != 200 or not existing.json():
+            raise ChatPersistenceError("Could not verify duplicate chat message")
+        row = existing.json()[0]
+        expected = {
+            "conversation_id": payload["conversation_id"],
+            "role": payload["role"],
+            "content": payload["content"],
+            "context": payload.get("context") or {},
+            "status": payload["status"],
+            "duration_ms": payload.get("duration_ms"),
+            "error_message": payload.get("error_message"),
+        }
+        actual = {key: row.get(key) for key in expected}
+        if actual != expected:
+            raise ChatMessageConflictError(
+                "Chat message ID is already used by a different message"
+            )
+        return False
+    return True
 
 
 __all__ = [
+    "ChatAuthenticationError",
     "ChatPersistenceError",
+    "ChatMessageConflictError",
     "ConversationOwnershipError",
     "ensure_conversation",
     "load_completed_history",
     "load_user_conversations",
+    "prepare_chat_turn",
     "save_message",
     "set_conversation_closed",
 ]

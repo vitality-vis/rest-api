@@ -58,6 +58,15 @@ def attach_asgi(
                     )
                     mcp_endpoint.target = mcp_app.routes[0].app
                     await stack.enter_async_context(mcp_server.session_manager.run())
+                if enable_chat and config.CHAT_RUNTIME == "codex":
+                    from app.codex.client import warm_shared_client
+
+                    try:
+                        await warm_shared_client()
+                    except Exception:
+                        bundle.logger.warning(
+                            "Codex app-server warmup failed", exc_info=True
+                        )
                 try:
                     yield
                 finally:

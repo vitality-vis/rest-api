@@ -62,6 +62,11 @@ def suppress_lifecycle(monkeypatch):
         "agents.agent_v1_legacy.runner.reset_all_sessions", lambda: None
     )
 
+    async def _skip_codex_warmup() -> None:
+        return None
+
+    monkeypatch.setattr("app.codex.client.warm_shared_client", _skip_codex_warmup)
+
 
 def test_papers_asgi_health_via_wsgi_middleware(suppress_lifecycle, monkeypatch):
     monkeypatch.setattr(
@@ -195,7 +200,7 @@ def test_chat_v2_returns_503_when_admission_full(suppress_lifecycle, monkeypatch
     async def fake_run(_request: Any) -> AsyncIterator[Any]:
         yield TextDelta(text="ok")
 
-    monkeypatch.setattr("agents.agent_v2.runner.run", fake_run)
+    monkeypatch.setattr("app.chat.runtime.resolve_chat_runner", lambda: fake_run)
     bundle = create_application(AppProfile.FULL)
     with TestClient(bundle.asgi_app) as client:
         runtime = bundle.agent_runtime
@@ -210,7 +215,7 @@ def test_chat_v2_returns_503_when_admission_full(suppress_lifecycle, monkeypatch
         response = client.post(
             "/chat/v2",
             json={
-                "client_request_id": "req-over-capacity",
+                "client_request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "chat_id": "c-over",
                 "text": "Hello",
             },
@@ -239,18 +244,65 @@ def test_chat_v2_requires_client_request_id(suppress_lifecycle):
     assert after["pending"] == before["pending"]
 
 
-def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
-    async def fake_run(_request: Any) -> AsyncIterator[Any]:
-        yield TextDelta(text="Hello")
-        yield TextDelta(text="!")
+def test_chat_v2_rejects_malformed_client_request_id(suppress_lifecycle):
+    bundle = create_application(AppProfile.FULL)
+    with TestClient(bundle.asgi_app) as client:
+        response = client.post(
+            "/chat/v2",
+            headers={"Authorization": "Bearer valid-token"},
+            json={
+                "client_request_id": "req-1",
+                "chat_id": "11111111-1111-1111-1111-111111111111",
+                "text": "Hello",
+            },
+        )
+    assert response.status_code == 400
+    assert response.json() == {"detail": "client_request_id must be a UUID"}
 
-    monkeypatch.setattr("agents.agent_v2.runner.run", fake_run)
+
+def test_chat_v2_requires_authentication(suppress_lifecycle):
     bundle = create_application(AppProfile.FULL)
     with TestClient(bundle.asgi_app) as client:
         response = client.post(
             "/chat/v2",
             json={
-                "client_request_id": "req-1",
+                "client_request_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "chat_id": "c-unauthenticated",
+                "text": "Hello",
+            },
+        )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
+def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
+    async def fake_run(_request: Any) -> AsyncIterator[Any]:
+        yield TextDelta(text="Hello")
+        yield TextDelta(text="!")
+
+    monkeypatch.setattr("app.chat.runtime.resolve_chat_runner", lambda: fake_run)
+    monkeypatch.setattr(
+        "app.chat.request_service.get_thread_id", lambda _user_id, _chat_id: None
+    )
+    prepared_kwargs: dict[str, Any] = {}
+
+    def fake_prepare(**kwargs):
+        prepared_kwargs.update(kwargs)
+        return "00000000-0000-0000-0000-000000000001", [], False
+
+    monkeypatch.setattr(
+        "app.chat.request_service.prepare_persisted_chat_turn", fake_prepare
+    )
+    monkeypatch.setattr(
+        "app.chat.service.save_assistant_result", lambda **_kwargs: True
+    )
+    bundle = create_application(AppProfile.FULL)
+    with TestClient(bundle.asgi_app) as client:
+        response = client.post(
+            "/chat/v2",
+            headers={"Authorization": "Bearer valid-token"},
+            json={
+                "client_request_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
                 "chat_id": "c1",
                 "text": "Hello",
             },
@@ -265,7 +317,9 @@ def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
         "run.completed",
     ]
     assert [event["seq"] for event in events] == [1, 2, 3, 4]
-    assert events[0]["data"]["clientRequestId"] == "req-1"
+    assert events[0]["data"]["clientRequestId"] == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    assert prepared_kwargs["message_id"]
+    assert prepared_kwargs["client_request_id"] == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
     assert events[1]["data"]["text"] == "Hello"
     assert events[2]["data"]["text"] == "!"
 

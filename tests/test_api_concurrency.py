@@ -75,6 +75,11 @@ def _get_papers(api_base_url: str, *, timeout_s: float) -> float:
 
 def test_get_papers_responds_while_chat_v2_in_flight(api_base_url: str):
     """Start chat, briefly wait, then time /getPapers against the idle baseline."""
+    access_token = os.getenv("SUPABASE_ACCESS_TOKEN")
+    if not access_token:
+        pytest.skip("SUPABASE_ACCESS_TOKEN is not set; authenticated Chat is required")
+    auth_headers = {"Authorization": f"Bearer {access_token}"}
+
     inflight = max(1, _env_int("CHAT_V2_INFLIGHT", 1))
     chat_start_delay_s = max(0.0, _env_float("CHAT_START_DELAY_S", 0.3))
     get_papers_timeout_s = max(1.0, _env_float("GET_PAPERS_TIMEOUT_S", 15))
@@ -106,6 +111,7 @@ def test_get_papers_responds_while_chat_v2_in_flight(api_base_url: str):
             with requests.post(
                 f"{api_base_url}/chat/v2",
                 json=payload,
+                headers=auth_headers,
                 stream=True,
                 timeout=(10, 300),
             ) as response:

@@ -5,8 +5,9 @@ formats. It owns only the Zilliz transport state shared by repositories.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
-from typing import Any, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 import config
 from logger_config import get_logger
@@ -19,6 +20,9 @@ logging = get_logger()
 class _ConnectionState:
     client: Optional[Any] = None
     loaded_collections: Set[str] = field(default_factory=set)
+    state_lock: Any = field(default_factory=threading.Lock)
+    client_lock: Any = field(default_factory=threading.Lock)
+    collection_locks: Dict[str, Any] = field(default_factory=dict)
 
 
 _state = _ConnectionState()
@@ -26,51 +30,86 @@ _state = _ConnectionState()
 
 def get_client():
     """Return the shared MilvusClient, creating it on first use."""
-    if _state.client is not None:
-        return _state.client
-    if not config.ZILLIZ_URI or not config.ZILLIZ_TOKEN:
-        logging.error("ZILLIZ_URI and ZILLIZ_TOKEN must be set (e.g. in .env)")
+    with _state.state_lock:
+        if _state.client is not None:
+            return _state.client
+
+    with _state.client_lock:
+        with _state.state_lock:
+            if _state.client is not None:
+                return _state.client
+
+        if not config.ZILLIZ_URI or not config.ZILLIZ_TOKEN:
+            logging.error("ZILLIZ_URI and ZILLIZ_TOKEN must be set (e.g. in .env)")
+            return None
+
+        try:
+            from pymilvus import MilvusClient
+
+            client = MilvusClient(
+                uri=config.ZILLIZ_URI,
+                token=config.ZILLIZ_TOKEN,
+                timeout=config.ZILLIZ_REQUEST_TIMEOUT_SECONDS,
+            )
+            with _state.state_lock:
+                _state.client = client
+            logging.info("Zilliz Cloud MilvusClient established")
+            return client
+        except ImportError as error:
+            logging.error("pymilvus not installed: %s", error)
+        except Exception as error:
+            logging.error(
+                "Failed to create Zilliz MilvusClient: %s", error, exc_info=True
+            )
         return None
 
-    try:
-        from pymilvus import MilvusClient
 
-        _state.client = MilvusClient(
-            uri=config.ZILLIZ_URI,
-            token=config.ZILLIZ_TOKEN,
-            timeout=config.ZILLIZ_REQUEST_TIMEOUT_SECONDS,
-        )
-        logging.info("Zilliz Cloud MilvusClient established")
-        return _state.client
-    except ImportError as error:
-        logging.error("pymilvus not installed: %s", error)
-    except Exception as error:
-        logging.error("Failed to create Zilliz MilvusClient: %s", error, exc_info=True)
-    return None
+def _collection_lock(collection_name: str):
+    """Return the lock used to serialize preparation of one collection."""
+    with _state.state_lock:
+        return _state.collection_locks.setdefault(collection_name, threading.Lock())
 
 
 def ensure_collection_loaded(collection_name: str) -> bool:
     """Verify that a collection exists and load it once for this process."""
-    client = get_client()
-    if not client:
-        return False
+    with _state.state_lock:
+        if collection_name in _state.loaded_collections:
+            return True
 
-    try:
-        if not client.has_collection(collection_name):
+    with _collection_lock(collection_name):
+        with _state.state_lock:
+            if collection_name in _state.loaded_collections:
+                return True
+
+        client = get_client()
+        if not client:
+            return False
+
+        try:
+            if not client.has_collection(collection_name):
+                logging.error(
+                    "Collection '%s' does not exist. Run load_to_zilliz.py first.",
+                    collection_name,
+                )
+                return False
+            client.load_collection(collection_name)
+            with _state.state_lock:
+                _state.loaded_collections.add(collection_name)
+            return True
+        except Exception as error:
             logging.error(
-                "Collection '%s' does not exist. Run load_to_zilliz.py first.",
+                "Failed to prepare collection '%s': %s",
                 collection_name,
+                error,
+                exc_info=True,
             )
             return False
-        if collection_name not in _state.loaded_collections:
-            client.load_collection(collection_name)
-            _state.loaded_collections.add(collection_name)
-        return True
-    except Exception as error:
-        logging.error(
-            "Failed to prepare collection '%s': %s",
-            collection_name,
-            error,
-            exc_info=True,
-        )
-        return False
+
+
+def _reset_state_for_tests() -> None:
+    """Clear cached connection state between tests when no calls are active."""
+    with _state.client_lock:
+        with _state.state_lock:
+            _state.client = None
+            _state.loaded_collections.clear()
+            _state.collection_locks.clear()

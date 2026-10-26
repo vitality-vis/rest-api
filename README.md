@@ -94,7 +94,8 @@ This is optional: if the cache is missing or outdated, the API downloads fresh d
 **Development:**
 
 ```bash
-python main.py
+uvicorn main:app --host 127.0.0.1 --port 3000 --workers 1
+# python main.py
 ```
 
 Server runs at **http://localhost:3000** (or the port in `PORT`).

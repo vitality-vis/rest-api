@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+
+import config
 from collections.abc import AsyncIterator
 from time import monotonic
 
@@ -31,11 +33,10 @@ async def iter_chat_turn_events(
 ) -> AsyncIterator[ChatEvent]:
     """Run one prepared Chat turn and yield internal typed events.
 
-    Callable without Flask ``request`` / ``current_app``. Assistant persistence
-    runs in ``finally`` so client disconnect (``GeneratorExit`` / ``aclose``)
-    still saves a ``failed`` message, matching the previous Flask behavior.
-    Persistence failures after streaming starts are logged and do not abort the
-    event stream.
+    Callable without Flask ``request`` / ``current_app``. Text and activity
+    stream immediately, but terminal success is emitted only after assistant
+    persistence succeeds. Client disconnect still best-effort saves a failed
+    message.
     """
     active_logger = logger or logging.getLogger(__name__)
     started_at = monotonic()
@@ -79,29 +80,12 @@ async def iter_chat_turn_events(
             yield TextDelta(text=FALLBACK_TEXT)
 
         duration_ms = round((monotonic() - started_at) * 1000)
-        if aborted is not None:
-            yield RunFailed(
-                message=aborted.public_message,
-                duration_ms=duration_ms,
-                error_code=aborted.error_code,
-                retryable=aborted.retryable,
-            )
-        elif stream_completed:
-            yield RunCompleted(duration_ms=duration_ms, degraded=degraded)
-        else:
-            yield RunFailed(
-                # Raw provider/LLM errors belong in logs and persistence only.
-                # The public stream must expose a stable, sanitized message.
-                message=FALLBACK_TEXT,
-                duration_ms=duration_ms,
-            )
-    finally:
         if prepared.user_id:
-            save_assistant_result(
+            persisted = save_assistant_result(
                 conversation_id=prepared.request.chat_id,
                 text="".join(assistant_chunks),
                 status="completed" if stream_completed else "failed",
-                duration_ms=round((monotonic() - started_at) * 1000),
+                duration_ms=duration_ms,
                 error_message=stream_error,
                 message_id=prepared.request.assistant_message_id,
                 context=(
@@ -117,5 +101,51 @@ async def iter_chat_turn_events(
                     if papers_result is not None
                     else None
                 ),
+                log=active_logger,
+            )
+            if not persisted:
+                if config.CHAT_RUNTIME == "codex":
+                    # Keep DB history authoritative: the completed Codex turn is
+                    # unusable when its assistant message could not be saved.
+                    from app.codex.threads import drop_thread_id
+
+                    drop_thread_id(prepared.user_id, prepared.request.chat_id)
+                yield RunFailed(
+                    message="The response could not be saved. Please retry.",
+                    duration_ms=duration_ms,
+                    error_code="persistence_failed",
+                    retryable=True,
+                )
+                return
+
+        if aborted is not None:
+            yield RunFailed(
+                message=aborted.public_message,
+                duration_ms=duration_ms,
+                error_code=aborted.error_code,
+                retryable=aborted.retryable,
+            )
+        elif stream_completed:
+            yield RunCompleted(duration_ms=duration_ms, degraded=degraded)
+        else:
+            yield RunFailed(
+                message=FALLBACK_TEXT,
+                duration_ms=duration_ms,
+            )
+    finally:
+        if (
+            prepared.user_id
+            and not stream_completed
+            and aborted is None
+            and stream_error is None
+        ):
+            # Generator close/client disconnect bypasses the normal terminal path.
+            save_assistant_result(
+                conversation_id=prepared.request.chat_id,
+                text="".join(assistant_chunks),
+                status="failed",
+                duration_ms=round((monotonic() - started_at) * 1000),
+                error_message=None,
+                message_id=prepared.request.assistant_message_id,
                 log=active_logger,
             )

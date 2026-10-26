@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from uuid import UUID
+
+import config
 
 from app.chat.models import (
+    ChatConflictError,
     ChatForbiddenError,
     ChatPipeline,
     ChatTurnRequest,
@@ -15,18 +19,15 @@ from app.chat.models import (
     ChatValidationError,
     PreparedChatTurn,
 )
-from repositories.supabase.auth import (
-    SupabaseAuthenticationError,
-    SupabaseConfigurationError,
-    verify_access_token,
-)
+from repositories.supabase.auth import SupabaseConfigurationError
 from repositories.supabase.chat_repository import (
+    ChatAuthenticationError,
+    ChatMessageConflictError,
     ChatPersistenceError,
     ConversationOwnershipError,
-    ensure_conversation,
-    load_completed_history,
-    save_message,
+    prepare_chat_turn as prepare_persisted_chat_turn,
 )
+from app.codex.threads import get_thread_id
 
 # TODO: Replace these fixed client-history limits with recent turns plus a
 # compact summary and on-demand retrieval of relevant older history.
@@ -203,9 +204,15 @@ def build_chat_turn_request(
     assistant_message_id = (
         str(assistant_message_id) if assistant_message_id is not None else None
     )
-    client_request_id = (
-        str(client_request_id) if client_request_id is not None else None
-    )
+    if client_request_id is None:
+        client_request_id = None
+    elif not isinstance(client_request_id, str) or not client_request_id.strip():
+        raise ChatValidationError("client_request_id must be a UUID")
+    else:
+        try:
+            client_request_id = str(UUID(client_request_id.strip()))
+        except ValueError as error:
+            raise ChatValidationError("client_request_id must be a UUID") from error
     agent_run_id = str(agent_run_id) if agent_run_id is not None else None
     message_created_at = (
         str(message_created_at) if message_created_at is not None else None
@@ -268,46 +275,78 @@ def build_chat_turn_request(
 
 
 def prepare_chat_turn(request: ChatTurnRequest) -> PreparedChatTurn:
-    """Authenticate, ensure conversation, load history, then save the user message."""
+    """Authenticate and atomically prepare persistence for one Chat turn."""
     try:
         access_token = parse_access_token(request.authorization_header)
-        user_id = verify_access_token(access_token) if access_token else None
-    except SupabaseConfigurationError as error:
-        logger.error("Supabase is not configured for authenticated chat")
-        raise ChatUnavailableError("Authenticated chat is unavailable") from error
-    except SupabaseAuthenticationError as error:
-        raise ChatUnauthorizedError("Unauthorized") from error
     except ChatUnauthorizedError:
         raise
 
-    if user_id:
+    if not access_token:
+        raise ChatUnauthorizedError("Unauthorized")
+
+    if access_token:
         try:
-            ensure_conversation(
+            # The RPC validates the bearer token via Supabase, then creates or
+            # verifies the conversation and saves the message transactionally.
+            # History is skipped when Codex is expected to resume its thread.
+            candidate_user_id = _jwt_subject_hint(access_token)
+            has_codex_thread = bool(
+                config.CHAT_RUNTIME == "codex"
+                and candidate_user_id
+                and get_thread_id(candidate_user_id, request.chat_id)
+            )
+            user_id, raw_history, duplicate = prepare_persisted_chat_turn(
                 conversation_id=request.chat_id,
-                user_id=user_id,
+                access_token=access_token,
                 title=request.title,
-            )
-            # Read history before inserting this turn so the Agent does not see
-            # the current question both in history and as its explicit input.
-            history = normalise_history(
-                load_completed_history(
-                    conversation_id=request.chat_id, user_id=user_id
-                )
-            )
-            save_message(
-                conversation_id=request.chat_id,
-                role="user",
                 text=request.text,
                 message_id=request.user_message_id,
                 created_at=request.message_created_at,
                 context=request.message_context,
+                include_history=not has_codex_thread,
+                client_request_id=request.client_request_id,
             )
+            if duplicate:
+                raise ChatConflictError(
+                    "This chat request has already been submitted"
+                )
+            # An unverified JWT subject is used only as a performance hint; the
+            # RPC's verified identity is authoritative.
+            if config.CHAT_RUNTIME == "codex" and candidate_user_id != user_id:
+                has_codex_thread = bool(get_thread_id(user_id, request.chat_id))
+            history = normalise_history(raw_history)
+        except ChatConflictError:
+            raise
+        except ChatMessageConflictError as error:
+            raise ChatConflictError(str(error)) from error
+        except ChatAuthenticationError as error:
+            raise ChatUnauthorizedError("Unauthorized") from error
+        except SupabaseConfigurationError as error:
+            logger.error("Supabase is not configured for authenticated chat")
+            raise ChatUnavailableError("Authenticated chat is unavailable") from error
         except ConversationOwnershipError as error:
             raise ChatForbiddenError("Forbidden") from error
         except ChatPersistenceError as error:
             logger.error("Could not initialise authenticated chat: %s", error)
             raise ChatUnavailableError("Authenticated chat is unavailable") from error
-    else:
-        history = list(request.guest_history)
+    return PreparedChatTurn(
+        request=request,
+        user_id=user_id,
+        history=history,
+        has_codex_thread=has_codex_thread,
+    )
 
-    return PreparedChatTurn(request=request, user_id=user_id, history=history)
+
+def _jwt_subject_hint(access_token: str) -> str | None:
+    """Read an unverified JWT subject only to decide whether history is needed."""
+    try:
+        import jwt
+
+        payload = jwt.decode(
+            access_token,
+            options={"verify_signature": False, "verify_exp": False},
+            algorithms=["HS256", "ES256"],
+        )
+        return str(payload["sub"]) if payload.get("sub") else None
+    except Exception:
+        return None

@@ -69,11 +69,14 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
                     content={"detail": "client_request_id is required"},
                 )
 
+            # Allocate all mutation IDs once, before any persistence retry.
+            user_message_id = raw.get("user_message_id") or str(uuid4())
             agent_run_id = str(uuid4())
             assistant_message_id = str(uuid4())
             payload = {
                 **raw,
                 "client_request_id": client_request_id.strip(),
+                "user_message_id": user_message_id,
                 "agent_run_id": agent_run_id,
                 "assistant_message_id": assistant_message_id,
             }
@@ -85,7 +88,7 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
                     authorization_header=request.headers.get("Authorization"),
                     trace_id=agent_run_id,
                 )
-                # Supabase auth/history/message persistence use synchronous clients.
+                # One Supabase RPC authenticates and prepares persistence off-loop.
                 prepared = await asyncio.to_thread(prepare_chat_turn, turn_request)
             except ChatDomainError as error:
                 reservation.release()
@@ -94,7 +97,9 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
             reservation.release()
             raise
 
-        from agents.agent_v2.runner import run as run_agent_v2
+        from app.chat.runtime import resolve_chat_runner
+
+        run_agent = resolve_chat_runner()
 
         async def event_stream():
             encoder = SSEEncoder()
@@ -102,7 +107,7 @@ def register_chat_routes(app: FastAPI, bundle: ApplicationBundle) -> None:
             keepalive = runtime.sse_keepalive_seconds
             events = bridge_agent_events(
                 prepared,
-                run_agent=run_agent_v2,
+                run_agent=run_agent,
                 runtime=runtime,
                 reservation=reservation,
                 logger=bundle.logger,

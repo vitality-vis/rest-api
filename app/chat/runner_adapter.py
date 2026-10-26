@@ -34,6 +34,7 @@ def build_agent_request(
         assistant_message_id=request.assistant_message_id,
         requested_mode=request.requested_mode,
         user_id=prepared.user_id,
+        has_codex_thread=prepared.has_codex_thread,
         advanced=request.advanced,
         control=control,
     )

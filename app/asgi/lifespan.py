@@ -70,6 +70,9 @@ async def shutdown_bundle(bundle: ApplicationBundle) -> None:
         await bundle.agent_runtime.shutdown()
         bundle.agent_runtime = None
         bundle.flask_app.config["VITALITY_AGENT_RUNTIME_SNAPSHOT"] = None
+    from app.codex.client import close_shared_client
+
+    await close_shared_client()
     if bundle.socketio is not None:
         await bundle.socketio.shutdown()
     bundle.logger.info(

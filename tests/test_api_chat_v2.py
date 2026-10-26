@@ -26,6 +26,14 @@ def _sse_events(response: requests.Response) -> list[dict]:
 
 
 @pytest.fixture(scope="session")
+def chat_auth_headers() -> dict[str, str]:
+    access_token = os.getenv("SUPABASE_ACCESS_TOKEN")
+    if not access_token:
+        pytest.skip("SUPABASE_ACCESS_TOKEN is not set; authenticated Chat is required")
+    return {"Authorization": f"Bearer {access_token}"}
+
+
+@pytest.fixture(scope="session")
 def api_base_url() -> str:
     """Return the explicitly selected running API server, or skip this live check."""
     base_url = os.getenv("API_BASE_URL")
@@ -34,7 +42,7 @@ def api_base_url() -> str:
     return base_url.rstrip("/")
 
 
-def test_chat_v2_returns_text_for_hello(api_base_url: str):
+def test_chat_v2_returns_text_for_hello(api_base_url: str, chat_auth_headers: dict[str, str]):
     """A non-search turn can fall back to the legacy chat path and stream text."""
     payload = {
         "client_request_id": str(uuid4()),
@@ -43,7 +51,12 @@ def test_chat_v2_returns_text_for_hello(api_base_url: str):
     }
 
     try:
-        response = requests.post(f"{api_base_url}/chat/v2", json=payload, timeout=180)
+        response = requests.post(
+            f"{api_base_url}/chat/v2",
+            json=payload,
+            headers=chat_auth_headers,
+            timeout=180,
+        )
     except requests.RequestException as error:
         pytest.fail(f"Could not reach API_BASE_URL at /chat/v2: {error}")
 
@@ -55,7 +68,7 @@ def test_chat_v2_returns_text_for_hello(api_base_url: str):
     assert any(event["type"] == "text.delta" for event in events)
 
 
-def test_chat_v2_finds_papers(api_base_url: str):
+def test_chat_v2_finds_papers(api_base_url: str, chat_auth_headers: dict[str, str]):
     """A paper-finding turn reaches v2 and emits the paper-panel payload."""
     payload = {
         "client_request_id": str(uuid4()),
@@ -68,7 +81,12 @@ def test_chat_v2_finds_papers(api_base_url: str):
     }
 
     try:
-        response = requests.post(f"{api_base_url}/chat/v2", json=payload, timeout=180)
+        response = requests.post(
+            f"{api_base_url}/chat/v2",
+            json=payload,
+            headers=chat_auth_headers,
+            timeout=180,
+        )
     except requests.RequestException as error:
         pytest.fail(f"Could not reach API_BASE_URL at /chat/v2: {error}")
 

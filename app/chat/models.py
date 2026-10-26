@@ -38,6 +38,10 @@ class ChatUnavailableError(ChatDomainError):
     status_code = 503
 
 
+class ChatConflictError(ChatDomainError):
+    status_code = 409
+
+
 @dataclass(frozen=True)
 class ChatTurnRequest:
     """Validated Chat turn input, independent of Flask/FastAPI."""
@@ -71,3 +75,4 @@ class PreparedChatTurn:
     request: ChatTurnRequest
     user_id: str | None
     history: list[dict[str, str]]
+    has_codex_thread: bool = False

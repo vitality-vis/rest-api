@@ -19,8 +19,8 @@ def save_assistant_result(
     message_id: str | None,
     context: dict[str, object] | None = None,
     log: logging.Logger | None = None,
-) -> None:
-    """Persist assistant completed/failed. Log failures without raising."""
+) -> bool:
+    """Persist assistant terminal state and report whether it succeeded."""
     active_logger = log or logger
     try:
         # created_at is when the reply finishes — leave unset so DB uses now().
@@ -34,5 +34,7 @@ def save_assistant_result(
             message_id=message_id,
             context=context,
         )
+        return True
     except ChatPersistenceError as error:
         active_logger.error("Could not save assistant chat message: %s", error)
+        return False

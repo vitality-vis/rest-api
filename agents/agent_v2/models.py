@@ -129,6 +129,7 @@ class V2ChatRequest:
     assistant_message_id: str | None = None
     requested_mode: Literal["auto", "chat", "search", "synthesis"] = "auto"
     user_id: str | None = None
+    has_codex_thread: bool = False
     advanced: AdvancedSearchConfig = field(default_factory=AdvancedSearchConfig)
     # Mutable cancel/deadline token; omitted from equality by being optional.
     control: object | None = None
