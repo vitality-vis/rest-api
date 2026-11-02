@@ -12,7 +12,6 @@ from service.paper_registry import (
 )
 
 DetailLevel = Literal["auto", "titles", "abstracts"]
-SamplingMode = Literal["representative", "map_coverage", "selected_order"]
 
 MAX_TITLE_RECORDS = 100
 MAX_ABSTRACT_RECORDS = 20
@@ -30,7 +29,6 @@ class SelectedPaperEvidenceError(RuntimeError):
 class EvidenceRequest:
     detail_level: DetailLevel = "auto"
     limit: int | None = None
-    sampling: SamplingMode = "representative"
     paper_ids: list[str] | None = None
     group: str = "all"
 
@@ -53,7 +51,9 @@ def inspect_selected_papers(
 
     groups = _normalize_groups(selected, selected_paper_groups)
     sampled_ids, sample_policy = _choose_ids(
-        selected, min(len(selected), MAX_INSPECTION_RECORDS), "representative"
+        selected,
+        min(len(selected), MAX_INSPECTION_RECORDS),
+        groups=groups,
     )
     papers = _resolve(user_id=user_id, paper_ids=sampled_ids)
     sampled = [_title_record(paper, include_availability=True) for paper in papers]
@@ -102,16 +102,14 @@ def get_selected_paper_evidence(
     detail = request.detail_level
     if detail not in {"auto", "titles", "abstracts"}:
         raise SelectedPaperEvidenceError("detail_level must be auto, titles, or abstracts.")
-    if request.sampling not in {"representative", "map_coverage", "selected_order"}:
-        raise SelectedPaperEvidenceError(
-            "sampling must be representative, map_coverage, or selected_order."
-        )
-
     title_limit = _bounded_limit(request.limit, maximum=MAX_TITLE_RECORDS)
     if detail == "abstracts":
         title_limit = min(title_limit, MAX_ABSTRACT_RECORDS)
     chosen_ids, sampling_policy = _choose_ids(
-        candidates, title_limit, request.sampling
+        candidates,
+        title_limit,
+        group=request.group,
+        groups=groups,
     )
     resolved = _resolve(user_id=user_id, paper_ids=chosen_ids)
 
@@ -150,7 +148,6 @@ def get_selected_paper_evidence(
         "detailed_count": detailed_count,
         "omitted_count": max(0, len(candidates) - len(records)),
         "detail_level": detail,
-        "sampling": request.sampling,
         "sampling_policy": sampling_policy,
         "policy": {
             "max_titles": MAX_TITLE_RECORDS,
@@ -226,19 +223,90 @@ def _bounded_limit(value: int | None, *, maximum: int) -> int:
 
 
 def _choose_ids(
-    ids: list[str], limit: int, sampling: SamplingMode
+    ids: list[str],
+    limit: int,
+    *,
+    group: str = "all",
+    groups: dict[str, list[str]] | None = None,
 ) -> tuple[list[str], str]:
     if len(ids) <= limit:
         return ids, "complete_selection"
-    if sampling == "selected_order":
-        return ids[:limit], "selected_order"
-    spatial = _map_coverage_ids(ids, limit)
-    if spatial is not None:
-        return spatial, "deterministic_map_coverage"
+    if group.casefold() == "map":
+        return _map_coverage_or_even(ids, limit)
+    if group != "all" or not groups:
+        return _even_coverage(ids, limit)
+    return _stratified_representative_ids(ids, limit, groups)
+
+
+def _even_coverage(ids: list[str], limit: int) -> tuple[list[str], str]:
     return (
         [ids[index] for index in _sample_positions(len(ids), limit)],
         "deterministic_even_coverage",
     )
+
+
+def _map_coverage_or_even(ids: list[str], limit: int) -> tuple[list[str], str]:
+    spatial = _map_coverage_ids(ids, limit)
+    if spatial is not None:
+        return spatial, "deterministic_map_coverage"
+    return _even_coverage(ids, limit)
+
+
+def _stratified_representative_ids(
+    ids: list[str], limit: int, groups: dict[str, list[str]]
+) -> tuple[list[str], str]:
+    """Sample named sources separately so a union does not hide smaller groups."""
+    candidates = set(ids)
+    assigned: set[str] = set()
+    strata: list[tuple[str, list[str]]] = []
+    # Assign overlap to Map first so those papers retain spatial sampling semantics.
+    ordered_groups = sorted(
+        groups.items(), key=lambda item: (item[0].casefold() != "map",)
+    )
+    for name, group_ids in ordered_groups:
+        stratum = [
+            paper_id
+            for paper_id in group_ids
+            if paper_id in candidates and paper_id not in assigned
+        ]
+        if stratum:
+            strata.append((name, stratum))
+            assigned.update(stratum)
+    ungrouped = [paper_id for paper_id in ids if paper_id not in assigned]
+    if ungrouped:
+        strata.append(("__ungrouped__", ungrouped))
+    if len(strata) == 1:
+        name, stratum = strata[0]
+        if name.casefold() == "map":
+            return _map_coverage_or_even(stratum, limit)
+        return _even_coverage(stratum, limit)
+
+    quotas = _stratum_quotas([len(stratum) for _, stratum in strata], limit)
+    chosen: list[str] = []
+    for (name, stratum), quota in zip(strata, quotas, strict=True):
+        if name.casefold() == "map":
+            sampled, _ = _map_coverage_or_even(stratum, quota)
+        else:
+            sampled, _ = _even_coverage(stratum, quota)
+        chosen.extend(sampled)
+    return chosen, "deterministic_stratified_coverage"
+
+
+def _stratum_quotas(sizes: list[int], limit: int) -> list[int]:
+    """Allocate proportionally while representing every stratum when possible."""
+    quotas = [0] * len(sizes)
+    if limit >= len(sizes):
+        quotas = [1] * len(sizes)
+    for _ in range(limit - sum(quotas)):
+        candidates = [index for index, size in enumerate(sizes) if quotas[index] < size]
+        if not candidates:
+            break
+        index = max(
+            candidates,
+            key=lambda item: (limit * sizes[item] / sum(sizes) - quotas[item], -item),
+        )
+        quotas[index] += 1
+    return quotas
 
 
 def _umap_points() -> list[dict[str, object]]:
@@ -250,6 +318,8 @@ def _umap_points() -> list[dict[str, object]]:
 
 def _map_coverage_ids(ids: list[str], limit: int) -> list[str] | None:
     """Greedily cover UMAP space; deterministically fill missing-coordinate slots."""
+    if limit <= 0:
+        return []
     wanted = set(ids)
     coordinates: dict[str, tuple[float, float]] = {}
     for point in _umap_points():

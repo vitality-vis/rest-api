@@ -181,7 +181,7 @@ def test_named_group_rejects_ids_outside_group(monkeypatch):
         )
 
 
-def test_representative_sampling_uses_map_space_coverage(monkeypatch):
+def test_map_group_representative_sampling_uses_map_space_coverage(monkeypatch):
     seen: list[dict[str, object]] = []
     _install_resolver(monkeypatch, seen)
     points = [
@@ -198,6 +198,9 @@ def test_representative_sampling_uses_map_space_coverage(monkeypatch):
     result = get_selected_paper_evidence(
         user_id=None,
         selected_paper_ids=[f"paper-{index}" for index in range(10)],
+        selected_paper_groups={
+            "map": [f"paper-{index}" for index in range(10)]
+        },
         request=EvidenceRequest(detail_level="titles", limit=3),
     )
 
@@ -220,3 +223,91 @@ def test_representative_sampling_falls_back_without_map_coordinates(monkeypatch)
 
     assert result["sampling_policy"] == "deterministic_even_coverage"
     assert seen[0]["paper_ids"] == ["paper-0", "paper-4", "paper-9"]
+
+
+def test_library_group_representative_sampling_uses_even_coverage(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+    monkeypatch.setattr(
+        "service.selected_paper_evidence._umap_points",
+        lambda: [
+            {
+                "ID": f"paper-{index}",
+                "specter_umap": {"x": float(index), "y": 0.0},
+            }
+            for index in range(10)
+        ],
+    )
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=[f"paper-{index}" for index in range(10)],
+        selected_paper_groups={
+            "library": [f"paper-{index}" for index in range(10)]
+        },
+        request=EvidenceRequest(detail_level="titles", group="library", limit=3),
+    )
+
+    assert result["sampling_policy"] == "deterministic_even_coverage"
+    assert seen[0]["paper_ids"] == ["paper-0", "paper-4", "paper-9"]
+
+
+def test_all_groups_representative_sampling_is_stratified(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+    monkeypatch.setattr(
+        "service.selected_paper_evidence._umap_points",
+        lambda: [
+            {
+                "ID": f"paper-{index}",
+                "specter_umap": {"x": float(index), "y": 0.0},
+            }
+            for index in range(8)
+        ],
+    )
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=[f"paper-{index}" for index in range(10)],
+        selected_paper_groups={
+            "map": [f"paper-{index}" for index in range(8)],
+            "library": ["paper-8", "paper-9"],
+        },
+        request=EvidenceRequest(detail_level="titles", limit=3),
+    )
+
+    assert result["sampling_policy"] == "deterministic_stratified_coverage"
+    assert len(seen[0]["paper_ids"]) == 3
+    assert set(seen[0]["paper_ids"]) & {"paper-8", "paper-9"}
+    assert len(set(seen[0]["paper_ids"]) & {f"paper-{index}" for index in range(8)}) == 2
+
+
+def test_stratified_sampling_respects_limit_when_map_quota_is_zero(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+    monkeypatch.setattr(
+        "service.selected_paper_evidence._umap_points",
+        lambda: [
+            {
+                "ID": "paper-0",
+                "specter_umap": {"x": 0.0, "y": 0.0},
+            },
+            {
+                "ID": "paper-1",
+                "specter_umap": {"x": 1.0, "y": 0.0},
+            },
+        ],
+    )
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=[f"paper-{index}" for index in range(102)],
+        selected_paper_groups={
+            "map": ["paper-0", "paper-1"],
+            "library": [f"paper-{index}" for index in range(2, 102)],
+        },
+        request=EvidenceRequest(detail_level="titles", limit=1),
+    )
+
+    assert result["returned_count"] == 1
+    assert seen[0]["paper_ids"] == ["paper-2"]

@@ -87,11 +87,6 @@ DYNAMIC_TOOLS = [
                     "enum": ["auto", "titles", "abstracts"],
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                "sampling": {
-                    "type": "string",
-                    "enum": ["representative", "map_coverage", "selected_order"],
-                    "description": "representative defaults to deterministic Map-space coverage when coordinates are available.",
-                },
                 "paper_ids": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -347,7 +342,6 @@ def _get_selected_paper_evidence(
             request=EvidenceRequest(
                 detail_level=str(payload.get("detail_level") or "auto"),
                 limit=payload.get("limit"),
-                sampling=str(payload.get("sampling") or "representative"),
                 paper_ids=paper_ids,
                 group=str(payload.get("group") or "all"),
             ),
