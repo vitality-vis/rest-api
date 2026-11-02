@@ -89,7 +89,8 @@ DYNAMIC_TOOLS = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                 "sampling": {
                     "type": "string",
-                    "enum": ["representative", "selected_order"],
+                    "enum": ["representative", "map_coverage", "selected_order"],
+                    "description": "representative defaults to deterministic Map-space coverage when coordinates are available.",
                 },
                 "paper_ids": {
                     "type": "array",

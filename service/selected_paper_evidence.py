@@ -12,7 +12,7 @@ from service.paper_registry import (
 )
 
 DetailLevel = Literal["auto", "titles", "abstracts"]
-SamplingMode = Literal["representative", "selected_order"]
+SamplingMode = Literal["representative", "map_coverage", "selected_order"]
 
 MAX_TITLE_RECORDS = 100
 MAX_ABSTRACT_RECORDS = 20
@@ -52,7 +52,9 @@ def inspect_selected_papers(
         }
 
     groups = _normalize_groups(selected, selected_paper_groups)
-    sampled_ids = _sample_ids(selected, min(len(selected), MAX_INSPECTION_RECORDS))
+    sampled_ids, sample_policy = _choose_ids(
+        selected, min(len(selected), MAX_INSPECTION_RECORDS), "representative"
+    )
     papers = _resolve(user_id=user_id, paper_ids=sampled_ids)
     sampled = [_title_record(paper, include_availability=True) for paper in papers]
     years = [
@@ -64,7 +66,7 @@ def inspect_selected_papers(
         "selected_count": len(selected),
         "groups": {name: {"count": len(ids)} for name, ids in groups.items()},
         "sampled_count": len(sampled),
-        "sample_policy": "deterministic_even_coverage",
+        "sample_policy": sample_policy,
         "sampled_papers": sampled,
         "sample_year_range": [min(years), max(years)] if years else None,
         "instruction": (
@@ -100,15 +102,17 @@ def get_selected_paper_evidence(
     detail = request.detail_level
     if detail not in {"auto", "titles", "abstracts"}:
         raise SelectedPaperEvidenceError("detail_level must be auto, titles, or abstracts.")
-    if request.sampling not in {"representative", "selected_order"}:
+    if request.sampling not in {"representative", "map_coverage", "selected_order"}:
         raise SelectedPaperEvidenceError(
-            "sampling must be representative or selected_order."
+            "sampling must be representative, map_coverage, or selected_order."
         )
 
     title_limit = _bounded_limit(request.limit, maximum=MAX_TITLE_RECORDS)
     if detail == "abstracts":
         title_limit = min(title_limit, MAX_ABSTRACT_RECORDS)
-    chosen_ids = _choose_ids(candidates, title_limit, request.sampling)
+    chosen_ids, sampling_policy = _choose_ids(
+        candidates, title_limit, request.sampling
+    )
     resolved = _resolve(user_id=user_id, paper_ids=chosen_ids)
 
     if detail == "auto":
@@ -147,6 +151,7 @@ def get_selected_paper_evidence(
         "omitted_count": max(0, len(candidates) - len(records)),
         "detail_level": detail,
         "sampling": request.sampling,
+        "sampling_policy": sampling_policy,
         "policy": {
             "max_titles": MAX_TITLE_RECORDS,
             "max_abstracts": MAX_ABSTRACT_RECORDS,
@@ -220,16 +225,89 @@ def _bounded_limit(value: int | None, *, maximum: int) -> int:
     return min(value, maximum)
 
 
-def _choose_ids(ids: list[str], limit: int, sampling: SamplingMode) -> list[str]:
+def _choose_ids(
+    ids: list[str], limit: int, sampling: SamplingMode
+) -> tuple[list[str], str]:
     if len(ids) <= limit:
-        return ids
+        return ids, "complete_selection"
     if sampling == "selected_order":
-        return ids[:limit]
-    return [ids[index] for index in _sample_positions(len(ids), limit)]
+        return ids[:limit], "selected_order"
+    spatial = _map_coverage_ids(ids, limit)
+    if spatial is not None:
+        return spatial, "deterministic_map_coverage"
+    return (
+        [ids[index] for index in _sample_positions(len(ids), limit)],
+        "deterministic_even_coverage",
+    )
 
 
-def _sample_ids(ids: list[str], limit: int) -> list[str]:
-    return _choose_ids(ids, limit, "representative")
+def _umap_points() -> list[dict[str, object]]:
+    from service.static_cache import cached_data
+
+    points = cached_data.get_umap_points() or []
+    return [point for point in points if isinstance(point, dict)]
+
+
+def _map_coverage_ids(ids: list[str], limit: int) -> list[str] | None:
+    """Greedily cover UMAP space; deterministically fill missing-coordinate slots."""
+    wanted = set(ids)
+    coordinates: dict[str, tuple[float, float]] = {}
+    for point in _umap_points():
+        if not isinstance(point, dict):
+            continue
+        paper_id = point.get("ID")
+        raw = point.get("specter_umap") or point.get("umap")
+        if not isinstance(paper_id, str) or paper_id not in wanted or not isinstance(raw, dict):
+            continue
+        x, y = raw.get("x"), raw.get("y")
+        if (
+            isinstance(x, (int, float))
+            and not isinstance(x, bool)
+            and isinstance(y, (int, float))
+            and not isinstance(y, bool)
+        ):
+            coordinates[paper_id] = (float(x), float(y))
+    # A single mapped point cannot describe spatial coverage.
+    if len(coordinates) < 2:
+        return None
+
+    mapped = [paper_id for paper_id in ids if paper_id in coordinates]
+    order = {paper_id: index for index, paper_id in enumerate(ids)}
+    target = min(limit, len(mapped))
+    centroid = (
+        sum(coordinates[paper_id][0] for paper_id in mapped) / len(mapped),
+        sum(coordinates[paper_id][1] for paper_id in mapped) / len(mapped),
+    )
+    first = min(
+        mapped,
+        key=lambda paper_id: (
+            (coordinates[paper_id][0] - centroid[0]) ** 2
+            + (coordinates[paper_id][1] - centroid[1]) ** 2,
+            order[paper_id],
+        ),
+    )
+    chosen = [first]
+    remaining = set(mapped) - {first}
+    while len(chosen) < target:
+        next_id = max(
+            remaining,
+            key=lambda paper_id: (
+                min(
+                    (coordinates[paper_id][0] - coordinates[selected][0]) ** 2
+                    + (coordinates[paper_id][1] - coordinates[selected][1]) ** 2
+                    for selected in chosen
+                ),
+                -order[paper_id],
+            ),
+        )
+        chosen.append(next_id)
+        remaining.remove(next_id)
+
+    if len(chosen) < limit:
+        unmapped = [paper_id for paper_id in ids if paper_id not in coordinates]
+        slots = min(limit - len(chosen), len(unmapped))
+        chosen.extend(unmapped[index] for index in _sample_positions(len(unmapped), slots))
+    return chosen
 
 
 def _sample_positions(count: int, limit: int) -> list[int]:

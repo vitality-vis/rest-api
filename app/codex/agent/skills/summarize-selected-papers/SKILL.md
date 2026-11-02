@@ -5,7 +5,7 @@ description: Summarizes the user's current paper selection adaptively. Use when 
 
 # Summarize selected papers
 
-Use the selected-paper evidence tools and generate the final answer yourself.
+Use the selected-paper evidence tools and generate the final answer yourself. Lead with the substantive summary, not a description of the workflow or tools you are about to use. Do not announce that you are applying a summarization workflow, mapping the scope, or retrieving evidence.
 
 ## Evidence
 

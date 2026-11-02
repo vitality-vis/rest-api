@@ -179,3 +179,44 @@ def test_named_group_rejects_ids_outside_group(monkeypatch):
                 detail_level="titles", group="library", paper_ids=["paper-2"]
             ),
         )
+
+
+def test_representative_sampling_uses_map_space_coverage(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+    points = [
+        {
+            "ID": f"paper-{index}",
+            "specter_umap": {"x": float(index), "y": 0.0},
+        }
+        for index in range(10)
+    ]
+    monkeypatch.setattr(
+        "service.selected_paper_evidence._umap_points", lambda: points
+    )
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=[f"paper-{index}" for index in range(10)],
+        request=EvidenceRequest(detail_level="titles", limit=3),
+    )
+
+    assert result["sampling_policy"] == "deterministic_map_coverage"
+    assert set(seen[0]["paper_ids"]) == {"paper-0", "paper-4", "paper-9"}
+
+
+def test_representative_sampling_falls_back_without_map_coordinates(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+    monkeypatch.setattr(
+        "service.selected_paper_evidence._umap_points", lambda: []
+    )
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=[f"paper-{index}" for index in range(10)],
+        request=EvidenceRequest(detail_level="titles", limit=3),
+    )
+
+    assert result["sampling_policy"] == "deterministic_even_coverage"
+    assert seen[0]["paper_ids"] == ["paper-0", "paper-4", "paper-9"]
