@@ -79,8 +79,10 @@ class CodexClient:
         self.workspace = tempfile.TemporaryDirectory(prefix="vitality-codex-")
         os.makedirs(config.CODEX_HOME, exist_ok=True)
         from app.codex.azure_config import subprocess_env, write_project_codex_config
+        from app.codex.resources import install_managed_skills
 
         write_project_codex_config(config.CODEX_HOME)
+        install_managed_skills(config.CODEX_HOME)
         env = subprocess_env(os.environ.copy())
         self.process = subprocess.Popen(
             self.command,

@@ -14,7 +14,6 @@ from app.chat.run_control import RunAborted, RunControl
 from app.codex.runner import DEVELOPER_INSTRUCTIONS, _conversation_locks, run
 from app.codex.threads import _THREAD_SCHEMA_VERSION, get_thread_id, put_thread_id
 from app.codex.tools import DYNAMIC_TOOLS, execute_tool
-from service.selected_paper_tool import SelectedPaperAnswer
 
 
 class FakeCodex:
@@ -36,8 +35,8 @@ class FakeCodex:
                 {
                     "threadId": "thr-1",
                     "callId": "call-1",
-                    "tool": "answer_selected_papers",
-                    "arguments": {"question": "What method is used?"},
+                    "tool": "get_selected_paper_evidence",
+                    "arguments": {"detail_level": "auto"},
                 }
             )
             self.listener(
@@ -81,7 +80,12 @@ def test_research_instructions_favor_natural_curated_answers():
     assert "private working evidence" in instructions
     assert "only shows papers after you call present_papers" in instructions
     assert "Reformulate, broaden, or narrow queries" in instructions
-    assert "preserve every [[ID:...]] citation exactly" in instructions
+    assert "Generate the final answer yourself" in instructions
+    assert "adapt the response to the selection" in instructions
+    assert "do not summarize papers one by one" in instructions
+    assert "Do not force methods/findings/differences" in instructions
+    assert "use web search" in instructions
+    assert "do not say they were added to the user's library" in instructions
 
 
 def test_search_tool_describes_results_as_private_working_evidence():
@@ -95,23 +99,37 @@ def test_search_tool_describes_results_as_private_working_evidence():
 
 
 def test_codex_thread_schema_invalidates_old_research_instructions():
-    assert _THREAD_SCHEMA_VERSION == "research-v3"
+    assert _THREAD_SCHEMA_VERSION == "research-v8"
 
 
-def test_codex_runner_relays_selected_paper_answer(monkeypatch):
+def test_turn_text_bounds_large_selection_ids():
+    from app.codex.runner import _turn_text
+
+    request = SimpleNamespace(
+        text="Summarize these papers",
+        selected_paper_ids=[f"private-paper-{index}" for index in range(500)],
+    )
+    rendered = _turn_text(request, history=[])
+
+    assert "Current paper selection: 500 papers" in rendered
+    assert "private-paper-0" not in rendered
+    assert "selected-paper tools" in rendered
+
+
+def test_codex_runner_returns_selected_paper_evidence(monkeypatch):
     seen: dict[str, object] = {}
 
-    def fake_answer(**kwargs):
+    def fake_evidence(**kwargs):
         seen.update(kwargs)
-        return SelectedPaperAnswer(
-            answer="It uses interviews [[ID:paper-1]].",
-            evidence="full_text",
-            paper_ids=["paper-1"],
-            full_text_paper_ids=["paper-1"],
-        )
+        return {
+            "selected_count": 1,
+            "returned_count": 1,
+            "detailed_count": 1,
+            "papers": [{"paper_id": "paper-1", "title": "Paper", "abstract": "Evidence"}],
+        }
 
     monkeypatch.setattr(
-        "service.selected_paper_tool.answer_selected_papers", fake_answer
+        "service.selected_paper_tool.get_selected_paper_evidence", fake_evidence
     )
     request = SimpleNamespace(
         text="What method is used?",
@@ -126,16 +144,16 @@ def test_codex_runner_relays_selected_paper_answer(monkeypatch):
     events = asyncio.run(collect(run(request, client=fake)))
 
     assert seen["user_id"] == "user-1"
-    assert seen["paper_ids"] == ["paper-1"]
+    assert seen["selected_paper_ids"] == ["paper-1"]
     thread_params = next(params for method, params in fake.requests if method == "thread/start")
     turn_params = next(params for method, params in fake.requests if method == "turn/start")
     assert thread_params["ephemeral"] is True
     assert thread_params["sandbox"] == "read-only"
-    assert turn_params["sandboxPolicy"] == {"type": "readOnly"}
+    assert turn_params["sandboxPolicy"] == {"type": "readOnly", "networkAccess": True}
     assert "Earlier question" in turn_params["input"][0]["text"]
     assert any(isinstance(event, TextDelta) and "Grounded answer" in event.text for event in events)
     assert any(
-        isinstance(event, AgentAction) and event.action == "answer.selected_papers"
+        isinstance(event, AgentAction) and event.action == "get.selected_paper_evidence"
         for event in events
     )
 
@@ -143,13 +161,8 @@ def test_codex_runner_relays_selected_paper_answer(monkeypatch):
 def test_conversation_reuses_one_codex_thread(tmp_path, monkeypatch):
     monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "service.selected_paper_tool.answer_selected_papers",
-        lambda **_kwargs: SelectedPaperAnswer(
-            answer="ok",
-            evidence="metadata",
-            paper_ids=[],
-            full_text_paper_ids=[],
-        ),
+        "service.selected_paper_tool.get_selected_paper_evidence",
+        lambda **_kwargs: {"papers": [], "returned_count": 0, "detailed_count": 0},
     )
     request = SimpleNamespace(
         text="What about the follow-up?",
@@ -578,6 +591,48 @@ def test_reasoning_lifecycle_emits_activity_without_private_content():
             "method": method,
             "params": {"delta": "Private reasoning content"},
         }) is None
+
+
+def test_web_search_activity_shows_the_query_without_results():
+    from app.codex.runner import _event_from_notification
+
+    completed = _event_from_notification({
+        "method": "item/completed",
+        "params": {
+            "item": {
+                "type": "webSearch",
+                "id": "search-1",
+                "query": "survey papers",
+                "results": [{"url": "https://example.com", "title": "hidden"}],
+            }
+        },
+    })
+    assert completed == AgentAction(
+        action_id="web-search-search-1",
+        action="web.search",
+        status="completed",
+        data={"query": "survey papers"},
+    )
+    started = _event_from_notification({
+        "method": "item/started",
+        "params": {
+            "item": {
+                "type": "webSearch",
+                "id": "search-2",
+                "action": {"type": "search", "query": "openalex doi"},
+            }
+        },
+    })
+    assert started == AgentAction(
+        action_id="web-search-search-2",
+        action="web.search",
+        status="started",
+        data={"query": "openalex doi"},
+    )
+    assert _event_from_notification({
+        "method": "item/started",
+        "params": {"item": {"type": "webSearch"}},
+    }) is None
 
 
 def test_non_reasoning_and_malformed_items_do_not_emit_thinking():

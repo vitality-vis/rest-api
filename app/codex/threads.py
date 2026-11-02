@@ -10,7 +10,7 @@ import config
 
 _lock = threading.Lock()
 # Bump when thread-scoped instructions or dynamic tool schemas change.
-_THREAD_SCHEMA_VERSION = "research-v3"
+_THREAD_SCHEMA_VERSION = "research-v8"
 
 
 def _path() -> Path:

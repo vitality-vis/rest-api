@@ -56,20 +56,47 @@ DYNAMIC_TOOLS = [
     },
     {
         "type": "function",
-        "name": "answer_selected_papers",
+        "name": "inspect_selected_papers",
         "description": (
-            "Answer a question about specific papers. Full text is used only "
-            "when the authenticated user has indexed it; otherwise the answer "
-            "uses title, abstract, and metadata. Preserve [[ID:...]] citations "
-            "exactly when relaying the result."
+            "Inspect the current paper selection without loading all abstracts. "
+            "Returns the selected count and a small deterministic metadata sample. "
+            "Use this first when the selection is large or its scope is unclear."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_selected_paper_evidence",
+        "description": (
+            "Retrieve bounded metadata evidence for papers in the current selection. "
+            "You generate the answer yourself from the returned evidence. Use auto for "
+            "normal questions, titles for broad overviews, or abstracts for detailed "
+            "analysis. You may request a selected subset by ID. The server enforces "
+            "selection scope and evidence budgets."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "question": {"type": "string"},
-                "paper_ids": {"type": "array", "items": {"type": "string"}},
+                "detail_level": {
+                    "type": "string",
+                    "enum": ["auto", "titles", "abstracts"],
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "sampling": {
+                    "type": "string",
+                    "enum": ["representative", "selected_order"],
+                },
+                "paper_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 100,
+                },
             },
-            "required": ["question"],
             "additionalProperties": False,
         },
     },
@@ -117,8 +144,13 @@ def execute_tool(
                 candidates=candidates,
                 presented_paper_ids=presented_paper_ids,
             )
-        elif tool == "answer_selected_papers":
-            result = _answer_papers(
+        elif tool == "inspect_selected_papers":
+            result = _inspect_selected_papers(
+                user_id=user_id,
+                selected_paper_ids=selected_paper_ids,
+            )
+        elif tool == "get_selected_paper_evidence":
+            result = _get_selected_paper_evidence(
                 payload,
                 user_id=user_id,
                 selected_paper_ids=selected_paper_ids,
@@ -257,43 +289,56 @@ def _present_papers(
     )
 
 
-def _answer_papers(
+def _inspect_selected_papers(
+    *, user_id: str | None, selected_paper_ids: list[str]
+) -> dict[str, object]:
+    from service.selected_paper_tool import (
+        SelectedPaperToolError,
+        inspect_selected_papers,
+    )
+
+    try:
+        overview = inspect_selected_papers(
+            user_id=user_id,
+            selected_paper_ids=selected_paper_ids,
+        )
+    except SelectedPaperToolError as error:
+        return tool_result(str(error), success=False)
+    return tool_result(json.dumps(overview, ensure_ascii=False), success=True)
+
+
+def _get_selected_paper_evidence(
     payload: dict[str, Any],
     *,
     user_id: str | None,
     selected_paper_ids: list[str],
 ) -> dict[str, object]:
     from service.selected_paper_tool import (
+        EvidenceRequest,
         SelectedPaperToolError,
-        answer_selected_papers,
+        get_selected_paper_evidence,
     )
 
-    question = str(payload.get("question") or "").strip()
     requested_ids = payload.get("paper_ids")
     paper_ids = (
         [str(item).strip() for item in requested_ids if str(item).strip()]
-        if isinstance(requested_ids, list) and requested_ids
-        else list(selected_paper_ids)
+        if isinstance(requested_ids, list)
+        else None
     )
     try:
-        answered = answer_selected_papers(
+        evidence = get_selected_paper_evidence(
             user_id=user_id,
-            question=question,
-            paper_ids=paper_ids,
+            selected_paper_ids=selected_paper_ids,
+            request=EvidenceRequest(
+                detail_level=str(payload.get("detail_level") or "auto"),
+                limit=payload.get("limit"),
+                sampling=str(payload.get("sampling") or "representative"),
+                paper_ids=paper_ids,
+            ),
         )
     except SelectedPaperToolError as error:
         return tool_result(str(error), success=False)
-    return tool_result(
-        json.dumps(
-            {
-                "answer": answered.answer,
-                "evidence": answered.evidence,
-                "paper_ids": answered.paper_ids,
-            },
-            ensure_ascii=False,
-        ),
-        success=True,
-    )
+    return tool_result(json.dumps(evidence, ensure_ascii=False), success=True)
 
 
 def _arguments(value: object) -> dict[str, Any]:
@@ -317,10 +362,15 @@ def _started_action_data(
     if tool == "present_papers":
         requested = payload.get("paper_ids")
         return {"paperCount": len(requested) if isinstance(requested, list) else 0}
-    if tool == "answer_selected_papers":
+    if tool == "inspect_selected_papers":
+        return {"paperCount": len(selected_paper_ids)}
+    if tool == "get_selected_paper_evidence":
         requested = payload.get("paper_ids")
         paper_ids = requested if isinstance(requested, list) else selected_paper_ids
-        return {"paperCount": len(paper_ids)}
+        return {
+            "paperCount": len(paper_ids),
+            "detailLevel": str(payload.get("detail_level") or "auto"),
+        }
     return {}
 
 
@@ -346,13 +396,15 @@ def _completed_action_data(
     if tool == "present_papers":
         paper_ids = payload.get("presented_paper_ids")
         return {"paperCount": len(paper_ids)} if isinstance(paper_ids, list) else {}
-    if tool == "answer_selected_papers":
-        paper_ids = payload.get("paper_ids")
+    if tool == "inspect_selected_papers":
+        count = payload.get("selected_count")
+        return {"paperCount": count} if isinstance(count, int) else {}
+    if tool == "get_selected_paper_evidence":
         data: dict[str, object] = {}
-        if isinstance(paper_ids, list):
-            data["paperCount"] = len(paper_ids)
-        if payload.get("evidence") in {"metadata", "full_text"}:
-            data["evidence"] = payload["evidence"]
+        if isinstance(payload.get("returned_count"), int):
+            data["paperCount"] = payload["returned_count"]
+        if isinstance(payload.get("detailed_count"), int):
+            data["detailedCount"] = payload["detailed_count"]
         return data
     return {}
 
@@ -362,8 +414,10 @@ def _public_action(tool: str) -> str:
         return "search"
     if tool == "present_papers":
         return "present.papers"
-    if tool == "answer_selected_papers":
-        return "answer.selected_papers"
+    if tool == "inspect_selected_papers":
+        return "inspect.selected_papers"
+    if tool == "get_selected_paper_evidence":
+        return "get.selected_paper_evidence"
     return "tool"
 
 

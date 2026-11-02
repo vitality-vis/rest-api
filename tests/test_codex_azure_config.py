@@ -6,6 +6,7 @@ from pathlib import Path
 
 from app.codex.azure_config import (
     azure_base_url,
+    azure_codex_base_url,
     subprocess_env,
     write_project_codex_config,
 )
@@ -40,9 +41,13 @@ def test_write_project_codex_config(tmp_path, monkeypatch):
 
     assert 'model = "gpt-test-deploy"' in text
     assert 'model_provider = "azure"' in text
+    assert 'web_search = "cached"' in text
+    assert 'base_url = "https://example.openai.azure.com/openai/v1"' in text
+    assert "api-version" not in text
     assert 'env_key = "AZURE_OPENAI_API_KEY"' in text
     assert "secret-key" not in text
     assert azure_base_url() == "https://example.openai.azure.com/openai"
+    assert azure_codex_base_url() == "https://example.openai.azure.com/openai/v1"
 
     env = subprocess_env({})
     assert env["AZURE_OPENAI_API_KEY"] == "secret-key"

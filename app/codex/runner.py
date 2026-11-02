@@ -8,7 +8,7 @@ import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from app.chat.events import AgentAction, PapersResult, TextDelta
 from app.chat.run_control import RunControl
@@ -74,21 +74,9 @@ def _release_conversation_entry(
         if entry.users == 0 and _conversation_locks.get(key) is entry:
             del _conversation_locks[key]
 
-DEVELOPER_INSTRUCTIONS = """You are VitaLITy's collaborative research assistant. Respond like a thoughtful research colleague in a natural Codex conversation, not like a rigid search report.
+from app.codex.resources import load_developer_instructions
 
-Match the user's language and roughly the level of detail they appear to want. Lead with the useful answer, judgment, or recommendation. Do not narrate routine searches or tool use; the activity UI already shows that work. Use natural prose by default, with headings or bullets only when they genuinely make the answer clearer. Do not force a paper-by-paper template, fixed summary/limitations/next-steps sections, or a generic "Would you like me to...?" ending. Ask a follow-up only when it is genuinely needed or would be useful.
-
-For literature discovery, work autonomously and iteratively:
-- Use search_papers to inspect candidate papers from the VitaLITy corpus. Its results are private working evidence: the UI does not show papers from search_papers and only shows papers after you call present_papers.
-- Reflect on titles, abstracts, authors, keywords, venues, years, and citation counts. Judge relevance to the user's actual intent rather than equating keyword overlap with relevance.
-- Reformulate, broaden, or narrow queries when useful; switch among vector, bm25, and bool search as appropriate; or stop after one search. Do not run a fixed number of searches. Search again only when it would materially improve coverage or resolve uncertainty.
-- Curate with present_papers only the relevant paper IDs from this turn's search results, ordered best-first. Do not present every hit by default.
-- In the answer, explain and prioritize the strongest recommendations naturally, mentioning secondary papers more briefly. Be candid when evidence is weak, mixed, indirect, or leaves important gaps; do not pad the list.
-
-Use answer_selected_papers when the user asks about selected or identified papers. Relay its grounded answer and preserve every [[ID:...]] citation exactly.
-
-Never invent paper IDs, citations, metadata, file contents, or tool results. Do not use the shell, edit files, or ask for filesystem permissions.
-"""
+DEVELOPER_INSTRUCTIONS = load_developer_instructions()
 
 
 async def run(request: Any, *, client: CodexClient | None = None) -> AsyncIterator[object]:
@@ -157,7 +145,9 @@ async def _run_locked(
                 ],
                 "approvalPolicy": "never",
                 # thread/start uses kebab-case; turn/start sandboxPolicy uses camelCase.
-                "sandboxPolicy": {"type": "readOnly"},
+                # networkAccess stays on so Codex can offer hosted web search.
+                # The filesystem remains read-only.
+                "sandboxPolicy": {"type": "readOnly", "networkAccess": True},
             },
             timeout=30,
         )
@@ -265,9 +255,12 @@ def _load_history_for_recovery(request: Any) -> list[dict[str, str]]:
 
 def _turn_text(request: Any, *, history: list[dict[str, str]]) -> str:
     sections: list[str] = []
-    selected = [str(item) for item in request.selected_paper_ids or [] if item]
-    if selected:
-        sections.append("Selected paper IDs:\n" + "\n".join(f"- {item}" for item in selected))
+    selected_count = len({str(item) for item in request.selected_paper_ids or [] if item})
+    if selected_count:
+        sections.append(
+            f"Current paper selection: {selected_count} papers. "
+            "Use the selected-paper tools to inspect IDs and retrieve evidence."
+        )
     if history:
         rendered = [
             f"{item.get('role', 'user')}: {item.get('content', '')}"
@@ -328,6 +321,42 @@ async def _iter_turn_events(
         yield event
 
 
+def _web_search_query(item: dict[str, Any]) -> str:
+    """Return a short user-visible query, never search result payloads."""
+    query = item.get("query")
+    if isinstance(query, str) and query.strip():
+        return query.strip()[:200]
+    action = item.get("action")
+    if not isinstance(action, dict):
+        return ""
+    action_query = action.get("query")
+    if isinstance(action_query, str) and action_query.strip():
+        return action_query.strip()[:200]
+    queries = action.get("queries")
+    if not isinstance(queries, list):
+        return ""
+    parts = [str(value).strip() for value in queries if str(value).strip()]
+    return "; ".join(parts)[:200]
+
+
+def _web_search_action(method: str, item: dict[str, Any]) -> AgentAction | None:
+    item_id = item.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        return None
+    status: Literal["started", "completed", "failed"] = (
+        "started" if method == "item/started" else "completed"
+    )
+    if item.get("status") == "failed" or item.get("error"):
+        status = "failed"
+    query = _web_search_query(item)
+    return AgentAction(
+        action_id=f"web-search-{item_id}",
+        action="web.search",
+        status=status,
+        data={"query": query} if query else {},
+    )
+
+
 def _event_from_notification(message: object) -> object | None:
     if not isinstance(message, dict):
         return None
@@ -344,6 +373,8 @@ def _event_from_notification(message: object) -> object | None:
                     action="thinking",
                     status="started" if method == "item/started" else "completed",
                 )
+        if isinstance(item, dict) and item.get("type") == "webSearch":
+            return _web_search_action(method, item)
         return None
     if method == "item/agentMessage/delta":
         delta = params.get("delta")

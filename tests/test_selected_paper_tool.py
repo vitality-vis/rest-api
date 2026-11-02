@@ -1,128 +1,148 @@
-"""Tests for the trusted selected-paper tool boundary."""
+"""Tests for bounded selected-paper evidence exposed to Codex."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from dataclasses import dataclass
 
 import pytest
 
-from service.paper_qa import SCOPE_WARNING_END, SCOPE_WARNING_START, PaperQAError
 from service.selected_paper_tool import (
+    EvidenceRequest,
     SelectedPaperToolError,
-    answer_selected_papers,
+    get_selected_paper_evidence,
+    inspect_selected_papers,
 )
 
 
-def _plan(*, use_file_search: bool) -> SimpleNamespace:
-    return SimpleNamespace(
-        use_file_search=use_file_search,
-        metadata_paper_ids=["paper-1", "paper-2"],
-        file_search_paper_ids=["paper-1"] if use_file_search else [],
+@dataclass(frozen=True)
+class FakePaper:
+    paper_id: str
+    metadata: dict[str, object]
+    library_paper: dict[str, object] | None = None
+
+
+def _paper(paper_id: str, index: int) -> FakePaper:
+    return FakePaper(
+        paper_id=paper_id,
+        metadata={
+            "Title": f"Title {index}",
+            "Abstract": f"Abstract {index} " + ("x" * 3_000),
+            "Authors": [f"Author {index}"],
+            "Keywords": ["topic"],
+            "Source": "Venue",
+            "Year": 2000 + index,
+            "CitationCounts": index * 10,
+            "doi": f"10.test/{index}",
+        },
+        library_paper=(
+            {"vs_file_status": "completed", "azure_file_id": f"file-{index}"}
+            if index % 2 == 0
+            else None
+        ),
     )
 
 
-def test_authenticated_call_uses_existing_full_text_flow(monkeypatch):
-    calls: list[dict[str, object]] = []
-
-    def fake_plan(**kwargs):
-        calls.append({"plan": kwargs})
-        return _plan(use_file_search=True), ["metadata"]
-
-    def fake_answer(**kwargs):
-        calls.append({"answer": kwargs})
-        warning = (
-            f"{SCOPE_WARNING_START}"
-            '{"unexpected_file_ids":["file-x"]}'
-            f"{SCOPE_WARNING_END}"
-        )
-        return f"Grounded answer [[ID:paper-1]].\n\n{warning}"
+def _install_resolver(monkeypatch, seen):
+    def resolve(**kwargs):
+        seen.append(kwargs)
+        return [_paper(paper_id, int(paper_id.split("-")[-1])) for paper_id in kwargs["paper_ids"]]
 
     monkeypatch.setattr(
-        "service.selected_paper_tool.build_evidence_plan", fake_plan
+        "service.selected_paper_evidence.resolve_selected_papers", resolve
     )
-    monkeypatch.setattr("service.selected_paper_tool.answer", fake_answer)
 
-    result = answer_selected_papers(
+
+def test_inspection_resolves_only_a_representative_sample(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+
+    result = inspect_selected_papers(
         user_id="user-1",
-        question="  What method does this paper use?  ",
-        paper_ids=[" paper-1 ", "paper-2", "paper-1"],
-        model="gpt-test",
+        selected_paper_ids=[f"paper-{index}" for index in range(30)],
     )
 
-    assert result.answer == "Grounded answer [[ID:paper-1]]."
-    assert result.evidence == "full_text"
-    assert result.paper_ids == ["paper-1", "paper-2"]
-    assert result.full_text_paper_ids == ["paper-1"]
-    assert calls[0]["plan"]["user_id"] == "user-1"
-    assert calls[0]["plan"]["paper_ids"] == ["paper-1", "paper-2"]
-    assert calls[0]["plan"]["use_file_search"] is True
-    assert calls[1]["answer"]["text"] == "What method does this paper use?"
-    assert calls[1]["answer"]["use_file_search"] is True
-    assert calls[1]["answer"]["model"] == "gpt-test"
-    assert "file-1" not in result.answer
+    assert result["selected_count"] == 30
+    assert result["sampled_count"] == 12
+    assert len(seen[0]["paper_ids"]) == 12
+    assert seen[0]["paper_ids"][0] == "paper-0"
+    assert seen[0]["paper_ids"][-1] == "paper-29"
+    assert "abstract" not in result["sampled_papers"][0]
+    assert "full_text_available" in result["sampled_papers"][0]
 
 
-def test_guest_call_stays_on_metadata(monkeypatch):
-    seen: dict[str, object] = {}
+def test_auto_evidence_caps_records_and_abstracts(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
 
-    def fake_plan(**kwargs):
-        seen["plan"] = kwargs
-        return _plan(use_file_search=False), ["metadata"]
-
-    def fake_answer(**kwargs):
-        seen["answer"] = kwargs
-        return "Metadata answer [[ID:paper-1]]."
-
-    monkeypatch.setattr(
-        "service.selected_paper_tool.build_evidence_plan", fake_plan
+    result = get_selected_paper_evidence(
+        user_id="user-1",
+        selected_paper_ids=[f"paper-{index}" for index in range(150)],
+        request=EvidenceRequest(),
     )
-    monkeypatch.setattr("service.selected_paper_tool.answer", fake_answer)
 
-    result = answer_selected_papers(
+    assert result["selected_count"] == 150
+    assert result["returned_count"] == 100
+    assert result["detailed_count"] == 20
+    assert result["omitted_count"] == 50
+    assert len(seen[0]["paper_ids"]) == 100
+    assert sum("abstract" in paper for paper in result["papers"]) == 20
+    assert all(
+        len(paper["abstract"]) <= 1_000
+        for paper in result["papers"]
+        if "abstract" in paper
+    )
+    assert "Disclose" in result["instruction"]
+
+
+def test_abstract_request_is_capped_at_twenty(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+
+    result = get_selected_paper_evidence(
         user_id=None,
-        question="Summarise this paper",
-        paper_ids=["paper-1"],
+        selected_paper_ids=[f"paper-{index}" for index in range(40)],
+        request=EvidenceRequest(detail_level="abstracts", limit=100),
     )
 
-    assert result.evidence == "metadata"
-    assert result.full_text_paper_ids == []
-    assert seen["plan"]["use_file_search"] is False
-    assert seen["answer"]["use_file_search"] is False
+    assert result["returned_count"] == 20
+    assert result["detailed_count"] == 20
+    assert len(seen[0]["paper_ids"]) == 20
 
 
-def test_provider_error_is_converted_to_tool_error(monkeypatch):
-    monkeypatch.setattr(
-        "service.selected_paper_tool.build_evidence_plan",
-        lambda **_kwargs: (_plan(use_file_search=False), []),
+def test_small_selection_gets_larger_abstract_budget(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=["paper-1", "paper-2"],
+        request=EvidenceRequest(detail_level="abstracts"),
     )
 
-    def fail(**_kwargs):
-        raise PaperQAError("Full-text search failed. Please try again.")
+    assert result["policy"]["abstract_chars"] == 2_500
+    assert len(result["papers"][0]["abstract"]) == 2_500
 
-    monkeypatch.setattr("service.selected_paper_tool.answer", fail)
 
-    with pytest.raises(SelectedPaperToolError, match="Full-text search failed"):
-        answer_selected_papers(
+def test_requested_subset_must_be_inside_current_selection(monkeypatch):
+    _install_resolver(monkeypatch, [])
+
+    with pytest.raises(SelectedPaperToolError, match="current selection"):
+        get_selected_paper_evidence(
             user_id="user-1",
-            question="Explain the method",
-            paper_ids=["paper-1"],
+            selected_paper_ids=["paper-1"],
+            request=EvidenceRequest(paper_ids=["paper-2"]),
         )
 
 
-@pytest.mark.parametrize(
-    ("question", "paper_ids", "message"),
-    [
-        ("  ", ["paper-1"], "question is required"),
-        ("Explain", [], "at least one paper"),
-        ("Explain", [" "], "array of strings"),
-        ("Explain", "paper-1", "array of strings"),
-        ("Explain", [f"paper-{index}" for index in range(21)], "At most 20"),
-    ],
-)
-def test_rejects_invalid_tool_input(question, paper_ids, message):
-    with pytest.raises(SelectedPaperToolError, match=message):
-        answer_selected_papers(
-            user_id="user-1",
-            question=question,
-            paper_ids=paper_ids,
-        )
+def test_duplicate_ids_are_removed_before_sampling(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=["paper-1", "paper-1", "paper-2"],
+        request=EvidenceRequest(detail_level="titles"),
+    )
+
+    assert result["selected_count"] == 2
+    assert seen[0]["paper_ids"] == ["paper-1", "paper-2"]
