@@ -222,6 +222,19 @@ def _bounded_limit(value: int | None, *, maximum: int) -> int:
     return min(value, maximum)
 
 
+def select_representative_paper_ids(
+    paper_ids: list[str], *, limit: int, prefer_map_coverage: bool = True
+) -> tuple[list[str], str]:
+    """Return a bounded deterministic seed set for trusted server-side tools."""
+    normalized = _normalize_ids(paper_ids)
+    bounded = _bounded_limit(limit, maximum=max(1, limit))
+    return _choose_ids(
+        normalized,
+        min(len(normalized), bounded),
+        group="map" if prefer_map_coverage else "all",
+    )
+
+
 def _choose_ids(
     ids: list[str],
     limit: int,

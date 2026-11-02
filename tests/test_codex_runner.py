@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -136,7 +137,7 @@ def test_search_tool_describes_results_as_private_working_evidence():
 
 
 def test_codex_thread_schema_invalidates_old_research_instructions():
-    assert _THREAD_SCHEMA_VERSION == "research-v9"
+    assert _THREAD_SCHEMA_VERSION == "research-v10"
 
 
 def test_turn_text_bounds_large_selection_ids():
@@ -591,6 +592,141 @@ def test_search_tool_emits_ranked_papers(monkeypatch):
     assert papers[1].policy == "agent_curated"
     assert present_result["success"] is True
     assert second_result["success"] is True
+
+
+def test_search_tool_overfetches_then_excludes_and_truncates(monkeypatch):
+    class Result:
+        papers = [
+            {"ID": "selected-1", "Title": "Selected"},
+            *[
+                {"ID": f"related-{index}", "Title": f"Related {index}"}
+                for index in range(5)
+            ],
+        ]
+
+    seen: dict[str, object] = {}
+
+    def fake_search(request):
+        seen["limit"] = request.limit
+        return Result()
+
+    monkeypatch.setattr("service.search.search", fake_search)
+    candidates: dict[str, dict[str, object]] = {}
+    result = execute_tool(
+        user_id="user-1",
+        selected_paper_ids=["selected-1"],
+        effort="low",
+        call_id="search-overfetch",
+        tool="search_papers",
+        arguments={"query": "related work", "limit": 2},
+        emit=lambda _event: None,
+        candidates=candidates,
+    )
+
+    payload = json.loads(result["contentItems"][0]["text"])
+    assert seen["limit"] == 6
+    assert [paper["paper_id"] for paper in payload["papers"]] == [
+        "related-0",
+        "related-1",
+    ]
+    assert set(candidates) == {"related-0", "related-1"}
+
+
+def test_find_similar_tool_samples_seeds_and_excludes_selection(monkeypatch):
+    class Result:
+        papers = [
+            {"ID": "seed-1", "Title": "Selected"},
+            {"ID": "related-1", "Title": "Related"},
+        ]
+
+    seen: dict[str, object] = {}
+
+    def fake_similar(seeds, limit):
+        seen["seed_ids"] = seeds
+        seen["limit"] = limit
+        return Result()
+
+    monkeypatch.setattr("app.codex.tools._run_similar_search", fake_similar)
+    monkeypatch.setattr("app.codex.tools._is_search_unavailable", lambda _error: False)
+    monkeypatch.setattr(
+        "service.selected_paper_tool.select_representative_paper_ids",
+        lambda ids, **_kwargs: (ids[:20], "deterministic_map_coverage"),
+    )
+    candidates: dict[str, dict[str, object]] = {}
+    result = execute_tool(
+        user_id="user-1",
+        selected_paper_ids=[f"seed-{index}" for index in range(25)],
+        selected_paper_groups={"clicked": [f"seed-{index}" for index in range(25)]},
+        effort="low",
+        call_id="similar-1",
+        tool="find_similar_papers",
+        arguments={"limit": 20},
+        emit=lambda _event: None,
+        candidates=candidates,
+    )
+
+    payload = json.loads(result["contentItems"][0]["text"])
+    assert len(seen["seed_ids"]) == 20
+    assert seen["limit"] == 60
+    assert payload["used_seed_count"] == 20
+    assert [paper["paper_id"] for paper in payload["papers"]] == ["related-1"]
+    assert set(candidates) == {"related-1"}
+
+
+def test_find_similar_tool_requires_trusted_selection(monkeypatch):
+    monkeypatch.setattr(
+        "app.codex.tools._run_similar_search",
+        lambda *_args: pytest.fail("search must not run"),
+    )
+    result = execute_tool(
+        user_id="user-1",
+        selected_paper_ids=[],
+        effort="low",
+        call_id="similar-empty",
+        tool="find_similar_papers",
+        arguments={},
+        emit=lambda _event: None,
+    )
+    assert result["success"] is False
+    assert "Select or pin" in result["contentItems"][0]["text"]
+
+
+def test_selected_citations_add_only_corpus_matches_to_candidates(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "app.codex.tools._resolve_selected_for_tool",
+        lambda **_kwargs: [
+            SimpleNamespace(paper_id="seed-1", metadata={"doi": "10.test/seed"})
+        ],
+    )
+    monkeypatch.setattr(
+        "app.codex.tools._fetch_citations",
+        lambda *_args, **_kwargs: {
+            "references": {
+                "papers": [
+                    {"paper_id": "related-1", "in_corpus": True, "title": "Corpus"},
+                    {"in_corpus": False, "title": "External", "doi": "10.ext/1"},
+                ]
+            },
+            "cited_by": {"papers": []},
+        },
+    )
+    candidates: dict[str, dict[str, object]] = {}
+    result = execute_tool(
+        user_id="user-1",
+        selected_paper_ids=["seed-1"],
+        effort="low",
+        call_id="citations-1",
+        tool="get_selected_paper_citations",
+        arguments={"paper_ids": ["seed-1"], "direction": "references"},
+        emit=lambda _event: None,
+        candidates=candidates,
+    )
+    payload = json.loads(result["contentItems"][0]["text"])
+    assert result["success"] is True
+    assert len(payload["sources"][0]["references"]) == 2
+    assert set(candidates) == {"related-1"}
 
 
 def test_reasoning_lifecycle_emits_activity_without_private_content():

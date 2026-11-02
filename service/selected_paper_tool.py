@@ -12,6 +12,7 @@ from service.selected_paper_evidence import (
     SelectedPaperEvidenceError,
     get_selected_paper_evidence,
     inspect_selected_papers,
+    select_representative_paper_ids,
 )
 
 SelectedPaperToolError = SelectedPaperEvidenceError
@@ -21,4 +22,5 @@ __all__ = [
     "SelectedPaperToolError",
     "get_selected_paper_evidence",
     "inspect_selected_papers",
+    "select_representative_paper_ids",
 ]

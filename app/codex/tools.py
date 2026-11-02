@@ -34,6 +34,52 @@ DYNAMIC_TOOLS = [
     },
     {
         "type": "function",
+        "name": "find_similar_papers",
+        "description": (
+            "Find corpus papers conceptually similar to trusted papers in the current "
+            "selection. Supply only selected seed IDs; the server validates scope, "
+            "samples at most 20 spatially representative seeds, and excludes all "
+            "currently selected papers from results."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_selected_paper_citations",
+        "description": (
+            "Retrieve references or citing works for up to 5 trusted selected papers. "
+            "DOIs are resolved by the server. Corpus matches become presentable "
+            "candidates; external works are evidence only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "paper_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 5,
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["references", "cited_by"],
+                },
+                "limit_per_paper": {
+                    "type": "integer", "minimum": 1, "maximum": 20
+                },
+            },
+            "required": ["paper_ids"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "present_papers",
         "description": (
             "Present a curated subset of papers returned by search_papers during "
@@ -137,7 +183,22 @@ def execute_tool(
     )
     try:
         if tool == "search_papers":
-            result = _search_papers(payload, candidates=candidates)
+            result = _search_papers(
+                payload, candidates=candidates, excluded_ids=selected_paper_ids
+            )
+        elif tool == "find_similar_papers":
+            result = _find_similar_papers(
+                payload,
+                selected_paper_ids=selected_paper_ids,
+                candidates=candidates,
+            )
+        elif tool == "get_selected_paper_citations":
+            result = _get_selected_paper_citations(
+                payload,
+                user_id=user_id,
+                selected_paper_ids=selected_paper_ids,
+                candidates=candidates,
+            )
         elif tool == "present_papers":
             result = _present_papers(
                 payload,
@@ -186,6 +247,7 @@ def _search_papers(
     payload: dict[str, Any],
     *,
     candidates: dict[str, dict[str, object]] | None,
+    excluded_ids: list[str] | None = None,
 ) -> dict[str, object]:
     from model.paper import SearchRequest
     from service.search import SearchUnavailableError, search
@@ -201,17 +263,23 @@ def _search_papers(
     except (TypeError, ValueError):
         limit = 10
     limit = min(max(limit, 1), 20)
+    fetch_limit = min(limit * 3, 60)
     try:
-        found = search(SearchRequest(search_query=query, search_mode=mode, limit=limit))
+        found = search(
+            SearchRequest(search_query=query, search_mode=mode, limit=fetch_limit)
+        )
     except SearchUnavailableError as error:
         return tool_result(str(error), success=False)
 
     papers: list[dict[str, object]] = []
+    excluded = set(excluded_ids or [])
     for paper in found.papers:
         paper_id = paper.get("ID") or paper.get("id")
         if not paper_id:
             continue
         paper_id = str(paper_id)
+        if paper_id in excluded:
+            continue
         item: dict[str, object] = {
             "paper_id": paper_id,
             "title": paper.get("Title") or "",
@@ -225,6 +293,8 @@ def _search_papers(
         papers.append(item)
         if candidates is not None:
             candidates[paper_id] = item
+        if len(papers) >= limit:
+            break
     return tool_result(
         json.dumps(
             {
@@ -241,6 +311,184 @@ def _search_papers(
         ),
         success=True,
     )
+
+
+def _selected_subset(
+    payload: dict[str, Any], selected_paper_ids: list[str], *, maximum: int
+) -> tuple[list[str], str | None]:
+    requested = payload.get("paper_ids")
+    ids = (
+        list(dict.fromkeys(str(item).strip() for item in requested if str(item).strip()))
+        if isinstance(requested, list)
+        else list(selected_paper_ids)
+    )
+    if not ids:
+        return [], "Select at least one seed paper first."
+    selected = set(selected_paper_ids)
+    if any(paper_id not in selected for paper_id in ids):
+        return [], "Seed papers must belong to the current selection."
+    if len(ids) > maximum:
+        return [], f"At most {maximum} paper IDs may be supplied."
+    return ids, None
+
+
+def _candidate_record(paper: dict[str, object], *, source: str) -> tuple[str, dict[str, object]] | None:
+    raw_id = paper.get("ID") or paper.get("id") or paper.get("paper_id")
+    if not raw_id:
+        return None
+    paper_id = str(raw_id)
+    return paper_id, {
+        "paper_id": paper_id,
+        "title": paper.get("Title") or paper.get("title") or "",
+        "abstract": str(paper.get("Abstract") or paper.get("abstract") or "")[:2500],
+        "authors": list(paper.get("Authors") or paper.get("authors") or [])[:12],
+        "keywords": list(paper.get("Keywords") or paper.get("keywords") or [])[:20],
+        "year": paper.get("Year") or paper.get("year"),
+        "venue": paper.get("Source") or paper.get("source") or paper.get("venue") or "",
+        "citation_count": paper.get("CitationCounts") or paper.get("citation_count"),
+        "doi": paper.get("doi"),
+        "discovery_source": source,
+    }
+
+
+def _is_search_unavailable(error: Exception) -> bool:
+    from service.search import SearchUnavailableError
+
+    return isinstance(error, SearchUnavailableError)
+
+
+def _run_similar_search(seed_ids: list[str], limit: int):
+    from model.paper import SimilarPapersRequest
+    from service.search import find_similar_by_papers
+
+    return find_similar_by_papers(
+        SimilarPapersRequest(seed_ids=seed_ids, limit=limit)
+    )
+
+
+def _resolve_selected_for_tool(*, user_id: str | None, paper_ids: list[str]):
+    from service.paper_registry import resolve_selected_papers
+
+    return resolve_selected_papers(user_id=user_id, paper_ids=paper_ids)
+
+
+def _fetch_citations(doi: str, limit: int, direction: str | None):
+    from service.citations import get_paper_citations
+
+    return get_paper_citations(doi, limit, direction=direction)
+
+
+def _find_similar_papers(
+    payload: dict[str, Any],
+    *,
+    selected_paper_ids: list[str],
+    candidates: dict[str, dict[str, object]] | None,
+) -> dict[str, object]:
+    from service.selected_paper_tool import select_representative_paper_ids
+
+    # The trusted clicked+pinned selection is injected by the server. Keeping
+    # seed IDs out of the model-facing schema prevents stale/history IDs from
+    # causing a false tool failure or widening the authorized scope.
+    raw = list(dict.fromkeys(selected_paper_ids))
+    if not raw:
+        return tool_result("Select or pin at least one seed paper first.", success=False)
+    seeds, policy = select_representative_paper_ids(
+        raw, limit=20, prefer_map_coverage=True
+    )
+    try:
+        limit = min(max(int(payload.get("limit") or 20), 1), 20)
+    except (TypeError, ValueError):
+        limit = 20
+    fetch_limit = min(limit * 3, 60)
+    try:
+        found = _run_similar_search(seeds, fetch_limit)
+    except Exception as error:
+        if _is_search_unavailable(error):
+            return tool_result(str(error), success=False)
+        raise
+    excluded = set(selected_paper_ids)
+    papers: list[dict[str, object]] = []
+    for paper in found.papers:
+        record = _candidate_record(paper, source="similar")
+        if record is None or record[0] in excluded:
+            continue
+        paper_id, item = record
+        papers.append(item)
+        if candidates is not None:
+            candidates[paper_id] = item
+        if len(papers) >= limit:
+            break
+    return tool_result(json.dumps({
+        "requested_seed_count": len(raw),
+        "used_seed_count": len(seeds),
+        "seed_sampling_policy": policy,
+        "papers": papers,
+        "instruction": "Combine these candidates with text search when it improves coverage, then curate with present_papers.",
+    }, ensure_ascii=False), success=True)
+
+
+def _get_selected_paper_citations(
+    payload: dict[str, Any],
+    *,
+    user_id: str | None,
+    selected_paper_ids: list[str],
+    candidates: dict[str, dict[str, object]] | None,
+) -> dict[str, object]:
+    from service.citations import (
+        PaperCitationsNotFoundError, PaperCitationsProviderError,
+        PaperCitationsUnavailableError,
+    )
+    from service.paper_registry import LibraryPaperResolutionError
+
+    ids, error = _selected_subset(payload, selected_paper_ids, maximum=5)
+    if error:
+        return tool_result(error, success=False)
+    direction = payload.get("direction")
+    if direction not in {"references", "cited_by"}:
+        direction = None
+    try:
+        per_paper = min(max(int(payload.get("limit_per_paper") or 10), 1), 20)
+    except (TypeError, ValueError):
+        per_paper = 10
+    try:
+        resolved = _resolve_selected_for_tool(user_id=user_id, paper_ids=ids)
+    except LibraryPaperResolutionError as error_value:
+        return tool_result(str(error_value), success=False)
+    excluded = set(selected_paper_ids)
+    sources: list[dict[str, object]] = []
+    for source in resolved:
+        doi = source.metadata.get("doi")
+        if not isinstance(doi, str) or not doi.strip():
+            sources.append({"paper_id": source.paper_id, "skipped": "doi_unavailable"})
+            continue
+        try:
+            result = _fetch_citations(doi, per_paper, direction)
+        except PaperCitationsNotFoundError:
+            sources.append({"paper_id": source.paper_id, "skipped": "not_found"})
+            continue
+        except (PaperCitationsUnavailableError, PaperCitationsProviderError) as error_value:
+            return tool_result(str(error_value), success=False)
+        groups = [direction] if direction else ["references", "cited_by"]
+        evidence: dict[str, object] = {"paper_id": source.paper_id, "doi": doi}
+        for group in groups:
+            raw_group = result.get(group) if isinstance(result, dict) else None
+            raw_papers = raw_group.get("papers") if isinstance(raw_group, dict) else []
+            records: list[dict[str, object]] = []
+            for paper in raw_papers if isinstance(raw_papers, list) else []:
+                if not isinstance(paper, dict):
+                    continue
+                records.append(paper)
+                paper_id = paper.get("paper_id")
+                if paper.get("in_corpus") and isinstance(paper_id, str) and paper_id not in excluded:
+                    record = _candidate_record(paper, source=group)
+                    if record and candidates is not None:
+                        candidates[record[0]] = record[1]
+            evidence[group] = records
+        sources.append(evidence)
+    return tool_result(json.dumps({
+        "sources": sources,
+        "instruction": "Corpus matches may be presented; external works are citation evidence only and must not be passed to present_papers.",
+    }, ensure_ascii=False), success=True)
 
 
 def _present_papers(
@@ -369,6 +617,11 @@ def _started_action_data(
             "query": str(payload.get("query") or "").strip()[:200],
             "mode": str(payload.get("mode") or "bm25"),
         }
+    if tool == "find_similar_papers":
+        return {"paperCount": len(selected_paper_ids)}
+    if tool == "get_selected_paper_citations":
+        requested = payload.get("paper_ids")
+        return {"paperCount": len(requested) if isinstance(requested, list) else 0}
     if tool == "present_papers":
         requested = payload.get("paper_ids")
         return {"paperCount": len(requested) if isinstance(requested, list) else 0}
@@ -403,6 +656,12 @@ def _completed_action_data(
     if tool == "search_papers":
         papers = payload.get("papers")
         return {"resultCount": len(papers)} if isinstance(papers, list) else {}
+    if tool in {"find_similar_papers", "get_selected_paper_citations"}:
+        papers = payload.get("papers")
+        if isinstance(papers, list):
+            return {"resultCount": len(papers)}
+        sources = payload.get("sources")
+        return {"sourceCount": len(sources)} if isinstance(sources, list) else {}
     if tool == "present_papers":
         paper_ids = payload.get("presented_paper_ids")
         return {"paperCount": len(paper_ids)} if isinstance(paper_ids, list) else {}
@@ -422,6 +681,10 @@ def _completed_action_data(
 def _public_action(tool: str) -> str:
     if tool == "search_papers":
         return "search"
+    if tool == "find_similar_papers":
+        return "find.similar_papers"
+    if tool == "get_selected_paper_citations":
+        return "get.selected_paper_citations"
     if tool == "present_papers":
         return "present.papers"
     if tool == "inspect_selected_papers":
