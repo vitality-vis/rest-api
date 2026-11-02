@@ -116,6 +116,9 @@ async def _run_locked(
             execute_tool,
             user_id=request.user_id,
             selected_paper_ids=list(request.selected_paper_ids or []),
+            selected_paper_groups=dict(
+                getattr(request, "selected_paper_groups", None) or {}
+            ),
             effort=str(request.effort or "low"),
             call_id=str(params.get("callId") or params.get("itemId") or "tool"),
             tool=str(params.get("tool") or ""),
@@ -172,7 +175,9 @@ async def _run_locked(
         if resumed and not completed:
             chat_id = str(getattr(request, "chat_id", "") or "")
             if chat_id:
-                drop_thread_id(getattr(request, "user_id", None), chat_id)
+                drop_thread_id(
+                    getattr(request, "user_id", None), chat_id, thread_id
+                )
                 logger.info(
                     "Codex thread dropped after incomplete turn conversation=%s thread=%s",
                     chat_id,
@@ -209,7 +214,7 @@ async def _open_thread(client: CodexClient, request: Any) -> tuple[str, bool]:
                     existing,
                     exc_info=True,
                 )
-                drop_thread_id(user_id, chat_id)
+                drop_thread_id(user_id, chat_id, existing)
     started = await client.request(
         "thread/start",
         _thread_params(client.workspace_path, persist=bool(chat_id)),
@@ -257,8 +262,13 @@ def _turn_text(request: Any, *, history: list[dict[str, str]]) -> str:
     sections: list[str] = []
     selected_count = len({str(item) for item in request.selected_paper_ids or [] if item})
     if selected_count:
+        groups = dict(getattr(request, "selected_paper_groups", None) or {})
+        group_summary = ", ".join(
+            f"{name}={len(ids)}" for name, ids in groups.items()
+        )
         sections.append(
-            f"Current paper selection: {selected_count} papers. "
+            f"Current paper selection: {selected_count} unique papers"
+            f"{f' across named groups ({group_summary})' if group_summary else ''}. "
             "Use the selected-paper tools to inspect IDs and retrieve evidence."
         )
     if history:

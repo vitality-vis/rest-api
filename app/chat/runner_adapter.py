@@ -26,6 +26,7 @@ def build_agent_request(
         chat_id=request.chat_id,
         history=prepared.history,
         selected_paper_ids=request.paper_ids,
+        selected_paper_groups=request.paper_groups,
         context=request.message_context,
         effort=request.effort,
         model=request.model,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import requests
@@ -349,6 +350,91 @@ def ensure_conversation(
     raise ChatPersistenceError("Could not create chat conversation")
 
 
+
+def get_codex_thread_binding(
+    *, conversation_id: str, user_id: str
+) -> tuple[str, str] | None:
+    """Return the server-managed Codex thread ID and schema for an owned chat."""
+    response = _request(
+        "GET",
+        "chat_conversations",
+        params={
+            "id": f"eq.{_normalise_uuid(conversation_id)}",
+            "user_id": f"eq.{_normalise_uuid(user_id)}",
+            "select": "codex_thread_id,codex_thread_schema_version",
+        },
+    )
+    if response.status_code != 200:
+        raise ChatPersistenceError("Could not load Codex thread binding")
+    rows = response.json()
+    if not rows:
+        return None
+    thread_id = rows[0].get("codex_thread_id")
+    schema_version = rows[0].get("codex_thread_schema_version")
+    if not isinstance(thread_id, str) or not isinstance(schema_version, str):
+        return None
+    return thread_id, schema_version
+
+
+def bind_codex_thread(
+    *,
+    conversation_id: str,
+    user_id: str,
+    thread_id: str,
+    schema_version: str,
+    expected_thread_id: str | None = None,
+) -> bool:
+    """Conditionally bind a completed Codex thread; return whether it won."""
+    if not thread_id.strip() or not schema_version.strip():
+        raise ValueError("Codex thread ID and schema version must be non-empty")
+    params = {
+        "id": f"eq.{_normalise_uuid(conversation_id)}",
+        "user_id": f"eq.{_normalise_uuid(user_id)}",
+        "codex_thread_id": (
+            f"eq.{expected_thread_id}" if expected_thread_id else "is.null"
+        ),
+    }
+    response = _request(
+        "PATCH",
+        "chat_conversations",
+        params=params,
+        headers={"Prefer": "return=representation"},
+        json={
+            "codex_thread_id": thread_id.strip(),
+            "codex_thread_schema_version": schema_version.strip(),
+            "codex_thread_bound_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    if response.status_code != 200:
+        raise ChatPersistenceError("Could not bind Codex thread")
+    return bool(response.json())
+
+
+def clear_codex_thread_binding(
+    *, conversation_id: str, user_id: str, expected_thread_id: str
+) -> bool:
+    """Clear only the expected stale binding so a newer binding is preserved."""
+    if not expected_thread_id:
+        return False
+    response = _request(
+        "PATCH",
+        "chat_conversations",
+        params={
+            "id": f"eq.{_normalise_uuid(conversation_id)}",
+            "user_id": f"eq.{_normalise_uuid(user_id)}",
+            "codex_thread_id": f"eq.{expected_thread_id}",
+        },
+        headers={"Prefer": "return=representation"},
+        json={
+            "codex_thread_id": None,
+            "codex_thread_schema_version": None,
+            "codex_thread_bound_at": None,
+        },
+    )
+    if response.status_code != 200:
+        raise ChatPersistenceError("Could not clear Codex thread binding")
+    return bool(response.json())
+
 def set_conversation_closed(*, conversation_id: str, user_id: str, is_closed: bool) -> None:
     """Persist the tab-visibility preference for one owned conversation."""
     conversation_id = _normalise_uuid(conversation_id)
@@ -449,7 +535,10 @@ __all__ = [
     "ChatPersistenceError",
     "ChatMessageConflictError",
     "ConversationOwnershipError",
+    "bind_codex_thread",
+    "clear_codex_thread_binding",
     "ensure_conversation",
+    "get_codex_thread_binding",
     "load_completed_history",
     "load_user_conversations",
     "prepare_chat_turn",

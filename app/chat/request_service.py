@@ -35,6 +35,7 @@ MAX_HISTORY_MESSAGES = 12
 MAX_HISTORY_MESSAGE_CHARS = 8_000
 MAX_HISTORY_TOTAL_CHARS = 24_000
 MAX_MESSAGE_CONTEXT_CHARS = 6_000
+MAX_SELECTED_PAPER_IDS = 10_000
 
 # Keep in sync with agents.agent_v1_legacy.rag_core markers. Defined locally so
 # the Chat application layer does not import the Agent/search stack.
@@ -74,6 +75,21 @@ def normalise_context(value: object) -> dict[str, object]:
             if not isinstance(papers, list):
                 return {}
             compact_papers: list[dict[str, object]] = []
+            paper_selection = value.get("paperSelection")
+            compact_selection = (
+                paper_selection if isinstance(paper_selection, dict) else None
+            )
+            if compact_selection is not None and len(
+                json.dumps(
+                    {
+                        "selectedPapers": [],
+                        "paperSelection": compact_selection,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            ) > MAX_MESSAGE_CONTEXT_CHARS:
+                compact_selection = None
             for paper in papers:
                 if not isinstance(paper, dict):
                     continue
@@ -84,7 +100,11 @@ def normalise_context(value: object) -> dict[str, object]:
                 compact: dict[str, object] = {"id": paper_id, "title": title}
                 if isinstance(paper.get("abstract"), str):
                     compact["abstract"] = paper["abstract"][:1_000]
-                candidate = {"selectedPapers": [*compact_papers, compact]}
+                candidate: dict[str, object] = {
+                    "selectedPapers": [*compact_papers, compact]
+                }
+                if compact_selection is not None:
+                    candidate["paperSelection"] = compact_selection
                 if (
                     len(
                         json.dumps(
@@ -96,6 +116,8 @@ def normalise_context(value: object) -> dict[str, object]:
                     break
                 compact_papers.append(compact)
             value = {"selectedPapers": compact_papers}
+            if compact_selection is not None:
+                value["paperSelection"] = compact_selection
             encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         decoded = json.loads(encoded)
     except (TypeError, ValueError):
@@ -222,6 +244,7 @@ def build_chat_turn_request(
 
     requested_mode: Any = "auto"
     paper_ids: list[str] = []
+    paper_groups: dict[str, list[str]] = {}
     advanced = None
     if pipeline == "v2":
         from agents.agent_v2.models import AdvancedSearchConfig
@@ -237,11 +260,37 @@ def build_chat_turn_request(
             raise ChatValidationError(
                 "mode must be one of: auto, chat, search, synthesis"
             )
-        paper_ids = data.get("paper_ids", [])
-        if not isinstance(paper_ids, list) or not all(
-            isinstance(item, str) and item for item in paper_ids
+        paper_ids_value = data.get("paper_ids")
+        if paper_ids_value is not None and (
+            not isinstance(paper_ids_value, list)
+            or not all(isinstance(item, str) and item for item in paper_ids_value)
         ):
             raise ChatValidationError("paper_ids must be an array of strings")
+        paper_ids = list(dict.fromkeys(paper_ids_value or []))
+        paper_groups_value = data.get("paper_groups", {})
+        if not isinstance(paper_groups_value, dict):
+            raise ChatValidationError("paper_groups must be an object of string arrays")
+        for raw_name, raw_ids in paper_groups_value.items():
+            if (
+                not isinstance(raw_name, str)
+                or not raw_name.strip()
+                or not isinstance(raw_ids, list)
+                or not all(isinstance(item, str) and item for item in raw_ids)
+            ):
+                raise ChatValidationError("paper_groups must be an object of string arrays")
+            name = raw_name.strip()
+            paper_groups[name] = list(dict.fromkeys(raw_ids))
+        grouped_ids = {item for ids in paper_groups.values() for item in ids}
+        if paper_ids_value is None:
+            paper_ids = list(dict.fromkeys(
+                item for ids in paper_groups.values() for item in ids
+            ))
+        elif not grouped_ids.issubset(set(paper_ids)):
+            raise ChatValidationError("paper_groups must be subsets of paper_ids")
+        if len(set(paper_ids)) > MAX_SELECTED_PAPER_IDS:
+            raise ChatValidationError(
+                f"A maximum of {MAX_SELECTED_PAPER_IDS:,} selected papers is supported"
+            )
 
     if not text:
         # Preserve the historical bare 400 body (no mimetype override in original).
@@ -270,6 +319,7 @@ def build_chat_turn_request(
         agent_run_id=agent_run_id,
         requested_mode=requested_mode,
         paper_ids=paper_ids,
+        paper_groups=paper_groups,
         advanced=advanced,
     )
 

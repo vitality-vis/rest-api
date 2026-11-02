@@ -146,3 +146,36 @@ def test_duplicate_ids_are_removed_before_sampling(monkeypatch):
 
     assert result["selected_count"] == 2
     assert seen[0]["paper_ids"] == ["paper-1", "paper-2"]
+
+
+def test_named_group_limits_evidence_candidates(monkeypatch):
+    seen: list[dict[str, object]] = []
+    _install_resolver(monkeypatch, seen)
+
+    result = get_selected_paper_evidence(
+        user_id=None,
+        selected_paper_ids=["paper-1", "paper-2", "paper-3"],
+        selected_paper_groups={
+            "library": ["paper-1"],
+            "map": ["paper-2", "paper-3"],
+        },
+        request=EvidenceRequest(detail_level="titles", group="library"),
+    )
+
+    assert result["group"] == "library"
+    assert result["groups"] == {"library": {"count": 1}, "map": {"count": 2}}
+    assert seen[0]["paper_ids"] == ["paper-1"]
+
+
+def test_named_group_rejects_ids_outside_group(monkeypatch):
+    _install_resolver(monkeypatch, [])
+
+    with pytest.raises(SelectedPaperToolError, match="current selection"):
+        get_selected_paper_evidence(
+            user_id=None,
+            selected_paper_ids=["paper-1", "paper-2"],
+            selected_paper_groups={"library": ["paper-1"], "map": ["paper-2"]},
+            request=EvidenceRequest(
+                detail_level="titles", group="library", paper_ids=["paper-2"]
+            ),
+        )

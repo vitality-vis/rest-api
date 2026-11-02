@@ -121,6 +121,7 @@ class V2ChatRequest:
     chat_id: str = "default"
     history: list[dict[str, str]] | None = None
     selected_paper_ids: list[str] | None = None
+    selected_paper_groups: dict[str, list[str]] | None = None
     context: dict[str, object] | None = None
     effort: str = "low"
     model: str | None = None

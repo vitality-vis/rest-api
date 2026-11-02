@@ -75,8 +75,9 @@ DYNAMIC_TOOLS = [
             "Retrieve bounded metadata evidence for papers in the current selection. "
             "You generate the answer yourself from the returned evidence. Use auto for "
             "normal questions, titles for broad overviews, or abstracts for detailed "
-            "analysis. You may request a selected subset by ID. The server enforces "
-            "selection scope and evidence budgets."
+            "analysis. Use group=library or group=map to inspect those groups "
+            "separately, or group=all for their union. You may request a selected "
+            "subset by ID. The server enforces selection scope and evidence budgets."
         ),
         "inputSchema": {
             "type": "object",
@@ -95,6 +96,10 @@ DYNAMIC_TOOLS = [
                     "items": {"type": "string"},
                     "minItems": 1,
                     "maxItems": 100,
+                },
+                "group": {
+                    "type": "string",
+                    "description": "Named current-selection group such as library or map; use all for the union.",
                 },
             },
             "additionalProperties": False,
@@ -115,6 +120,7 @@ def execute_tool(
     *,
     user_id: str | None,
     selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None = None,
     effort: str,
     call_id: str,
     tool: str,
@@ -148,12 +154,14 @@ def execute_tool(
             result = _inspect_selected_papers(
                 user_id=user_id,
                 selected_paper_ids=selected_paper_ids,
+                selected_paper_groups=selected_paper_groups,
             )
         elif tool == "get_selected_paper_evidence":
             result = _get_selected_paper_evidence(
                 payload,
                 user_id=user_id,
                 selected_paper_ids=selected_paper_ids,
+                selected_paper_groups=selected_paper_groups,
             )
         else:
             result = tool_result(f"{tool} is not available.", success=False)
@@ -290,7 +298,10 @@ def _present_papers(
 
 
 def _inspect_selected_papers(
-    *, user_id: str | None, selected_paper_ids: list[str]
+    *,
+    user_id: str | None,
+    selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None,
 ) -> dict[str, object]:
     from service.selected_paper_tool import (
         SelectedPaperToolError,
@@ -301,6 +312,7 @@ def _inspect_selected_papers(
         overview = inspect_selected_papers(
             user_id=user_id,
             selected_paper_ids=selected_paper_ids,
+            selected_paper_groups=selected_paper_groups,
         )
     except SelectedPaperToolError as error:
         return tool_result(str(error), success=False)
@@ -312,6 +324,7 @@ def _get_selected_paper_evidence(
     *,
     user_id: str | None,
     selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None,
 ) -> dict[str, object]:
     from service.selected_paper_tool import (
         EvidenceRequest,
@@ -329,11 +342,13 @@ def _get_selected_paper_evidence(
         evidence = get_selected_paper_evidence(
             user_id=user_id,
             selected_paper_ids=selected_paper_ids,
+            selected_paper_groups=selected_paper_groups,
             request=EvidenceRequest(
                 detail_level=str(payload.get("detail_level") or "auto"),
                 limit=payload.get("limit"),
                 sampling=str(payload.get("sampling") or "representative"),
                 paper_ids=paper_ids,
+                group=str(payload.get("group") or "all"),
             ),
         )
     except SelectedPaperToolError as error:

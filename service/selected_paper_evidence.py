@@ -32,10 +32,14 @@ class EvidenceRequest:
     limit: int | None = None
     sampling: SamplingMode = "representative"
     paper_ids: list[str] | None = None
+    group: str = "all"
 
 
 def inspect_selected_papers(
-    *, user_id: str | None, selected_paper_ids: list[str]
+    *,
+    user_id: str | None,
+    selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None = None,
 ) -> dict[str, object]:
     """Return a cheap overview and a small representative metadata sample."""
     selected = _normalize_ids(selected_paper_ids)
@@ -47,6 +51,7 @@ def inspect_selected_papers(
             "instruction": "No papers are selected.",
         }
 
+    groups = _normalize_groups(selected, selected_paper_groups)
     sampled_ids = _sample_ids(selected, min(len(selected), MAX_INSPECTION_RECORDS))
     papers = _resolve(user_id=user_id, paper_ids=sampled_ids)
     sampled = [_title_record(paper, include_availability=True) for paper in papers]
@@ -57,6 +62,7 @@ def inspect_selected_papers(
     ]
     return {
         "selected_count": len(selected),
+        "groups": {name: {"count": len(ids)} for name, ids in groups.items()},
         "sampled_count": len(sampled),
         "sample_policy": "deterministic_even_coverage",
         "sampled_papers": sampled,
@@ -72,6 +78,7 @@ def get_selected_paper_evidence(
     *,
     user_id: str | None,
     selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None = None,
     request: EvidenceRequest,
 ) -> dict[str, object]:
     """Return bounded metadata from the trusted current selection, without an LLM call."""
@@ -79,7 +86,17 @@ def get_selected_paper_evidence(
     if not selected:
         raise SelectedPaperEvidenceError("Select at least one paper first.")
 
-    candidates = _requested_subset(selected, request.paper_ids)
+    groups = _normalize_groups(selected, selected_paper_groups)
+    if request.group == "all":
+        group_candidates = selected
+    elif request.group in groups:
+        group_candidates = groups[request.group]
+    else:
+        raise SelectedPaperEvidenceError(
+            f"Unknown paper group: {request.group}. Available groups: "
+            f"{', '.join(groups) or 'none'}."
+        )
+    candidates = _requested_subset(group_candidates, request.paper_ids)
     detail = request.detail_level
     if detail not in {"auto", "titles", "abstracts"}:
         raise SelectedPaperEvidenceError("detail_level must be auto, titles, or abstracts.")
@@ -122,6 +139,8 @@ def get_selected_paper_evidence(
     detailed_count = sum("abstract" in record for record in records)
     return {
         "selected_count": len(selected),
+        "group": request.group,
+        "groups": {name: {"count": len(ids)} for name, ids in groups.items()},
         "candidate_count": len(candidates),
         "returned_count": len(records),
         "detailed_count": detailed_count,
@@ -154,6 +173,25 @@ def _normalize_ids(value: object) -> list[str]:
         if paper_id not in seen:
             seen.add(paper_id)
             normalized.append(paper_id)
+    return normalized
+
+
+def _normalize_groups(
+    selected: list[str], groups: dict[str, list[str]] | None
+) -> dict[str, list[str]]:
+    if not groups:
+        return {}
+    selected_set = set(selected)
+    normalized: dict[str, list[str]] = {}
+    for raw_name, raw_ids in groups.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise SelectedPaperEvidenceError("Paper group names must be non-empty strings.")
+        ids = _normalize_ids(raw_ids)
+        if any(paper_id not in selected_set for paper_id in ids):
+            raise SelectedPaperEvidenceError(
+                "Paper groups can only contain papers in the current selection."
+            )
+        normalized[raw_name.strip()] = ids
     return normalized
 
 

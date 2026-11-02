@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,38 @@ from app.chat.run_control import RunAborted, RunControl
 from app.codex.runner import DEVELOPER_INSTRUCTIONS, _conversation_locks, run
 from app.codex.threads import _THREAD_SCHEMA_VERSION, get_thread_id, put_thread_id
 from app.codex.tools import DYNAMIC_TOOLS, execute_tool
+
+
+@pytest.fixture(autouse=True)
+def in_memory_thread_bindings(monkeypatch):
+    bindings: dict[tuple[str, str], str] = {}
+
+    def get(user_id, chat_id):
+        return bindings.get((str(user_id), str(chat_id)))
+
+    def put(user_id, chat_id, thread_id):
+        key = (str(user_id), str(chat_id))
+        if key in bindings:
+            return False
+        bindings[key] = thread_id
+        return True
+
+    def drop(user_id, chat_id, expected_thread_id=None):
+        key = (str(user_id), str(chat_id))
+        current = bindings.get(key)
+        if current is None or (expected_thread_id and current != expected_thread_id):
+            return False
+        del bindings[key]
+        return True
+
+    for module in ("app.codex.threads", "app.codex.runner"):
+        monkeypatch.setattr(f"{module}.get_thread_id", get)
+        monkeypatch.setattr(f"{module}.put_thread_id", put)
+        monkeypatch.setattr(f"{module}.drop_thread_id", drop)
+    # This test module imported these helpers directly.
+    monkeypatch.setitem(globals(), "get_thread_id", get)
+    monkeypatch.setitem(globals(), "put_thread_id", put)
+    yield bindings
 
 
 class FakeCodex:
@@ -78,14 +111,18 @@ def test_research_instructions_favor_natural_curated_answers():
     assert "weak, mixed, indirect" in instructions
     assert "Ask a follow-up only when" in instructions
     assert "private working evidence" in instructions
-    assert "only shows papers after you call present_papers" in instructions
+    assert "UI only shows papers after `present_papers`" in instructions
     assert "Reformulate, broaden, or narrow queries" in instructions
     assert "Generate the final answer yourself" in instructions
-    assert "adapt the response to the selection" in instructions
-    assert "do not summarize papers one by one" in instructions
-    assert "Do not force methods/findings/differences" in instructions
+    summarize_skill = (
+        Path(__file__).parents[1]
+        / "app/codex/agent/skills/summarize-selected-papers/SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "adaptively" in summarize_skill
+    assert "do not summarize papers one by one" in summarize_skill
+    assert "Do not force methods, findings, and differences" in summarize_skill
     assert "use web search" in instructions
-    assert "do not say they were added to the user's library" in instructions
+    assert "say they were added to the library" in instructions
 
 
 def test_search_tool_describes_results_as_private_working_evidence():
@@ -99,7 +136,7 @@ def test_search_tool_describes_results_as_private_working_evidence():
 
 
 def test_codex_thread_schema_invalidates_old_research_instructions():
-    assert _THREAD_SCHEMA_VERSION == "research-v8"
+    assert _THREAD_SCHEMA_VERSION == "research-v9"
 
 
 def test_turn_text_bounds_large_selection_ids():
@@ -111,7 +148,7 @@ def test_turn_text_bounds_large_selection_ids():
     )
     rendered = _turn_text(request, history=[])
 
-    assert "Current paper selection: 500 papers" in rendered
+    assert "Current paper selection: 500 unique papers" in rendered
     assert "private-paper-0" not in rendered
     assert "selected-paper tools" in rendered
 
@@ -159,7 +196,6 @@ def test_codex_runner_returns_selected_paper_evidence(monkeypatch):
 
 
 def test_conversation_reuses_one_codex_thread(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
     monkeypatch.setattr(
         "service.selected_paper_tool.get_selected_paper_evidence",
         lambda **_kwargs: {"papers": [], "returned_count": 0, "detailed_count": 0},
@@ -193,7 +229,6 @@ def test_conversation_reuses_one_codex_thread(tmp_path, monkeypatch):
 
 
 def test_turn_start_failure_does_not_publish_thread_mapping(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
 
     class FailingCodex(FakeCodex):
         async def request(self, method, params, timeout=None):
@@ -225,7 +260,6 @@ def test_turn_start_failure_does_not_publish_thread_mapping(tmp_path, monkeypatc
 
 
 def test_failed_completion_does_not_publish_thread_mapping(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
 
     class FailedCompletionCodex(FakeCodex):
         async def request(self, method, params, timeout=None):
@@ -262,7 +296,6 @@ def test_failed_completion_does_not_publish_thread_mapping(tmp_path, monkeypatch
 
 
 def test_failed_resumed_turn_drops_existing_mapping(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
     put_thread_id("user-resumed", "conv-resumed", "thr-resumed")
 
     class FailedResumedCodex(FakeCodex):
@@ -303,7 +336,6 @@ def test_failed_resumed_turn_drops_existing_mapping(tmp_path, monkeypatch):
 
 
 def test_generator_close_does_not_publish_thread_mapping(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
 
     class StreamingCodex(FakeCodex):
         async def request(self, method, params, timeout=None):
@@ -344,7 +376,6 @@ def test_generator_close_does_not_publish_thread_mapping(tmp_path, monkeypatch):
 
 
 def test_waiting_turn_aborts_without_waiting_for_holder(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
 
     class HoldingCodex:
         workspace_path = "/tmp/vitality-codex"
@@ -418,7 +449,6 @@ def test_waiting_turn_aborts_without_waiting_for_holder(tmp_path, monkeypatch):
 def test_same_conversation_turns_serialize_across_event_loop_threads(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr("app.codex.threads.config.CODEX_HOME", str(tmp_path))
 
     class BlockingCodex:
         workspace_path = "/tmp/vitality-codex"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -17,7 +18,12 @@ from app.chat.models import (
     ChatValidationError,
     PreparedChatTurn,
 )
-from app.chat.request_service import build_chat_turn_request, prepare_chat_turn
+from app.chat.request_service import (
+    MAX_MESSAGE_CONTEXT_CHARS,
+    build_chat_turn_request,
+    normalise_context,
+    prepare_chat_turn,
+)
 from app.chat.runner_adapter import build_agent_request
 from app.chat.service import FALLBACK_TEXT, iter_chat_turn_events
 
@@ -43,6 +49,40 @@ async def _collect_events(prepared: PreparedChatTurn, run_agent) -> list[ChatEve
             logger=logging.getLogger("test-chat-service"),
         )
     ]
+
+
+def test_normalise_context_preserves_paper_selection_during_compaction():
+    paper_selection = {"source": "map", "group": "saved"}
+    context = normalise_context(
+        {
+            "selectedPapers": [
+                {"id": "paper-1", "title": "Paper 1", "abstract": "a" * 7_000}
+            ],
+            "paperSelection": paper_selection,
+        }
+    )
+
+    assert context["paperSelection"] == paper_selection
+    assert context["selectedPapers"] == [
+        {"id": "paper-1", "title": "Paper 1", "abstract": "a" * 1_000}
+    ]
+
+
+def test_normalise_context_oversized_paper_selection_cannot_bypass_size_bound():
+    context = normalise_context(
+        {
+            "selectedPapers": [
+                {"id": f"paper-{index}", "title": f"Paper {index}"}
+                for index in range(500)
+            ],
+            "paperSelection": {"label": "x" * MAX_MESSAGE_CONTEXT_CHARS},
+        }
+    )
+
+    encoded = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+    assert len(encoded) <= MAX_MESSAGE_CONTEXT_CHARS
+    assert "paperSelection" not in context
+    assert context["selectedPapers"]
 
 
 def test_build_chat_turn_request_rejects_empty_text():
@@ -83,6 +123,30 @@ def test_build_chat_turn_request_guest_history():
         {"role": "assistant", "content": "reply"},
     ]
 
+
+
+def test_build_chat_turn_request_derives_union_from_groups():
+    request = build_chat_turn_request({
+        "text": "Compare them",
+        "paper_groups": {
+            "library": ["paper-1", "paper-2"],
+            "map": ["paper-2", "paper-3"],
+        },
+    })
+
+    assert request.paper_ids == ["paper-1", "paper-2", "paper-3"]
+    assert request.paper_groups == {
+        "library": ["paper-1", "paper-2"],
+        "map": ["paper-2", "paper-3"],
+    }
+
+
+def test_build_chat_turn_request_rejects_too_many_selected_papers():
+    with pytest.raises(ChatValidationError, match="maximum of 10,000"):
+        build_chat_turn_request({
+            "text": "Summarize",
+            "paper_groups": {"map": [f"paper-{index}" for index in range(10_001)]},
+        })
 
 def test_prepare_chat_turn_requires_authentication():
     request = ChatTurnRequest(
@@ -333,6 +397,7 @@ def test_codex_persistence_failure_drops_thread_mapping(monkeypatch):
 
 
 def test_completion_waits_for_assistant_persistence(monkeypatch):
+    monkeypatch.setattr("app.chat.service.config.CHAT_RUNTIME", "deterministic")
     monkeypatch.setattr(
         "app.chat.service.save_assistant_result", lambda **_kwargs: False
     )

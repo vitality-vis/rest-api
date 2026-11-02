@@ -65,6 +65,7 @@ class ChatTurnRequest:
     # v2-only fields
     requested_mode: ChatMode = "auto"
     paper_ids: list[str] = field(default_factory=list)
+    paper_groups: dict[str, list[str]] = field(default_factory=dict)
     advanced: Any | None = None
 
 
