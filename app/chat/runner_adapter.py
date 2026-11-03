@@ -24,6 +24,7 @@ def build_agent_request(
     return V2ChatRequest(
         text=request.text,
         chat_id=request.chat_id,
+        project_id=request.project_id,
         history=prepared.history,
         selected_paper_ids=request.paper_ids,
         selected_paper_groups=request.paper_groups,

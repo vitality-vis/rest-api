@@ -119,6 +119,7 @@ class V2ChatRequest:
 
     text: str
     chat_id: str = "default"
+    project_id: str | None = None
     history: list[dict[str, str]] | None = None
     selected_paper_ids: list[str] | None = None
     selected_paper_groups: dict[str, list[str]] | None = None

@@ -58,9 +58,11 @@ def test_inspection_resolves_only_a_representative_sample(monkeypatch):
 
     result = inspect_selected_papers(
         user_id="user-1",
+        project_id="project-1",
         selected_paper_ids=[f"paper-{index}" for index in range(30)],
     )
 
+    assert seen[0]["project_id"] == "project-1"
     assert result["selected_count"] == 30
     assert result["sampled_count"] == 12
     assert len(seen[0]["paper_ids"]) == 12

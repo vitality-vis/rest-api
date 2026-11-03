@@ -174,6 +174,7 @@ def test_codex_runner_returns_selected_paper_evidence(monkeypatch):
         history=[{"role": "user", "content": "Earlier question"}],
         selected_paper_ids=["paper-1"],
         user_id="user-1",
+        project_id="project-1",
         effort="low",
         control=None,
     )
@@ -182,6 +183,7 @@ def test_codex_runner_returns_selected_paper_evidence(monkeypatch):
     events = asyncio.run(collect(run(request, client=fake)))
 
     assert seen["user_id"] == "user-1"
+    assert seen["project_id"] == "project-1"
     assert seen["selected_paper_ids"] == ["paper-1"]
     thread_params = next(params for method, params in fake.requests if method == "thread/start")
     turn_params = next(params for method, params in fake.requests if method == "turn/start")
@@ -647,6 +649,9 @@ def test_find_similar_tool_samples_seeds_and_excludes_selection(monkeypatch):
         return Result()
 
     monkeypatch.setattr("app.codex.tools._run_similar_search", fake_similar)
+    monkeypatch.setattr(
+        "app.codex.tools._resolve_selected_for_tool", lambda **_kwargs: []
+    )
     monkeypatch.setattr("app.codex.tools._is_search_unavailable", lambda _error: False)
     monkeypatch.setattr(
         "service.selected_paper_tool.select_representative_paper_ids",

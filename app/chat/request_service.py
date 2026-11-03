@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
@@ -19,7 +20,14 @@ from app.chat.models import (
     ChatValidationError,
     PreparedChatTurn,
 )
-from repositories.supabase.auth import SupabaseConfigurationError
+from repositories.supabase.auth import (
+    SupabaseAuthenticationError, SupabaseConfigurationError, verify_access_token,
+)
+from repositories.supabase.projects_repository import (
+    ProjectNotFoundError,
+    ProjectsPersistenceError,
+    get_project,
+)
 from repositories.supabase.chat_repository import (
     ChatAuthenticationError,
     ChatMessageConflictError,
@@ -194,6 +202,13 @@ def build_chat_turn_request(
     text = data.get("text", "")
     text = text.strip() if isinstance(text, str) else ""
     chat_id = str(data.get("chat_id", "default"))
+    raw_project_id = data.get("project_id")
+    if raw_project_id is None:
+        raise ChatValidationError("project_id is required")
+    try:
+        project_id = str(UUID(str(raw_project_id)))
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ChatValidationError("project_id must be a UUID") from error
     raw_title = data.get("title", "New chat")
     title = (
         raw_title.strip()[:200]
@@ -241,6 +256,13 @@ def build_chat_turn_request(
     )
     message_context = normalise_context(data.get("context"))
     guest_history = normalise_history(data.get("history"))
+
+    if not text:
+        raise ChatValidationError("Please Input Your Text")
+    if max_text_length is not None and len(text) > max_text_length:
+        raise ChatValidationError(
+            f"Your message is too long. Please keep it within {max_text_length:,} characters."
+        )
 
     requested_mode: Any = "auto"
     paper_ids: list[str] = []
@@ -292,17 +314,10 @@ def build_chat_turn_request(
                 f"A maximum of {MAX_SELECTED_PAPER_IDS:,} selected papers is supported"
             )
 
-    if not text:
-        # Preserve the historical bare 400 body (no mimetype override in original).
-        raise ChatValidationError("Please Input Your Text")
-    if max_text_length is not None and len(text) > max_text_length:
-        raise ChatValidationError(
-            f"Your message is too long. Please keep it within {max_text_length:,} characters."
-        )
-
     return ChatTurnRequest(
         text=text,
         chat_id=chat_id,
+        project_id=project_id,
         title=title,
         user_message_id=user_message_id,
         assistant_message_id=assistant_message_id,
@@ -340,13 +355,22 @@ def prepare_chat_turn(request: ChatTurnRequest) -> PreparedChatTurn:
             # verifies the conversation and saves the message transactionally.
             # History is skipped when Codex is expected to resume its thread.
             candidate_user_id = _jwt_subject_hint(access_token)
+            user_id_for_project = verify_access_token(access_token)
+            try:
+                project = get_project(
+                    user_id=user_id_for_project, project_id=request.project_id
+                )
+            except ProjectNotFoundError as error:
+                raise ChatForbiddenError("Forbidden") from error
+            project_id = str(project["id"])
             has_codex_thread = bool(
                 config.CHAT_RUNTIME == "codex"
                 and candidate_user_id
                 and get_thread_id(candidate_user_id, request.chat_id)
             )
-            user_id, raw_history, duplicate = prepare_persisted_chat_turn(
+            user_id, returned_project_id, raw_history, duplicate = prepare_persisted_chat_turn(
                 conversation_id=request.chat_id,
+                project_id=project_id,
                 access_token=access_token,
                 title=request.title,
                 text=request.text,
@@ -356,6 +380,8 @@ def prepare_chat_turn(request: ChatTurnRequest) -> PreparedChatTurn:
                 include_history=not has_codex_thread,
                 client_request_id=request.client_request_id,
             )
+            if returned_project_id != project_id:
+                raise ChatPersistenceError("Chat turn project scope changed")
             if duplicate:
                 raise ChatConflictError(
                     "This chat request has already been submitted"
@@ -369,8 +395,11 @@ def prepare_chat_turn(request: ChatTurnRequest) -> PreparedChatTurn:
             raise
         except ChatMessageConflictError as error:
             raise ChatConflictError(str(error)) from error
-        except ChatAuthenticationError as error:
+        except (ChatAuthenticationError, SupabaseAuthenticationError) as error:
             raise ChatUnauthorizedError("Unauthorized") from error
+        except ProjectsPersistenceError as error:
+            logger.error("Could not resolve chat project: %s", error)
+            raise ChatUnavailableError("Authenticated chat is unavailable") from error
         except SupabaseConfigurationError as error:
             logger.error("Supabase is not configured for authenticated chat")
             raise ChatUnavailableError("Authenticated chat is unavailable") from error
@@ -380,7 +409,7 @@ def prepare_chat_turn(request: ChatTurnRequest) -> PreparedChatTurn:
             logger.error("Could not initialise authenticated chat: %s", error)
             raise ChatUnavailableError("Authenticated chat is unavailable") from error
     return PreparedChatTurn(
-        request=request,
+        request=replace(request, project_id=project_id),
         user_id=user_id,
         history=history,
         has_codex_thread=has_codex_thread,

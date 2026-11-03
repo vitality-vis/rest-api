@@ -44,7 +44,11 @@ def api_base_url() -> str:
 
 def test_chat_v2_returns_text_for_hello(api_base_url: str, chat_auth_headers: dict[str, str]):
     """A non-search turn can fall back to the legacy chat path and stream text."""
+    project_id = os.getenv("PROJECT_ID")
+    if not project_id:
+        pytest.skip("PROJECT_ID is not set")
     payload = {
+        "project_id": project_id,
         "client_request_id": str(uuid4()),
         "chat_id": f"api-chat-v2-smoke-{uuid4()}",
         "text": "Hello",
@@ -70,7 +74,11 @@ def test_chat_v2_returns_text_for_hello(api_base_url: str, chat_auth_headers: di
 
 def test_chat_v2_finds_papers(api_base_url: str, chat_auth_headers: dict[str, str]):
     """A paper-finding turn reaches v2 and emits the paper-panel payload."""
+    project_id = os.getenv("PROJECT_ID")
+    if not project_id:
+        pytest.skip("PROJECT_ID is not set")
     payload = {
+        "project_id": project_id,
         "client_request_id": str(uuid4()),
         "chat_id": f"api-chat-v2-paper-search-{uuid4()}",
         "text": (

@@ -23,6 +23,7 @@ FULL_ONLY_BLUEPRINTS: tuple[tuple[str, str], ...] = (
     ("app.api.user.papers", "user_papers_bp"),
     ("app.api.user.library", "library_bp"),
     ("app.api.user.notes", "notes_bp"),
+    ("app.api.user.projects", "projects_bp"),
     ("app.api.chat", "chat_bp"),
     ("agents.agent_v1_legacy.summary_routes", "legacy_summary_bp"),
 )

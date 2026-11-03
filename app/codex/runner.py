@@ -115,6 +115,7 @@ async def _run_locked(
         return await asyncio.to_thread(
             execute_tool,
             user_id=request.user_id,
+            project_id=getattr(request, "project_id", None),
             selected_paper_ids=list(request.selected_paper_ids or []),
             selected_paper_groups=dict(
                 getattr(request, "selected_paper_groups", None) or {}
@@ -252,6 +253,7 @@ def _load_history_for_recovery(request: Any) -> list[dict[str, str]]:
         load_completed_history(
             conversation_id=str(request.chat_id),
             user_id=str(request.user_id),
+            project_id=str(request.project_id),
             exclude_message_id=getattr(request, "user_message_id", None),
             ownership_verified=True,
         )

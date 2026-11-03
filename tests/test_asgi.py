@@ -284,11 +284,13 @@ def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
     monkeypatch.setattr(
         "app.chat.request_service.get_thread_id", lambda _user_id, _chat_id: None
     )
+    monkeypatch.setattr("app.chat.request_service.verify_access_token", lambda _token: "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setattr("app.chat.request_service.get_project", lambda **_kwargs: {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
     prepared_kwargs: dict[str, Any] = {}
 
     def fake_prepare(**kwargs):
         prepared_kwargs.update(kwargs)
-        return "00000000-0000-0000-0000-000000000001", [], False
+        return ("00000000-0000-0000-0000-000000000001", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", [], False)
 
     monkeypatch.setattr(
         "app.chat.request_service.prepare_persisted_chat_turn", fake_prepare
@@ -304,6 +306,7 @@ def test_chat_v2_sse_order_with_fake_runner(suppress_lifecycle, monkeypatch):
             json={
                 "client_request_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
                 "chat_id": "c1",
+                "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "text": "Hello",
             },
         )
@@ -358,6 +361,7 @@ def test_bridge_persists_failed_when_queued_job_cancelled(monkeypatch):
 
     prepared = PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Hello",
             chat_id="queued-1",
             assistant_message_id="asst-queued",

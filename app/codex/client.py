@@ -21,6 +21,15 @@ logger = logging.getLogger(__name__)
 NotificationCallback = Callable[[dict[str, Any]], None]
 ToolHandler = Callable[[dict[str, Any]], Any]
 
+# gRPC writes these fork/poll diagnostics to stderr at INFO; they are not failures.
+_NOISY_APP_SERVER_STDERR = (
+    "FD from fork parent still in poll list",
+)
+
+
+def _is_noisy_app_server_stderr(text: str) -> bool:
+    return any(marker in text for marker in _NOISY_APP_SERVER_STDERR)
+
 
 class CodexClientError(RuntimeError):
     """The Codex process or protocol could not complete a request."""
@@ -217,7 +226,7 @@ class CodexClient:
             return
         for line in process.stderr:
             text = line.rstrip()
-            if text:
+            if text and not _is_noisy_app_server_stderr(text):
                 logger.info("codex app-server: %s", text)
 
     def _receive(self, message: dict[str, Any]) -> None:

@@ -9,6 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from repositories.supabase.project_papers_repository import (
+    ProjectPapersPersistenceError,
+    has_project_paper,
+)
 from repositories.supabase.user_papers_repository import (
     UserPapersPersistenceError,
     get_user_papers_by_ids,
@@ -94,7 +98,11 @@ def _library_rows_by_id(
 
 
 def _resolved_sources_by_id(
-    *, user_id: str | None, paper_ids: list[str], library_unavailable_message: str
+    *,
+    user_id: str | None,
+    paper_ids: list[str],
+    library_unavailable_message: str,
+    project_id: str | None = None,
 ) -> tuple[dict[str, ResolvedLibraryPaper], dict[str, dict[str, object]]]:
     """Resolve library-backed papers first, then remaining public corpus IDs."""
     requested_ids = _unique_ids(paper_ids)
@@ -107,6 +115,19 @@ def _resolved_sources_by_id(
         if user_id
         else {}
     )
+    if user_id and project_id:
+        try:
+            library_rows_by_id = {
+                paper_id: paper
+                for paper_id, paper in library_rows_by_id.items()
+                if has_project_paper(
+                    user_id=user_id,
+                    project_id=project_id,
+                    user_paper_id=str(paper.get("id") or ""),
+                )
+            }
+        except ProjectPapersPersistenceError as error:
+            raise LibraryPaperResolutionError(library_unavailable_message) from error
     resolved_library_by_id = {
         paper.paper_id: paper
         for paper in resolve_library_rows(
@@ -228,10 +249,13 @@ def resolve_papers(
 
 
 def resolve_selected_papers(
-    *, user_id: str | None, paper_ids: list[str]
+    *, user_id: str | None, paper_ids: list[str], project_id: str | None = None
 ) -> list[ResolvedLibraryPaper]:
     """Strictly resolve selected papers from the caller's library, then the corpus.
 
+    When ``project_id`` is supplied, a user-library row is usable only when its
+    asset belongs to that project. An unauthorized corpus-origin row falls back
+    to public catalog metadata, without exposing its private library state.
     A selected corpus paper does not need to have been saved first.  Only
     library-backed papers can contribute a full-text file; public corpus papers
     return ``library_paper=None`` and are therefore metadata-only evidence.  A
@@ -247,6 +271,7 @@ def resolve_selected_papers(
         user_id=user_id,
         paper_ids=requested_ids,
         library_unavailable_message="Selected papers are temporarily unavailable.",
+        project_id=project_id,
     )
     missing_user_ids = [
         paper_id

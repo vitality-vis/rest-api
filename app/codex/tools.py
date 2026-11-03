@@ -161,6 +161,7 @@ def tool_result(text: str, *, success: bool) -> dict[str, object]:
 def execute_tool(
     *,
     user_id: str | None,
+    project_id: str | None = None,
     selected_paper_ids: list[str],
     selected_paper_groups: dict[str, list[str]] | None = None,
     effort: str,
@@ -189,6 +190,8 @@ def execute_tool(
         elif tool == "find_similar_papers":
             result = _find_similar_papers(
                 payload,
+                user_id=user_id,
+                project_id=project_id,
                 selected_paper_ids=selected_paper_ids,
                 candidates=candidates,
             )
@@ -196,6 +199,7 @@ def execute_tool(
             result = _get_selected_paper_citations(
                 payload,
                 user_id=user_id,
+                project_id=project_id,
                 selected_paper_ids=selected_paper_ids,
                 candidates=candidates,
             )
@@ -210,6 +214,7 @@ def execute_tool(
         elif tool == "inspect_selected_papers":
             result = _inspect_selected_papers(
                 user_id=user_id,
+                project_id=project_id,
                 selected_paper_ids=selected_paper_ids,
                 selected_paper_groups=selected_paper_groups,
             )
@@ -217,6 +222,7 @@ def execute_tool(
             result = _get_selected_paper_evidence(
                 payload,
                 user_id=user_id,
+                project_id=project_id,
                 selected_paper_ids=selected_paper_ids,
                 selected_paper_groups=selected_paper_groups,
             )
@@ -366,10 +372,14 @@ def _run_similar_search(seed_ids: list[str], limit: int):
     )
 
 
-def _resolve_selected_for_tool(*, user_id: str | None, paper_ids: list[str]):
+def _resolve_selected_for_tool(
+    *, user_id: str | None, project_id: str | None, paper_ids: list[str]
+):
     from service.paper_registry import resolve_selected_papers
 
-    return resolve_selected_papers(user_id=user_id, paper_ids=paper_ids)
+    return resolve_selected_papers(
+        user_id=user_id, project_id=project_id, paper_ids=paper_ids
+    )
 
 
 def _fetch_citations(doi: str, limit: int, direction: str | None):
@@ -381,6 +391,8 @@ def _fetch_citations(doi: str, limit: int, direction: str | None):
 def _find_similar_papers(
     payload: dict[str, Any],
     *,
+    user_id: str | None,
+    project_id: str | None,
     selected_paper_ids: list[str],
     candidates: dict[str, dict[str, object]] | None,
 ) -> dict[str, object]:
@@ -392,6 +404,9 @@ def _find_similar_papers(
     raw = list(dict.fromkeys(selected_paper_ids))
     if not raw:
         return tool_result("Select or pin at least one seed paper first.", success=False)
+    _resolve_selected_for_tool(
+        user_id=user_id, project_id=project_id, paper_ids=raw
+    )
     seeds, policy = select_representative_paper_ids(
         raw, limit=20, prefer_map_coverage=True
     )
@@ -431,6 +446,7 @@ def _get_selected_paper_citations(
     payload: dict[str, Any],
     *,
     user_id: str | None,
+    project_id: str | None,
     selected_paper_ids: list[str],
     candidates: dict[str, dict[str, object]] | None,
 ) -> dict[str, object]:
@@ -451,7 +467,9 @@ def _get_selected_paper_citations(
     except (TypeError, ValueError):
         per_paper = 10
     try:
-        resolved = _resolve_selected_for_tool(user_id=user_id, paper_ids=ids)
+        resolved = _resolve_selected_for_tool(
+            user_id=user_id, project_id=project_id, paper_ids=ids
+        )
     except LibraryPaperResolutionError as error_value:
         return tool_result(str(error_value), success=False)
     excluded = set(selected_paper_ids)
@@ -544,6 +562,7 @@ def _present_papers(
 def _inspect_selected_papers(
     *,
     user_id: str | None,
+    project_id: str | None,
     selected_paper_ids: list[str],
     selected_paper_groups: dict[str, list[str]] | None,
 ) -> dict[str, object]:
@@ -555,6 +574,7 @@ def _inspect_selected_papers(
     try:
         overview = inspect_selected_papers(
             user_id=user_id,
+            project_id=project_id,
             selected_paper_ids=selected_paper_ids,
             selected_paper_groups=selected_paper_groups,
         )
@@ -567,6 +587,7 @@ def _get_selected_paper_evidence(
     payload: dict[str, Any],
     *,
     user_id: str | None,
+    project_id: str | None,
     selected_paper_ids: list[str],
     selected_paper_groups: dict[str, list[str]] | None,
 ) -> dict[str, object]:
@@ -585,6 +606,7 @@ def _get_selected_paper_evidence(
     try:
         evidence = get_selected_paper_evidence(
             user_id=user_id,
+            project_id=project_id,
             selected_paper_ids=selected_paper_ids,
             selected_paper_groups=selected_paper_groups,
             request=EvidenceRequest(

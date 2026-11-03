@@ -164,6 +164,7 @@ async def run(request: V2ChatRequest) -> AsyncIterator[object]:
             yield TextDelta(
                 text=answer_selected_papers(
                     user_id=request.user_id,
+                    project_id=request.project_id,
                     paper_ids=[str(item) for item in request.selected_paper_ids or []],
                     text=request.text,
                     # Guest requests may use public corpus metadata, but never a

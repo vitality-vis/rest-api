@@ -35,13 +35,19 @@ SCOPE_WARNING_END = "[[/VITALITY_FILE_SEARCH_SCOPE_WARNING]]"
 
 
 def build_evidence_plan(
-    *, user_id: str | None, paper_ids: list[str], use_file_search: bool
+    *,
+    user_id: str | None,
+    paper_ids: list[str],
+    use_file_search: bool,
+    project_id: str | None = None,
 ) -> tuple[SynthesisExecutionPlan, list[str]]:
     if not paper_ids:
         raise PaperQAError("Select at least one paper first.")
 
     try:
-        resolved_papers = resolve_selected_papers(user_id=user_id, paper_ids=paper_ids)
+        resolved_papers = resolve_selected_papers(
+            user_id=user_id, project_id=project_id, paper_ids=paper_ids
+        )
     except LibraryPaperResolutionError as error:
         raise PaperQAError(str(error)) from error
 
@@ -165,10 +171,12 @@ def answer(
     text: str,
     use_file_search: bool = False,
     model: str | None = None,
+    project_id: str | None = None,
     trace: SearchV2Trace | None = None,
 ) -> str:
     plan, metadata_records = build_evidence_plan(
         user_id=user_id,
+        project_id=project_id,
         paper_ids=paper_ids,
         use_file_search=use_file_search,
     )

@@ -26,6 +26,7 @@ def _prepared(
 ) -> PreparedChatTurn:
     return PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Hello",
             chat_id=chat_id,
             assistant_message_id=assistant_message_id,

@@ -26,6 +26,8 @@ def test_papers_allowlist_excludes_full_only_modules():
     assert papers_modules.isdisjoint(full_only_modules)
     assert ("app.api.public.papers", "papers_bp") in PAPERS_BLUEPRINTS
     assert ("app.api.user.papers", "user_papers_bp") in FULL_ONLY_BLUEPRINTS
+    assert ("app.api.user.projects", "projects_bp") in FULL_ONLY_BLUEPRINTS
+    assert ("app.api.user.projects", "projects_bp") not in PAPERS_BLUEPRINTS
     assert len(FULL_BLUEPRINTS) == len(PAPERS_BLUEPRINTS) + len(FULL_ONLY_BLUEPRINTS)
 
 

@@ -15,6 +15,9 @@ from repositories.supabase.auth import (
     SupabaseConfigurationError,
     verify_access_token,
 )
+from repositories.supabase.projects_repository import (
+    ProjectNotFoundError, ProjectsPersistenceError, get_project,
+)
 from repositories.supabase.chat_repository import (
     ChatPersistenceError,
     ConversationOwnershipError,
@@ -59,6 +62,17 @@ def _require_timestamp(value: object, field_name: str) -> str:
     except ValueError as error:
         raise ValueError(f"{field_name} must be an ISO timestamp") from error
     return value
+
+
+
+def _resolve_project(user_id: str, raw_project_id: object) -> str:
+    if raw_project_id is None:
+        raise ValueError("project_id is required")
+    project = get_project(
+        user_id=user_id,
+        project_id=_require_uuid(raw_project_id, "project_id"),
+    )
+    return str(project["id"])
 
 
 def _importable_message(value: object) -> dict[str, object]:
@@ -115,6 +129,14 @@ def import_guest_chats():
         return Response("Unauthorized", status=401, mimetype="text/plain")
 
     data = request.get_json(force=True) or {}
+    try:
+        project_id = _resolve_project(user_id, data.get("project_id"))
+    except ValueError as error:
+        return Response(str(error), status=400, mimetype="text/plain")
+    except ProjectNotFoundError:
+        return Response("Forbidden", status=403, mimetype="text/plain")
+    except ProjectsPersistenceError:
+        return Response("Chat import is unavailable", status=503, mimetype="text/plain")
     conversations = data.get("conversations")
     if not isinstance(conversations, list):
         return Response("Invalid chat import payload", status=400, mimetype="text/plain")
@@ -139,6 +161,7 @@ def import_guest_chats():
             ensure_conversation(
                 conversation_id=conversation_id,
                 user_id=user_id,
+                project_id=project_id,
                 title=title.strip()[:200],
                 created_at=_require_timestamp(
                     value.get("createdAt"), "conversation createdAt"
@@ -163,9 +186,9 @@ def import_guest_chats():
             imported_ids.append(conversation_id)
     except ValueError as error:
         return Response(str(error), status=400, mimetype="text/plain")
-    except ConversationOwnershipError:
+    except (ConversationOwnershipError, ProjectNotFoundError):
         return Response("Forbidden", status=403, mimetype="text/plain")
-    except ChatPersistenceError as error:
+    except (ChatPersistenceError, ProjectsPersistenceError) as error:
         logger.error("Could not import guest chats: %s", error)
         return Response("Chat import is unavailable", status=503, mimetype="text/plain")
 
@@ -194,8 +217,15 @@ def get_chat_conversations():
         return Response("Unauthorized", status=401, mimetype="text/plain")
 
     try:
-        conversations = load_user_conversations(user_id=user_id)
-    except ChatPersistenceError as error:
+        project_id = _resolve_project(user_id, request.args.get("project_id"))
+        conversations = load_user_conversations(
+            user_id=user_id, project_id=project_id
+        )
+    except ValueError as error:
+        return Response(str(error), status=400, mimetype="text/plain")
+    except ProjectNotFoundError:
+        return Response("Forbidden", status=403, mimetype="text/plain")
+    except (ChatPersistenceError, ProjectsPersistenceError) as error:
         logger.error("Could not load authenticated chats: %s", error)
         return Response("Chat history is unavailable", status=503, mimetype="text/plain")
 
@@ -222,14 +252,18 @@ def update_chat_conversation_closed(conversation_id: str):
         return Response("is_closed must be a boolean", status=400, mimetype="text/plain")
 
     try:
+        project_id = _resolve_project(user_id, data.get("project_id"))
         set_conversation_closed(
             conversation_id=conversation_id,
             user_id=user_id,
+            project_id=project_id,
             is_closed=is_closed,
         )
-    except ConversationOwnershipError:
+    except ValueError as error:
+        return Response(str(error), status=400, mimetype="text/plain")
+    except (ConversationOwnershipError, ProjectNotFoundError):
         return Response("Forbidden", status=403, mimetype="text/plain")
-    except ChatPersistenceError as error:
+    except (ChatPersistenceError, ProjectsPersistenceError) as error:
         current_app.logger.error("Could not update chat tab state: %s", error)
         return Response("Chat tab state is unavailable", status=503, mimetype="text/plain")
 

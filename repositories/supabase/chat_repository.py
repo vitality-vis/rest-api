@@ -49,14 +49,18 @@ def _sort_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]
     return sorted(messages, key=key)
 
 
-def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
+def load_user_conversations(
+    *, user_id: str, project_id: str
+) -> list[dict[str, object]]:
     """Load every conversation and message belonging to one verified user."""
+    project_id = _normalise_uuid(project_id)
     conversations_response = _request(
         "GET",
         "chat_conversations",
         params={
             "user_id": f"eq.{_normalise_uuid(user_id)}",
-            "select": "id,title,is_closed,created_at,updated_at",
+            "project_id": f"eq.{project_id}",
+            "select": "id,project_id,title,is_closed,created_at,updated_at",
             "order": "updated_at.desc",
         },
     )
@@ -91,6 +95,7 @@ def load_user_conversations(*, user_id: str) -> list[dict[str, object]]:
     return [
         {
             "id": conversation["id"],
+            "project_id": conversation["project_id"],
             "title": conversation["title"],
             "created_at": conversation["created_at"],
             "updated_at": conversation["updated_at"],
@@ -128,12 +133,14 @@ def load_completed_history(
     *,
     conversation_id: str,
     user_id: str,
+    project_id: str,
     exclude_message_id: str | None = None,
     ownership_verified: bool = False,
 ) -> list[dict[str, object]]:
     """Return completed turns, optionally reusing an earlier ownership check."""
     conversation_id = _normalise_uuid(conversation_id)
     user_id = _normalise_uuid(user_id)
+    project_id = _normalise_uuid(project_id)
     if not ownership_verified:
         ownership_response = _request(
             "GET",
@@ -141,6 +148,7 @@ def load_completed_history(
             params={
                 "id": f"eq.{conversation_id}",
                 "user_id": f"eq.{user_id}",
+                "project_id": f"eq.{project_id}",
                 "select": "id",
             },
         )
@@ -168,6 +176,7 @@ def load_completed_history(
 def prepare_chat_turn(
     *,
     conversation_id: str,
+    project_id: str,
     access_token: str,
     title: str,
     text: str,
@@ -176,9 +185,10 @@ def prepare_chat_turn(
     context: dict[str, object] | None,
     include_history: bool,
     client_request_id: str | None = None,
-) -> tuple[str, list[dict[str, object]], bool]:
+) -> tuple[str, str, list[dict[str, object]], bool]:
     """Authenticate and atomically prepare one persisted chat turn."""
     conversation_id = _normalise_uuid(conversation_id)
+    project_id = _normalise_uuid(project_id)
     message_uuid = _normalise_uuid(message_id) if message_id else str(uuid4())
     request_uuid = _normalise_uuid(client_request_id) if client_request_id else message_uuid
     response = _request(
@@ -187,6 +197,7 @@ def prepare_chat_turn(
         headers={"Authorization": f"Bearer {access_token}"},
         json={
             "p_conversation_id": conversation_id,
+            "p_project_id": project_id,
             "p_title": title,
             "p_message_id": message_uuid,
             "p_message_created_at": created_at,
@@ -207,52 +218,27 @@ def prepare_chat_turn(
             "Chat conversation does not belong to this user"
         )
     if response.status_code == 404 and _is_missing_prepare_rpc(response):
-        logger.warning(
-            "prepare_chat_turn RPC is not installed; using compatibility path"
-        )
-        from repositories.supabase.auth import (
-            SupabaseAuthenticationError,
-            verify_access_token,
-        )
-
-        try:
-            user_id = verify_access_token(access_token)
-        except SupabaseAuthenticationError as error:
-            raise ChatAuthenticationError(str(error)) from error
-        ensure_conversation(
-            conversation_id=conversation_id, user_id=user_id, title=title
-        )
-        history = (
-            load_completed_history(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                exclude_message_id=message_uuid,
-                ownership_verified=True,
-            )
-            if include_history
-            else []
-        )
-        inserted = save_message(
-            conversation_id=conversation_id,
-            role="user",
-            text=text,
-            message_id=message_uuid,
-            created_at=created_at,
-            context=context,
-        )
-        return user_id, history, not inserted
+        raise ChatPersistenceError("Project-aware prepare_chat_turn RPC is not installed")
     if response.status_code not in {200, 201}:
         raise ChatPersistenceError("Could not prepare chat turn")
     payload = response.json()
     if isinstance(payload, list):
         payload = payload[0] if payload else {}
-    if not isinstance(payload, dict) or not isinstance(payload.get("user_id"), str):
-        raise ChatPersistenceError("Chat turn preparation returned no user identity")
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("user_id"), str)
+        or not isinstance(payload.get("project_id"), str)
+    ):
+        raise ChatPersistenceError("Chat turn preparation returned invalid scope")
     user_id = _normalise_uuid(payload["user_id"])
+    returned_project_id = _normalise_uuid(payload["project_id"])
+    if returned_project_id != project_id:
+        raise ChatPersistenceError("Chat turn preparation returned the wrong project")
     history = payload.get("history", [])
     duplicate = payload.get("duplicate", False) is True
     return (
         user_id,
+        returned_project_id,
         _messages_to_history(history if isinstance(history, list) else []),
         duplicate,
     )
@@ -306,6 +292,7 @@ def ensure_conversation(
     *,
     conversation_id: str,
     user_id: str,
+    project_id: str,
     title: str = "New chat",
     created_at: str | None = None,
     updated_at: str | None = None,
@@ -313,18 +300,23 @@ def ensure_conversation(
 ) -> str:
     """Create a user-owned conversation, or prove the existing one is theirs."""
     conversation_id = _normalise_uuid(conversation_id)
+    user_id = _normalise_uuid(user_id)
+    project_id = _normalise_uuid(project_id)
     response = _request(
         "GET",
         "chat_conversations",
-        params={"id": f"eq.{conversation_id}", "select": "id,user_id"},
+        params={"id": f"eq.{conversation_id}", "select": "id,user_id,project_id"},
     )
     if response.status_code != 200:
         raise ChatPersistenceError("Could not look up chat conversation")
 
     existing = response.json()
     if existing:
-        if existing[0].get("user_id") != user_id:
+        row = existing[0]
+        if row.get("user_id") != user_id:
             raise ConversationOwnershipError("Chat conversation does not belong to this user")
+        if row.get("project_id") != project_id:
+            raise ConversationOwnershipError("Chat conversation belongs to a different project")
         return conversation_id
 
     create_response = _request(
@@ -334,6 +326,7 @@ def ensure_conversation(
         json={
             "id": conversation_id,
             "user_id": user_id,
+            "project_id": project_id,
             "title": title,
             "is_closed": is_closed,
             **({"created_at": created_at} if created_at else {}),
@@ -346,7 +339,7 @@ def ensure_conversation(
     # A simultaneous request may have created the same UUID. Re-check ownership;
     # any other failure remains a persistence error rather than falling back to guest mode.
     if create_response.status_code == 409:
-        return ensure_conversation(conversation_id=conversation_id, user_id=user_id)
+        return ensure_conversation(conversation_id=conversation_id, user_id=user_id, project_id=project_id, title=title, created_at=created_at, updated_at=updated_at, is_closed=is_closed)
     raise ChatPersistenceError("Could not create chat conversation")
 
 
@@ -435,14 +428,15 @@ def clear_codex_thread_binding(
         raise ChatPersistenceError("Could not clear Codex thread binding")
     return bool(response.json())
 
-def set_conversation_closed(*, conversation_id: str, user_id: str, is_closed: bool) -> None:
+def set_conversation_closed(*, conversation_id: str, user_id: str, project_id: str, is_closed: bool) -> None:
     """Persist the tab-visibility preference for one owned conversation."""
     conversation_id = _normalise_uuid(conversation_id)
     user_id = _normalise_uuid(user_id)
+    project_id = _normalise_uuid(project_id)
     response = _request(
         "PATCH",
         "chat_conversations",
-        params={"id": f"eq.{conversation_id}", "user_id": f"eq.{user_id}"},
+        params={"id": f"eq.{conversation_id}", "user_id": f"eq.{user_id}", "project_id": f"eq.{project_id}"},
         headers={"Prefer": "return=representation"},
         json={"is_closed": is_closed},
     )

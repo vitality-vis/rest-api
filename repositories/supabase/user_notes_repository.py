@@ -1,4 +1,4 @@
-"""Persistence for the authenticated user's single research-notes document."""
+"""Project-aware persistence for research-notes documents."""
 
 from __future__ import annotations
 
@@ -6,47 +6,43 @@ import requests
 
 from repositories.supabase.client import get_supabase_settings, service_role_headers
 
-
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
-_NOTE_COLUMNS = "id,user_id,content,created_at,updated_at"
+_NOTE_COLUMNS = "id,user_id,project_id,content,created_at,updated_at"
 
 
 class UserNotesPersistenceError(RuntimeError):
     """Raised when the user-notes database cannot complete an operation."""
 
 
-def get_user_note(*, user_id: str) -> dict[str, object] | None:
-    """Return the verified user's note row, or None when they have none yet."""
+def get_user_note(*, user_id: str, project_id: str) -> dict[str, object] | None:
     response = _request(
         "GET",
         "user_notes",
         params={
             "user_id": f"eq.{user_id}",
+            "project_id": f"eq.{project_id}",
             "select": _NOTE_COLUMNS,
-            "limit": "1",
+            "limit": "2",
         },
     )
     if response.status_code != 200:
         raise UserNotesPersistenceError("Could not load user note")
     records = _json_list(response, "User note returned an invalid response")
+    if len(records) > 1:
+        raise UserNotesPersistenceError("User note returned an invalid response")
     return records[0] if records else None
 
 
-def upsert_user_note(*, user_id: str, content: str) -> dict[str, object]:
-    """Insert or replace the verified user's note content by user_id."""
+def upsert_user_note(*, user_id: str, project_id: str, content: str) -> dict[str, object]:
     response = _request(
         "POST",
         "user_notes",
-        params={"on_conflict": "user_id"},
+        params={"on_conflict": "user_id,project_id"},
         headers={"Prefer": "resolution=merge-duplicates,return=representation"},
-        json={
-            "user_id": user_id,
-            "content": content,
-        },
+        json={"user_id": user_id, "project_id": project_id, "content": content},
     )
     if response.status_code not in {200, 201}:
         raise UserNotesPersistenceError("Could not save user note")
-
     records = _json_list(response, "User note save returned an invalid response")
     if len(records) != 1:
         raise UserNotesPersistenceError("User note save returned an invalid response")

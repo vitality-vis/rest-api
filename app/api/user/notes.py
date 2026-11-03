@@ -1,4 +1,4 @@
-"""Authenticated API endpoints for a user's single research-notes document."""
+"""Authenticated project-scoped research-notes API."""
 
 from __future__ import annotations
 
@@ -10,16 +10,18 @@ from repositories.supabase.auth import (
     SupabaseConfigurationError,
     verify_access_token,
 )
+from repositories.supabase.projects_repository import (
+    ProjectNotFoundError,
+    ProjectsPersistenceError,
+    get_project,
+)
 from repositories.supabase.user_notes_repository import (
     UserNotesPersistenceError,
     get_user_note,
     upsert_user_note,
 )
 
-
 notes_bp = Blueprint("notes", __name__)
-
-# Large enough for research notes; still bounds accidental / hostile payloads.
 MAX_NOTES_CONTENT_LENGTH = 500_000
 
 
@@ -54,50 +56,71 @@ def _validate_content(payload: object) -> str:
     return content
 
 
-def _note_response(note: dict[str, object] | None) -> dict[str, object]:
-    """Always return a note-shaped payload; missing rows become empty content."""
+def _note_response(note: dict[str, object] | None, project_id: str) -> dict[str, object]:
     if note is None:
         return {
+            "project_id": project_id,
             "content": "",
             "created_at": None,
             "updated_at": None,
         }
     content = note.get("content")
     return {
+        "project_id": project_id,
         "content": content if isinstance(content, str) else "",
         "created_at": note.get("created_at"),
         "updated_at": note.get("updated_at"),
     }
 
 
-@notes_bp.route("/notes", methods=["GET"])
-@cross_origin()
-def get_notes():
+def _notes_error(error: Exception):
+    if isinstance(error, ProjectNotFoundError):
+        return jsonify({"error": "Project not found"}), 404
+    current_app.logger.error("Notes operation failed: %s", error)
+    return Response("Notes are unavailable", status=503, mimetype="text/plain")
+
+
+def _handle_get(project_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
+    assert user_id is not None
     try:
-        note = get_user_note(user_id=user_id)
-    except UserNotesPersistenceError as error:
-        current_app.logger.error("Could not load user note: %s", error)
-        return Response("Notes are unavailable", status=503, mimetype="text/plain")
-    return jsonify(_note_response(note))
+        project = get_project(user_id=user_id, project_id=project_id)
+        resolved_project_id = str(project["id"])
+        note = get_user_note(user_id=user_id, project_id=resolved_project_id)
+    except (ProjectsPersistenceError, UserNotesPersistenceError) as error:
+        return _notes_error(error)
+    return jsonify(_note_response(note, resolved_project_id))
 
 
-@notes_bp.route("/notes", methods=["PUT"])
-@cross_origin()
-def put_notes():
+def _handle_put(project_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
+    assert user_id is not None
     try:
         content = _validate_content(request.get_json(silent=True))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
-
     try:
-        note = upsert_user_note(user_id=user_id, content=content)
-    except UserNotesPersistenceError as error:
-        current_app.logger.error("Could not save user note: %s", error)
-        return Response("Notes are unavailable", status=503, mimetype="text/plain")
-    return jsonify(_note_response(note))
+        project = get_project(user_id=user_id, project_id=project_id)
+        resolved_project_id = str(project["id"])
+        note = upsert_user_note(
+            user_id=user_id, project_id=resolved_project_id, content=content
+        )
+    except (ProjectsPersistenceError, UserNotesPersistenceError) as error:
+        return _notes_error(error)
+    return jsonify(_note_response(note, resolved_project_id))
+
+
+@notes_bp.route("/projects/<uuid:project_id>/notes", methods=["GET"])
+@cross_origin()
+def get_project_notes(project_id):
+    return _handle_get(str(project_id))
+
+
+@notes_bp.route("/projects/<uuid:project_id>/notes", methods=["PUT"])
+@cross_origin()
+def put_project_notes(project_id):
+    return _handle_put(str(project_id))

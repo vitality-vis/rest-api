@@ -36,6 +36,7 @@ class EvidenceRequest:
 def inspect_selected_papers(
     *,
     user_id: str | None,
+    project_id: str | None = None,
     selected_paper_ids: list[str],
     selected_paper_groups: dict[str, list[str]] | None = None,
 ) -> dict[str, object]:
@@ -55,7 +56,7 @@ def inspect_selected_papers(
         min(len(selected), MAX_INSPECTION_RECORDS),
         groups=groups,
     )
-    papers = _resolve(user_id=user_id, paper_ids=sampled_ids)
+    papers = _resolve(user_id=user_id, project_id=project_id, paper_ids=sampled_ids)
     sampled = [_title_record(paper, include_availability=True) for paper in papers]
     years = [
         int(record["year"])
@@ -79,6 +80,7 @@ def inspect_selected_papers(
 def get_selected_paper_evidence(
     *,
     user_id: str | None,
+    project_id: str | None = None,
     selected_paper_ids: list[str],
     selected_paper_groups: dict[str, list[str]] | None = None,
     request: EvidenceRequest,
@@ -111,7 +113,7 @@ def get_selected_paper_evidence(
         group=request.group,
         groups=groups,
     )
-    resolved = _resolve(user_id=user_id, paper_ids=chosen_ids)
+    resolved = _resolve(user_id=user_id, project_id=project_id, paper_ids=chosen_ids)
 
     if detail == "auto":
         abstract_count = min(len(resolved), MAX_ABSTRACT_RECORDS)
@@ -404,10 +406,12 @@ def _sample_positions(count: int, limit: int) -> list[int]:
 
 
 def _resolve(
-    *, user_id: str | None, paper_ids: list[str]
+    *, user_id: str | None, project_id: str | None, paper_ids: list[str]
 ) -> list[ResolvedLibraryPaper]:
     try:
-        return resolve_selected_papers(user_id=user_id, paper_ids=paper_ids)
+        return resolve_selected_papers(
+            user_id=user_id, project_id=project_id, paper_ids=paper_ids
+        )
     except LibraryPaperResolutionError as error:
         raise SelectedPaperEvidenceError(str(error)) from error
 

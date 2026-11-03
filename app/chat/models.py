@@ -47,6 +47,7 @@ class ChatTurnRequest:
     """Validated Chat turn input, independent of Flask/FastAPI."""
 
     text: str
+    project_id: str
     chat_id: str = "default"
     title: str = "New chat"
     user_message_id: str | None = None

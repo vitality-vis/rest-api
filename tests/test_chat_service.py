@@ -28,6 +28,19 @@ from app.chat.runner_adapter import build_agent_request
 from app.chat.service import FALLBACK_TEXT, iter_chat_turn_events
 
 
+@pytest.fixture(autouse=True)
+def project_scope(monkeypatch):
+    project_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setattr(
+        "app.chat.request_service.verify_access_token",
+        lambda _token: "33333333-3333-3333-3333-333333333333",
+    )
+    monkeypatch.setattr(
+        "app.chat.request_service.get_project",
+        lambda **_kwargs: {"id": project_id},
+    )
+
+
 async def _fake_runner(_request: Any) -> AsyncIterator[str]:
     yield "Hello"
     yield ", world"
@@ -85,20 +98,25 @@ def test_normalise_context_oversized_paper_selection_cannot_bypass_size_bound():
     assert context["selectedPapers"]
 
 
+def test_build_chat_turn_request_requires_project_id():
+    with pytest.raises(ChatValidationError, match="project_id is required"):
+        build_chat_turn_request({"text": "Hi"})
+
 def test_build_chat_turn_request_rejects_empty_text():
     with pytest.raises(ChatValidationError, match="Please Input Your Text"):
-        build_chat_turn_request({"text": "   "})
+        build_chat_turn_request({"text": "   ", "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
 
 
 def test_build_chat_turn_request_rejects_malformed_client_request_id():
     with pytest.raises(ChatValidationError, match="client_request_id must be a UUID"):
-        build_chat_turn_request({"text": "Hi", "client_request_id": "req-1"})
+        build_chat_turn_request({"text": "Hi", "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "client_request_id": "req-1"})
 
 
 def test_build_chat_turn_request_normalises_client_request_uuid():
     request = build_chat_turn_request(
         {
             "text": "Hi",
+            "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             "client_request_id": "CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC",
         }
     )
@@ -109,6 +127,7 @@ def test_build_chat_turn_request_guest_history():
     request = build_chat_turn_request(
         {
             "text": "Hi",
+            "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             "chat_id": "c1",
             "history": [
                 {"role": "user", "content": "earlier"},
@@ -128,6 +147,7 @@ def test_build_chat_turn_request_guest_history():
 def test_build_chat_turn_request_derives_union_from_groups():
     request = build_chat_turn_request({
         "text": "Compare them",
+        "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "paper_groups": {
             "library": ["paper-1", "paper-2"],
             "map": ["paper-2", "paper-3"],
@@ -145,11 +165,13 @@ def test_build_chat_turn_request_rejects_too_many_selected_papers():
     with pytest.raises(ChatValidationError, match="maximum of 10,000"):
         build_chat_turn_request({
             "text": "Summarize",
+            "project_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             "paper_groups": {"map": [f"paper-{index}" for index in range(10_001)]},
         })
 
 def test_prepare_chat_turn_requires_authentication():
     request = ChatTurnRequest(
+        project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         text="Hi",
         chat_id="guest-1",
         guest_history=[{"role": "user", "content": "before"}],
@@ -160,6 +182,7 @@ def test_prepare_chat_turn_requires_authentication():
 
 def test_prepare_authenticated_turn_uses_one_atomic_repository_call(monkeypatch):
     request = ChatTurnRequest(
+        project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         text="Hi",
         chat_id="11111111-1111-1111-1111-111111111111",
         user_message_id="22222222-2222-2222-2222-222222222222",
@@ -178,7 +201,7 @@ def test_prepare_authenticated_turn_uses_one_atomic_repository_call(monkeypatch)
 
     def fake_prepare(**kwargs):
         seen.update(kwargs)
-        return "33333333-3333-3333-3333-333333333333", [], False
+        return ("33333333-3333-3333-3333-333333333333", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", [], False)
 
     monkeypatch.setattr(
         "app.chat.request_service.prepare_persisted_chat_turn", fake_prepare
@@ -190,11 +213,13 @@ def test_prepare_authenticated_turn_uses_one_atomic_repository_call(monkeypatch)
     assert prepared.has_codex_thread is True
     assert prepared.history == []
     assert seen["access_token"] == "signed-token"
+    assert seen["project_id"] == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     assert seen["include_history"] is False
 
 
 def test_prepare_v2_turn_includes_history_despite_codex_mapping(monkeypatch):
     request = ChatTurnRequest(
+        project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         text="Hi",
         chat_id="11111111-1111-1111-1111-111111111111",
         user_message_id="22222222-2222-2222-2222-222222222222",
@@ -214,6 +239,7 @@ def test_prepare_v2_turn_includes_history_despite_codex_mapping(monkeypatch):
         seen.update(kwargs)
         return (
             "33333333-3333-3333-3333-333333333333",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             [{"role": "user", "content": "Earlier"}],
             False,
         )
@@ -232,6 +258,7 @@ def test_prepare_v2_turn_includes_history_despite_codex_mapping(monkeypatch):
 def test_build_agent_request_v2():
     prepared = PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Find papers",
             chat_id="c1",
             effort="medium",
@@ -253,7 +280,7 @@ def test_build_agent_request_v2():
 
 def test_iter_chat_turn_events_without_flask_context():
     prepared = PreparedChatTurn(
-        request=ChatTurnRequest(text="Hello", chat_id="t1"),
+        request=ChatTurnRequest(project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", text="Hello", chat_id="t1"),
         user_id=None,
         history=[],
     )
@@ -268,7 +295,7 @@ def test_iter_chat_turn_events_without_flask_context():
 
 def test_iter_chat_turn_events_fallback_on_runner_error():
     prepared = PreparedChatTurn(
-        request=ChatTurnRequest(text="Hello", chat_id="t2"),
+        request=ChatTurnRequest(project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", text="Hello", chat_id="t2"),
         user_id=None,
         history=[],
     )
@@ -292,6 +319,7 @@ def test_authenticated_turn_persists_assistant_on_completion(monkeypatch):
     )
     prepared = PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Hello",
             chat_id="auth-1",
             assistant_message_id="asst-1",
@@ -321,6 +349,7 @@ def test_authenticated_turn_persists_failed_on_client_disconnect(monkeypatch):
     )
     prepared = PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Hello",
             chat_id="auth-disconnect",
             assistant_message_id="asst-disconnect",
@@ -350,6 +379,7 @@ def test_authenticated_turn_persists_failed_on_client_disconnect(monkeypatch):
 
 def test_prepare_duplicate_request_returns_conflict(monkeypatch):
     request = ChatTurnRequest(
+        project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         text="Hi",
         chat_id="11111111-1111-1111-1111-111111111111",
         user_message_id="22222222-2222-2222-2222-222222222222",
@@ -359,7 +389,7 @@ def test_prepare_duplicate_request_returns_conflict(monkeypatch):
     monkeypatch.setattr(
         "app.chat.request_service.prepare_persisted_chat_turn",
         lambda **_kwargs: (
-            "33333333-3333-3333-3333-333333333333", [], True
+            "33333333-3333-3333-3333-333333333333", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", [], True
         ),
     )
     monkeypatch.setattr(
@@ -382,6 +412,7 @@ def test_codex_persistence_failure_drops_thread_mapping(monkeypatch):
     )
     prepared = PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Hello", chat_id="auth-codex", assistant_message_id="asst-codex"
         ),
         user_id="user-codex",
@@ -403,6 +434,7 @@ def test_completion_waits_for_assistant_persistence(monkeypatch):
     )
     prepared = PreparedChatTurn(
         request=ChatTurnRequest(
+            project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             text="Hello", chat_id="auth-2", assistant_message_id="asst-2"
         ),
         user_id="user-1",

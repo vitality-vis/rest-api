@@ -25,20 +25,25 @@ from repositories.supabase.auth import (
     SupabaseConfigurationError,
     verify_access_token,
 )
+from repositories.supabase.project_papers_repository import (
+    ProjectPaperNotFoundError, ProjectPapersPersistenceError, add_project_paper,
+    has_any_membership, list_project_papers, remove_project_paper,
+    update_project_paper_tags,
+)
+from repositories.supabase.projects_repository import (
+    ProjectNotFoundError, ProjectsPersistenceError, get_project,
+)
 from repositories.supabase.user_papers_repository import (
     UserPaperNotFoundError,
-    UserPaperNotSavedError,
     UserPapersPersistenceError,
     clear_user_paper_file,
     delete_user_paper,
     get_user_paper,
+    get_user_papers_by_ids,
     import_user_papers,
     list_user_papers,
     save_user_paper,
     save_user_papers,
-    unsave_user_paper,
-    unsave_user_papers,
-    update_user_paper_tags,
     upsert_user_paper_file,
 )
 from service.fulltext import LibraryIndexError, detach_user_paper_file, index_user_paper
@@ -216,6 +221,25 @@ def _require_authenticated_user_id() -> tuple[str | None, Response | None]:
         return None, Response("Unauthorized", status=401, mimetype="text/plain")
 
 
+def _resolve_project(*, user_id: str, project_id: str):
+    try:
+        project = get_project(user_id=user_id, project_id=project_id)
+    except ProjectNotFoundError:
+        return None, Response("Project not found", status=404, mimetype="text/plain")
+    except ProjectsPersistenceError as error:
+        current_app.logger.error("Could not resolve library project: %s", error)
+        return None, Response("Library is unavailable", status=503, mimetype="text/plain")
+    return project, None
+
+
+def _add_memberships(*, user_id: str, project_id: str, papers: list[dict[str, object]]) -> None:
+    for paper in papers:
+        asset_id = paper.get("id")
+        if not isinstance(asset_id, str):
+            raise ProjectPapersPersistenceError("Saved paper has no asset ID")
+        add_project_paper(user_id=user_id, project_id=project_id, user_paper_id=asset_id)
+
+
 def _save_response(paper: dict[str, object]) -> dict[str, object]:
     """Return the compact representation defined by the PUT /saved contract."""
     snapshot = paper.get("metadata_snapshot")
@@ -224,7 +248,7 @@ def _save_response(paper: dict[str, object]) -> dict[str, object]:
         "id": paper.get("id"),
         "paper_id": paper.get("paper_id"),
         "title": title,
-        "is_saved": bool(paper.get("is_saved")),
+        "is_saved": True,
         "azure_file_id": paper.get("azure_file_id"),
     }
 
@@ -422,18 +446,30 @@ class PayloadTooLarge(ValueError):
 
 
 @library_bp.route("/library/papers", methods=["GET"])
+@library_bp.route("/projects/<project_id>/library/papers", methods=["GET"])
 @cross_origin()
-def get_library_papers():
+def get_library_papers(project_id: str | None = None):
+    """List project shelf memberships, or user-level assets when unscoped.
+
+    The unscoped response supports upload/import asset management and does not
+    represent shelf membership; project shelves come only from ``project_papers``.
+    """
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
     try:
-        saved_only = _parse_saved_only_query()
+        _parse_saved_only_query()
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     try:
-        library_papers = list_user_papers(user_id=user_id, saved_only=saved_only)
-    except UserPapersPersistenceError as error:
+        if project_id is None:
+            library_papers = list_user_papers(user_id=user_id)
+        else:
+            project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+            if project_error is not None:
+                return project_error
+            library_papers = list_project_papers(user_id=user_id, project_id=str(project["id"]))
+    except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
         current_app.logger.error("Could not load library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     try:
@@ -449,7 +485,7 @@ def get_library_papers():
                     "paper_id": paper.paper_id,
                     "origin": paper.origin,
                     "metadata": paper.metadata,
-                    "is_saved": paper.library_paper.get("is_saved"),
+                    "is_saved": project_id is not None,
                     "tags": paper.library_paper.get("tags") or [],
                     "azure_file_id": paper.library_paper.get("azure_file_id"),
                     "uploaded_filename": paper.library_paper.get("uploaded_filename"),
@@ -466,9 +502,9 @@ def get_library_papers():
     )
 
 
-@library_bp.route("/library/papers/saved", methods=["POST"])
+@library_bp.route("/projects/<project_id>/library/papers/saved", methods=["POST"])
 @cross_origin()
-def post_library_papers_saved():
+def post_library_papers_saved(project_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
@@ -477,17 +513,21 @@ def post_library_papers_saved():
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
+    project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+    if project_error is not None:
+        return project_error
     try:
         saved_papers = save_user_papers(user_id=user_id, papers=papers)
-    except UserPapersPersistenceError as error:
+        _add_memberships(user_id=user_id, project_id=str(project["id"]), papers=saved_papers)
+    except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
         current_app.logger.error("Could not bulk-save library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return jsonify({"papers": [_save_response(paper) for paper in saved_papers]})
 
 
-@library_bp.route("/library/papers/unsave", methods=["POST"])
+@library_bp.route("/projects/<project_id>/library/papers/unsave", methods=["POST"])
 @cross_origin()
-def post_library_papers_unsave():
+def post_library_papers_unsave(project_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
@@ -501,19 +541,30 @@ def post_library_papers_unsave():
         return jsonify({"error": str(error)}), 400
     if len(set(normalized_ids)) != len(normalized_ids):
         return jsonify({"error": "paper_ids must not contain duplicates"}), 400
+    project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+    if project_error is not None:
+        return project_error
     try:
-        unsave_user_papers(user_id=user_id, paper_ids=normalized_ids)
+        assets = {str(row.get("paper_id")): row for row in get_user_papers_by_ids(user_id=user_id, paper_ids=normalized_ids)}
+        if set(assets) != set(normalized_ids):
+            raise UserPaperNotFoundError()
+        for paper_id in normalized_ids:
+            asset_id = assets[paper_id].get("id")
+            if not isinstance(asset_id, str) or not remove_project_paper(
+                user_id=user_id, project_id=str(project["id"]), user_paper_id=asset_id
+            ):
+                raise UserPaperNotFoundError()
     except UserPaperNotFoundError:
         return Response("Not found", status=404, mimetype="text/plain")
-    except UserPapersPersistenceError as error:
+    except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
         current_app.logger.error("Could not bulk-unsave library papers: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return jsonify({"paper_ids": normalized_ids})
 
 
-@library_bp.route("/library/papers/import", methods=["POST"])
+@library_bp.route("/projects/<project_id>/library/papers/import", methods=["POST"])
 @cross_origin()
-def post_library_papers_import():
+def post_library_papers_import(project_id: str):
     """Import normalized user-supplied paper metadata to the personal library.
 
     Each valid item receives a permanent ``user:`` ID and snapshot. This is
@@ -535,6 +586,10 @@ def post_library_papers_import():
         return jsonify(
             {"error": f"items must contain between 1 and {MAX_IMPORT_ITEMS} items"}
         ), 400
+
+    project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+    if project_error is not None:
+        return project_error
 
     results: list[dict[str, object]] = []
     valid_items: list[dict[str, object]] = []
@@ -559,13 +614,20 @@ def post_library_papers_import():
     if valid_items:
         try:
             persisted = import_user_papers(
-                user_id=user_id, papers=valid_items, is_saved=also_save
+                user_id=user_id, papers=valid_items
             )
-        except UserPapersPersistenceError as error:
+            if len(persisted) != len(valid_items):
+                raise UserPapersPersistenceError(
+                    "User paper import returned an unexpected row count"
+                )
+            if also_save:
+                _add_memberships(
+                    user_id=user_id,
+                    project_id=str(project["id"]),
+                    papers=persisted,
+                )
+        except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
             current_app.logger.error("Could not import library papers: %s", error)
-            return Response("Library is unavailable", status=503, mimetype="text/plain")
-        if len(persisted) != len(valid_items):
-            current_app.logger.error("User paper import returned an unexpected row count")
             return Response("Library is unavailable", status=503, mimetype="text/plain")
 
         results.extend(
@@ -581,9 +643,9 @@ def post_library_papers_import():
     return jsonify({"results": sorted(results, key=lambda result: int(result["index"]))})
 
 
-@library_bp.route("/library/papers/<path:paper_id>/saved", methods=["PUT"])
+@library_bp.route("/projects/<project_id>/library/papers/<path:paper_id>/saved", methods=["PUT"])
 @cross_origin()
-def put_library_paper_saved(paper_id: str):
+def put_library_paper_saved(project_id: str, paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
@@ -593,19 +655,23 @@ def put_library_paper_saved(paper_id: str):
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
+    project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+    if project_error is not None:
+        return project_error
     try:
         paper, was_created = save_user_paper(
             user_id=user_id, paper_id=paper_id, metadata_snapshot=metadata_snapshot
         )
-    except UserPapersPersistenceError as error:
+        _add_memberships(user_id=user_id, project_id=str(project["id"]), papers=[paper])
+    except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
         current_app.logger.error("Could not save library paper: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return jsonify(_save_response(paper)), 201 if was_created else 200
 
 
-@library_bp.route("/library/papers/<path:paper_id>/saved", methods=["DELETE"])
+@library_bp.route("/projects/<project_id>/library/papers/<path:paper_id>/saved", methods=["DELETE"])
 @cross_origin()
-def delete_library_paper_saved(paper_id: str):
+def delete_library_paper_saved(project_id: str, paper_id: str):
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
         return error_response
@@ -614,19 +680,27 @@ def delete_library_paper_saved(paper_id: str):
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
+    project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+    if project_error is not None:
+        return project_error
     try:
-        unsave_user_paper(user_id=user_id, paper_id=paper_id)
+        paper = get_user_paper(user_id=user_id, paper_id=paper_id)
+        asset_id = paper.get("id") if paper else None
+        if not isinstance(asset_id, str) or not remove_project_paper(
+            user_id=user_id, project_id=str(project["id"]), user_paper_id=asset_id
+        ):
+            raise UserPaperNotFoundError()
     except UserPaperNotFoundError:
         return Response("Not found", status=404, mimetype="text/plain")
-    except UserPapersPersistenceError as error:
+    except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
         current_app.logger.error("Could not unsave library paper: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return Response(status=204)
 
 
-@library_bp.route("/library/papers/<path:paper_id>/tags", methods=["PUT"])
+@library_bp.route("/projects/<project_id>/library/papers/<path:paper_id>/tags", methods=["PUT"])
 @cross_origin()
-def put_library_paper_tags(paper_id: str):
+def put_library_paper_tags(project_id: str, paper_id: str):
     """Replace the complete tag set for one paper on the Saved shelf."""
     user_id, error_response = _require_authenticated_user_id()
     if error_response is not None:
@@ -638,18 +712,25 @@ def put_library_paper_tags(paper_id: str):
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
+    project, project_error = _resolve_project(user_id=user_id, project_id=project_id)
+    if project_error is not None:
+        return project_error
     try:
-        paper = update_user_paper_tags(user_id=user_id, paper_id=paper_id, tags=tags)
-    except UserPaperNotFoundError:
+        asset = get_user_paper(user_id=user_id, paper_id=paper_id)
+        asset_id = asset.get("id") if asset else None
+        if not isinstance(asset_id, str):
+            raise UserPaperNotFoundError()
+        paper = update_project_paper_tags(
+            user_id=user_id, project_id=str(project["id"]), user_paper_id=asset_id, tags=tags
+        )
+    except (UserPaperNotFoundError, ProjectPaperNotFoundError):
         return Response("Not found", status=404, mimetype="text/plain")
-    except UserPaperNotSavedError:
-        return Response("Paper must be saved before applying tags", status=409, mimetype="text/plain")
-    except UserPapersPersistenceError as error:
+    except (UserPapersPersistenceError, ProjectPapersPersistenceError) as error:
         current_app.logger.error("Could not update tags for library paper: %s", error)
         return Response("Library is unavailable", status=503, mimetype="text/plain")
     return jsonify(
         {
-            "paper_id": paper.get("paper_id"),
+            "paper_id": paper_id,
             "tags": paper.get("tags") or [],
         }
     )
@@ -674,6 +755,12 @@ def delete_imported_library_paper(paper_id: str):
 
     if paper is None or paper.get("origin") != "user":
         return Response("Not found", status=404, mimetype="text/plain")
+    try:
+        if has_any_membership(user_id=user_id, user_paper_id=str(paper["id"])):
+            return Response("Remove paper from all projects first", status=409, mimetype="text/plain")
+    except ProjectPapersPersistenceError as error:
+        current_app.logger.error("Could not check paper memberships before delete: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
 
     azure_file_id = paper.get("azure_file_id")
     try:
@@ -849,6 +936,13 @@ def delete_library_paper_file(paper_id: str):
 
     if paper is None or not paper.get("azure_file_id"):
         return Response("Not found", status=404, mimetype="text/plain")
+
+    try:
+        if has_any_membership(user_id=user_id, user_paper_id=str(paper["id"])):
+            return Response("Remove paper from all projects first", status=409, mimetype="text/plain")
+    except ProjectPapersPersistenceError as error:
+        current_app.logger.error("Could not check memberships before file delete: %s", error)
+        return Response("Library is unavailable", status=503, mimetype="text/plain")
 
     azure_file_id = paper["azure_file_id"]
     if not isinstance(azure_file_id, str):
