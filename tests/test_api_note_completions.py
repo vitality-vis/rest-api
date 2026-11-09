@@ -60,7 +60,7 @@ def test_completion_checks_project_and_returns_typed_suggestion(client):
         patch(
             "app.api.user.note_completions.complete_note",
             return_value=(
-                {"kind": "agent_action", "action": "search", "label": "Search", "prompt": "Find evidence."},
+                {"kind": "agent_action", "action": "search", "prompt": "Find evidence."},
                 "gpt-6-luna",
                 {"ttft_ms": 100.0, "generation_ms": 50.0, "model_total_ms": 150.0},
             ),
@@ -72,7 +72,6 @@ def test_completion_checks_project_and_returns_typed_suggestion(client):
     assert response.get_json() == {
         "kind": "agent_action",
         "action": "search",
-        "label": "Search",
         "prompt": "Find evidence.",
         "client_request_id": "request-1",
         "model": "gpt-6-luna",

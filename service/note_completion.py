@@ -101,8 +101,8 @@ Agent actions are proposals only. Do not perform the task or claim evidence was 
 
 Return ONLY one JSON object matching exactly one of these forms:
 {"kind":"text_completion","text":"short continuation"}
-{"kind":"agent_action","action":"search","label":"short label","prompt":"standalone task for the research agent"}
-{"kind":"agent_action","action":"synthesize","label":"short label","prompt":"standalone task for the research agent"}
+{"kind":"agent_action","action":"search","prompt":"standalone task for the research agent"}
+{"kind":"agent_action","action":"synthesize","prompt":"standalone task for the research agent"}
 {"kind":"none"}"""
 
 
@@ -156,10 +156,13 @@ def _parse_suggestion(raw: str) -> dict[str, str]:
             raise NoteCompletionError("Model returned an oversized completion")
         return {"kind": "text_completion", "text": completion}
     if kind == "agent_action" and value.get("action") in {"search", "synthesize"}:
-        label = value.get("label")
         prompt = value.get("prompt")
-        if isinstance(label, str) and label.strip() and isinstance(prompt, str) and prompt.strip():
-            return {"kind": "agent_action", "action": str(value["action"]), "label": label.strip(), "prompt": prompt.strip()}
+        if isinstance(prompt, str) and prompt.strip():
+            return {
+                "kind": "agent_action",
+                "action": str(value["action"]),
+                "prompt": prompt.strip(),
+            }
     raise NoteCompletionError("Model returned an invalid suggestion shape")
 
 
