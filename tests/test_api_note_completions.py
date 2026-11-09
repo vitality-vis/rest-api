@@ -6,12 +6,14 @@ from flask import Flask
 
 from app.api.user.note_completions import note_completions_bp
 from service.note_completion import _parse_suggestion, sample_project_paper_titles
+from service.note_completion_rate_limit import note_completion_rate_limiter
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
 
 
 @pytest.fixture
 def client():
+    note_completion_rate_limiter.reset()
     app = Flask(__name__)
     app.register_blueprint(note_completions_bp)
     return app.test_client()
@@ -80,6 +82,27 @@ def test_completion_checks_project_and_returns_typed_suggestion(client):
         user_id="user-1", access_token="token", project_id=PROJECT_ID
     )
     assert complete.call_args.kwargs["library"]["titles"] == [{"paper_id": "paper-1", "title": "Title 1"}]
+
+
+def test_completion_rate_limits_by_user_and_project(client):
+    completion_result = (
+        {"kind": "none"},
+        "gpt-6-luna",
+        {"ttft_ms": 10.0, "generation_ms": 5.0, "model_total_ms": 15.0},
+    )
+    with (
+        patch("app.api.user.note_completions.verify_access_token", return_value="user-1"),
+        patch("app.api.user.note_completions.get_note_completion_papers", return_value=[]),
+        patch("app.api.user.note_completions.complete_note", return_value=completion_result),
+    ):
+        first = client.post(f"/projects/{PROJECT_ID}/notes/completions", headers=auth(), json=payload())
+        second = client.post(f"/projects/{PROJECT_ID}/notes/completions", headers=auth(), json=payload())
+        limited = client.post(f"/projects/{PROJECT_ID}/notes/completions", headers=auth(), json=payload())
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert limited.status_code == 429
+    assert int(limited.headers["Retry-After"]) >= 1
 
 
 def test_stratified_sampling_is_deterministic():

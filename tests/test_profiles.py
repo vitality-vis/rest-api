@@ -223,6 +223,11 @@ def test_papers_health_endpoint(suppress_lifecycle, monkeypatch):
     assert payload["capabilities"]["paperSearch"] is False
 
 
+def test_full_profile_disables_flask_logger_propagation(suppress_lifecycle):
+    bundle = create_application(AppProfile.FULL)
+    assert bundle.flask_app.logger.propagate is False
+
+
 def test_full_profile_includes_user_and_chat_routes(suppress_lifecycle):
     bundle = create_application(AppProfile.FULL)
     rules = {rule.rule for rule in bundle.flask_app.url_map.iter_rules()}

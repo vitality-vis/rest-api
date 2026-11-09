@@ -13,6 +13,16 @@ from typing import Optional
 _logger: Optional[logging.Logger] = None
 _gcp_handler_attached = False
 
+# Keep successful outbound request details (including provider endpoints and
+# deployment names) out of application logs while retaining diagnostics.
+_QUIET_THIRD_PARTY_LOGGERS = ("httpx", "httpcore")
+
+
+def _configure_third_party_loggers() -> None:
+    """Suppress routine HTTP client request and transport logs."""
+    for logger_name in _QUIET_THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
 
 class _ProvenanceConsoleFormatter(logging.Formatter):
     """Keep provenance payloads out of terminal output without changing Cloud payloads."""
@@ -88,6 +98,8 @@ def setup_logger(name: str = "vitality2", enable_gcp: bool = True) -> logging.Lo
         Configured logger instance
     """
     global _logger
+
+    _configure_third_party_loggers()
 
     # Import-time callers may create a console-only logger first. Upgrade it
     # when the application entry point requests GCP logging.

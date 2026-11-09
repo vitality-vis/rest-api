@@ -11,6 +11,7 @@ from repositories.supabase.note_completion_repository import (
     get_note_completion_papers,
 )
 from service.note_completion import NoteCompletionError, complete_note, sample_project_paper_titles
+from service.note_completion_rate_limit import note_completion_rate_limiter
 
 note_completions_bp = Blueprint("note_completions", __name__)
 MAX_CONTEXT_BEFORE = 2_000
@@ -63,12 +64,21 @@ def create_note_completion(project_id):
     assert user_id is not None
     assert access_token is not None
     auth_completed = time.perf_counter()
+    project_id_text = str(project_id)
     try:
         before, after, client_request_id = _payload(request.get_json(silent=True))
     except ValueError as error_value:
         return jsonify({"error": str(error_value)}), 400
 
-    project_id_text = str(project_id)
+    allowed, retry_after = note_completion_rate_limiter.check(
+        f"{user_id}:{project_id_text}"
+    )
+    if not allowed:
+        response = jsonify({"error": "Too many note completion requests"})
+        response.status_code = 429
+        response.headers["Retry-After"] = str(retry_after)
+        return response
+
     try:
         papers = get_note_completion_papers(
             user_id=user_id, access_token=access_token, project_id=project_id_text
@@ -93,19 +103,6 @@ def create_note_completion(project_id):
     auth_ms = (auth_completed - request_started) * 1000
     context_ms = (context_completed - auth_completed) * 1000
     total_ms = (response_completed - request_started) * 1000
-    current_app.logger.info(
-        "Note completion timing request=%s kind=%s model=%s auth_ms=%.1f "
-        "context_ms=%.1f ttft_ms=%.1f generation_ms=%.1f model_total_ms=%.1f total_ms=%.1f",
-        client_request_id,
-        suggestion["kind"],
-        model,
-        auth_ms,
-        context_ms,
-        model_timing["ttft_ms"],
-        model_timing["generation_ms"],
-        model_timing["model_total_ms"],
-        total_ms,
-    )
     response = jsonify({**suggestion, "client_request_id": client_request_id, "model": model})
     response.headers["Server-Timing"] = (
         f'auth;dur={auth_ms:.1f}, context;dur={context_ms:.1f}, '

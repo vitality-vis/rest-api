@@ -61,6 +61,7 @@ def create_full_bundle() -> ApplicationBundle:
 def _attach_logger(app: Flask, logger) -> None:
     app.logger.handlers = logger.handlers
     app.logger.setLevel(logger.level)
+    app.logger.propagate = False
 
 
 def _register_full_only_http_routes(app: Flask) -> None:
