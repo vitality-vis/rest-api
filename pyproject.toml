@@ -18,6 +18,7 @@ dependencies = [
   "pydantic>=2,<3",
   "typing-extensions",
   "requests",
+  "PyJWT[crypto]>=2.10,<3",
   "python-dotenv",
   "packaging",
   "openai",
