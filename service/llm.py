@@ -21,7 +21,13 @@ class _NoStopAzureChatOpenAI(AzureChatOpenAI):
         return super().generate_prompt(prompts, stop=None, **kwargs)
 
 
-def get_llm(*, model: str | None = None, streaming: bool = False) -> BaseChatModel:
+def get_llm(
+    *,
+    model: str | None = None,
+    streaming: bool = False,
+    timeout: float | None = None,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
     """Create the chat model used by the application.
 
     ``model`` is a logical key from ``AZURE_OPENAI_AVAILABLE_MODELS``. When
@@ -36,6 +42,7 @@ def get_llm(*, model: str | None = None, streaming: bool = False) -> BaseChatMod
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         temperature=1,  # GPT-5 only supports temperature=1
         streaming=streaming,
-        timeout=config.LLM_REQUEST_TIMEOUT_SECONDS,
+        timeout=timeout if timeout is not None else config.LLM_REQUEST_TIMEOUT_SECONDS,
         max_retries=1,
+        **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
     )
