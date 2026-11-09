@@ -6,8 +6,10 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from repositories.supabase.auth import SupabaseAuthenticationError, SupabaseConfigurationError, verify_access_token
-from repositories.supabase.project_papers_repository import ProjectPapersPersistenceError, list_project_papers
-from repositories.supabase.projects_repository import ProjectNotFoundError, ProjectsPersistenceError, get_project
+from repositories.supabase.note_completion_repository import (
+    NoteCompletionContextError, NoteCompletionProjectNotFoundError,
+    get_note_completion_papers,
+)
 from service.note_completion import NoteCompletionError, complete_note, sample_project_paper_titles
 
 note_completions_bp = Blueprint("note_completions", __name__)
@@ -15,20 +17,21 @@ MAX_CONTEXT_BEFORE = 2_000
 MAX_CONTEXT_AFTER = 500
 
 
-def _authenticate() -> tuple[str | None, Response | None]:
+def _authenticate() -> tuple[str | None, str | None, Response | None]:
     authorization = request.headers.get("Authorization")
     if not authorization:
-        return None, Response("Unauthorized", status=401, mimetype="text/plain")
+        return None, None, Response("Unauthorized", status=401, mimetype="text/plain")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
-        return None, Response("Unauthorized", status=401, mimetype="text/plain")
+        return None, None, Response("Unauthorized", status=401, mimetype="text/plain")
     try:
-        return verify_access_token(token.strip()), None
+        access_token = token.strip()
+        return verify_access_token(access_token), access_token, None
     except SupabaseConfigurationError:
         current_app.logger.error("Supabase is not configured for note completion")
-        return None, Response("Note completion is unavailable", status=503, mimetype="text/plain")
+        return None, None, Response("Note completion is unavailable", status=503, mimetype="text/plain")
     except SupabaseAuthenticationError:
-        return None, Response("Unauthorized", status=401, mimetype="text/plain")
+        return None, None, Response("Unauthorized", status=401, mimetype="text/plain")
 
 
 def _payload(value: object) -> tuple[str, str, str]:
@@ -54,10 +57,11 @@ def _payload(value: object) -> tuple[str, str, str]:
 @cross_origin()
 def create_note_completion(project_id):
     request_started = time.perf_counter()
-    user_id, error = _authenticate()
+    user_id, access_token, error = _authenticate()
     if error is not None:
         return error
     assert user_id is not None
+    assert access_token is not None
     auth_completed = time.perf_counter()
     try:
         before, after, client_request_id = _payload(request.get_json(silent=True))
@@ -66,8 +70,9 @@ def create_note_completion(project_id):
 
     project_id_text = str(project_id)
     try:
-        project = get_project(user_id=user_id, project_id=project_id_text)
-        papers = list_project_papers(user_id=user_id, project_id=str(project["id"]))
+        papers = get_note_completion_papers(
+            user_id=user_id, access_token=access_token, project_id=project_id_text
+        )
         library = sample_project_paper_titles(papers)
         context_completed = time.perf_counter()
         suggestion, model, model_timing = complete_note(
@@ -75,9 +80,9 @@ def create_note_completion(project_id):
             context_after_cursor=after,
             library=library,
         )
-    except ProjectNotFoundError:
+    except NoteCompletionProjectNotFoundError:
         return jsonify({"error": "Project not found"}), 404
-    except (ProjectsPersistenceError, ProjectPapersPersistenceError) as persistence_error:
+    except NoteCompletionContextError as persistence_error:
         current_app.logger.error("Note completion context failed: %s", persistence_error)
         return Response("Note completion is unavailable", status=503, mimetype="text/plain")
     except NoteCompletionError as completion_error:

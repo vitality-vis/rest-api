@@ -9,6 +9,7 @@ from __future__ import annotations
 import requests
 
 from repositories.supabase.client import get_supabase_settings, service_role_headers
+from repositories.supabase.note_completion_cache import invalidate_note_completion_context
 
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
 _MEMBERSHIP_COLUMNS = "user_id,project_id,user_paper_id,tags,created_at,updated_at"
@@ -81,12 +82,14 @@ def add_project_paper(
         raise ProjectPapersPersistenceError("Could not add project paper")
     records = _json_list(response, "Project paper add returned an invalid response")
     if records:
+        invalidate_note_completion_context(user_id=user_id, project_id=project_id)
         return records[0]
     membership = get_project_paper(
         user_id=user_id, project_id=project_id, user_paper_id=user_paper_id
     )
     if membership is None:
         raise ProjectPapersPersistenceError("Could not verify project paper")
+    invalidate_note_completion_context(user_id=user_id, project_id=project_id)
     return membership
 
 
@@ -168,7 +171,10 @@ def remove_project_paper(*, user_id: str, project_id: str, user_paper_id: str) -
     )
     if response.status_code not in {200, 204}:
         raise ProjectPapersPersistenceError("Could not remove project paper")
-    return bool(_json_list(response, "Project paper remove returned an invalid response"))
+    removed = bool(_json_list(response, "Project paper remove returned an invalid response"))
+    if removed:
+        invalidate_note_completion_context(user_id=user_id, project_id=project_id)
+    return removed
 
 
 

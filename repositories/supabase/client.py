@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import local
+from typing import Any
+
+import requests
 
 import config
 
@@ -36,3 +40,23 @@ def service_role_headers(settings: SupabaseSettings) -> dict[str, str]:
         "Authorization": f"Bearer {settings.service_role_key}",
         "Content-Type": "application/json",
     }
+
+
+_http_state = local()
+
+
+def get_http_session() -> requests.Session:
+    """Return a thread-local Session so HTTPS connections are safely reused."""
+    session = getattr(_http_state, "session", None)
+    if session is None:
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _http_state.session = session
+    return session
+
+
+def pooled_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """Send an HTTP request through the current thread's reusable pool."""
+    return get_http_session().request(method, url, **kwargs)

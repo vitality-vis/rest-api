@@ -28,11 +28,12 @@ def test_list_constrains_user_project_and_uses_membership_tags():
 
 def test_add_membership_is_idempotent_and_tenant_scoped():
     row = {"user_id": "user-1", "project_id": "project-1", "user_paper_id": "asset-1", "tags": []}
-    with patch("repositories.supabase.project_papers_repository.get_supabase_settings", return_value=SETTINGS), patch("repositories.supabase.project_papers_repository.requests.request", return_value=response(201, [row])) as request:
+    with patch("repositories.supabase.project_papers_repository.get_supabase_settings", return_value=SETTINGS), patch("repositories.supabase.project_papers_repository.requests.request", return_value=response(201, [row])) as request, patch("repositories.supabase.project_papers_repository.invalidate_note_completion_context") as invalidate:
         assert add_project_paper(user_id="user-1", project_id="project-1", user_paper_id="asset-1") == row
     assert request.call_args.kwargs["params"]["on_conflict"] == "project_id,user_paper_id"
     assert "resolution=ignore-duplicates" in request.call_args.kwargs["headers"]["Prefer"]
     assert request.call_args.kwargs["json"]["user_id"] == "user-1"
+    invalidate.assert_called_once_with(user_id="user-1", project_id="project-1")
 
 
 def test_tag_update_constrains_all_tenant_keys():
@@ -43,12 +44,13 @@ def test_tag_update_constrains_all_tenant_keys():
 
 def test_remove_deletes_only_tenant_scoped_membership():
     deleted = [{"user_id": "user-1", "project_id": "project-1", "user_paper_id": "asset-1"}]
-    with patch("repositories.supabase.project_papers_repository.get_supabase_settings", return_value=SETTINGS), patch("repositories.supabase.project_papers_repository.requests.request", return_value=response(200, deleted)) as request:
+    with patch("repositories.supabase.project_papers_repository.get_supabase_settings", return_value=SETTINGS), patch("repositories.supabase.project_papers_repository.requests.request", return_value=response(200, deleted)) as request, patch("repositories.supabase.project_papers_repository.invalidate_note_completion_context") as invalidate:
         assert remove_project_paper(user_id="user-1", project_id="project-1", user_paper_id="asset-1") is True
     assert request.call_args.args[0] == "DELETE"
     assert request.call_args.args[1].endswith("/project_papers")
     assert request.call_args.kwargs["params"] == {"user_id": "eq.user-1", "project_id": "eq.project-1", "user_paper_id": "eq.asset-1"}
     assert request.call_args.kwargs["headers"]["Prefer"] == "return=representation"
+    invalidate.assert_called_once_with(user_id="user-1", project_id="project-1")
 
 
 def test_remove_returns_false_when_membership_is_absent():

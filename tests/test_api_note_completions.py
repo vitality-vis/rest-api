@@ -8,7 +8,6 @@ from app.api.user.note_completions import note_completions_bp
 from service.note_completion import _parse_suggestion, sample_project_paper_titles
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
-PROJECT = {"id": PROJECT_ID, "user_id": "user-1"}
 
 
 @pytest.fixture
@@ -54,8 +53,10 @@ def test_completion_rejects_bad_payload(client):
 def test_completion_checks_project_and_returns_typed_suggestion(client):
     with (
         patch("app.api.user.note_completions.verify_access_token", return_value="user-1"),
-        patch("app.api.user.note_completions.get_project", return_value=PROJECT) as get_project,
-        patch("app.api.user.note_completions.list_project_papers", return_value=[paper(1)]) as list_papers,
+        patch(
+            "app.api.user.note_completions.get_note_completion_papers",
+            return_value=[paper(1)],
+        ) as get_context,
         patch(
             "app.api.user.note_completions.complete_note",
             return_value=(
@@ -76,8 +77,9 @@ def test_completion_checks_project_and_returns_typed_suggestion(client):
         "client_request_id": "request-1",
         "model": "gpt-6-luna",
     }
-    get_project.assert_called_once_with(user_id="user-1", project_id=PROJECT_ID)
-    list_papers.assert_called_once_with(user_id="user-1", project_id=PROJECT_ID)
+    get_context.assert_called_once_with(
+        user_id="user-1", access_token="token", project_id=PROJECT_ID
+    )
     assert complete.call_args.kwargs["library"]["titles"] == [{"paper_id": "paper-1", "title": "Title 1"}]
 
 
