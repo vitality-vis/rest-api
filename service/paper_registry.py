@@ -221,6 +221,28 @@ def resolve_library_rows(
     return resolved
 
 
+def _hydrate_openalex_api_papers(
+    paper_ids: list[str],
+) -> dict[str, dict[str, object]]:
+    """Hydrate unresolved ``openalex:`` IDs into API paper payloads."""
+    openalex_ids = [paper_id for paper_id in paper_ids if paper_id.startswith("openalex:")]
+    if not openalex_ids:
+        return {}
+
+    from service.openalex_papers import (
+        OpenAlexPapersProviderError,
+        OpenAlexPapersUnavailableError,
+        resolve_openalex_api_papers,
+    )
+
+    try:
+        return resolve_openalex_api_papers(openalex_ids)
+    except (OpenAlexPapersUnavailableError, OpenAlexPapersProviderError) as error:
+        raise LibraryPaperResolutionError(
+            "OpenAlex paper metadata is temporarily unavailable."
+        ) from error
+
+
 def resolve_papers(
     *, user_id: str | None, paper_ids: list[str]
 ) -> list[dict[str, object]]:
@@ -228,7 +250,8 @@ def resolve_papers(
 
     Imported ``user:`` IDs are only resolved from the current user's library;
     they are never sent to the corpus.  Other IDs resolve from the corpus when
-    they are absent from that library.
+    they are absent from that library. ``openalex:`` IDs hydrate from OpenAlex
+    after library/corpus lookup misses.
     """
     requested_ids = _unique_ids(paper_ids)
     resolved_library_by_id, corpus_by_id = _resolved_sources_by_id(
@@ -236,31 +259,43 @@ def resolve_papers(
         paper_ids=requested_ids,
         library_unavailable_message="User library is temporarily unavailable.",
     )
+    openalex_by_id = _hydrate_openalex_api_papers(
+        [
+            paper_id
+            for paper_id in requested_ids
+            if paper_id not in resolved_library_by_id and paper_id not in corpus_by_id
+        ]
+    )
 
     return [
         (
             resolved_library_by_id[paper_id].metadata
             if paper_id in resolved_library_by_id
-            else corpus_by_id.get(paper_id)
+            else corpus_by_id.get(paper_id) or openalex_by_id.get(paper_id)
         )
         for paper_id in requested_ids
-        if paper_id in resolved_library_by_id or paper_id in corpus_by_id
+        if (
+            paper_id in resolved_library_by_id
+            or paper_id in corpus_by_id
+            or paper_id in openalex_by_id
+        )
     ]
 
 
 def resolve_selected_papers(
     *, user_id: str | None, paper_ids: list[str], project_id: str | None = None
 ) -> list[ResolvedLibraryPaper]:
-    """Strictly resolve selected papers from the caller's library, then the corpus.
+    """Strictly resolve selected papers from library, corpus, then OpenAlex.
 
     When ``project_id`` is supplied, a user-library row is usable only when its
     asset belongs to that project. An unauthorized corpus-origin row falls back
     to public catalog metadata, without exposing its private library state.
     A selected corpus paper does not need to have been saved first.  Only
-    library-backed papers can contribute a full-text file; public corpus papers
-    return ``library_paper=None`` and are therefore metadata-only evidence.  A
-    guest caller has no library access, so it can resolve only public corpus
-    papers and can never reach uploaded full text.
+    library-backed papers can contribute a full-text file; public corpus and
+    OpenAlex papers return ``library_paper=None`` and are therefore
+    metadata-only evidence.  A guest caller has no library access, so it can
+    resolve only public corpus / OpenAlex papers and can never reach uploaded
+    full text.
     Unlike :func:`resolve_papers`, this is strict: every requested ID must be
     resolved so the QA evidence order always matches the user's selection.
     """
@@ -281,26 +316,50 @@ def resolve_selected_papers(
     if missing_user_ids:
         raise LibraryPaperResolutionError("One or more selected imported papers are unavailable.")
 
-    missing_corpus_ids = [
+    openalex_by_id = _hydrate_openalex_api_papers(
+        [
+            paper_id
+            for paper_id in requested_ids
+            if paper_id not in resolved_library_by_id and paper_id not in corpus_by_id
+        ]
+    )
+
+    missing_ids = [
         paper_id
         for paper_id in requested_ids
         if paper_id not in resolved_library_by_id
         and not paper_id.startswith("user:")
         and paper_id not in corpus_by_id
+        and paper_id not in openalex_by_id
     ]
-    if missing_corpus_ids:
+    if missing_ids:
         raise LibraryPaperResolutionError("One or more selected papers are unavailable in the paper catalog.")
 
-    return [
-        resolved_library_by_id.get(paper_id)
-        or ResolvedLibraryPaper(
-            paper_id=paper_id,
-            origin="corpus",
-            metadata=corpus_by_id[paper_id],
-            library_paper=None,
+    resolved: list[ResolvedLibraryPaper] = []
+    for paper_id in requested_ids:
+        library_hit = resolved_library_by_id.get(paper_id)
+        if library_hit is not None:
+            resolved.append(library_hit)
+            continue
+        if paper_id in corpus_by_id:
+            resolved.append(
+                ResolvedLibraryPaper(
+                    paper_id=paper_id,
+                    origin="corpus",
+                    metadata=corpus_by_id[paper_id],
+                    library_paper=None,
+                )
+            )
+            continue
+        resolved.append(
+            ResolvedLibraryPaper(
+                paper_id=paper_id,
+                origin="openalex",
+                metadata=openalex_by_id[paper_id],
+                library_paper=None,
+            )
         )
-        for paper_id in requested_ids
-    ]
+    return resolved
 
 
 __all__ = [

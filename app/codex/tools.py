@@ -54,8 +54,8 @@ DYNAMIC_TOOLS = [
         "name": "get_selected_paper_citations",
         "description": (
             "Retrieve references or citing works for up to 5 trusted selected papers. "
-            "DOIs are resolved by the server. Corpus matches become presentable "
-            "candidates; external works are evidence only."
+            "DOIs are resolved by the server. Corpus matches keep corpus IDs; "
+            "external works use openalex: IDs and may also be presented."
         ),
         "inputSchema": {
             "type": "object",
@@ -80,11 +80,37 @@ DYNAMIC_TOOLS = [
     },
     {
         "type": "function",
+        "name": "search_openalex",
+        "description": (
+            "Search OpenAlex for literature outside or beyond the VitaLITy corpus, "
+            "including recent conference papers. Prefer search_papers first for "
+            "corpus discovery. Results preserve OpenAlex relevance order. Works "
+            "already in the corpus are returned with corpus paper IDs; others use "
+            "openalex: IDs. Both may be passed to present_papers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "venue": {
+                    "type": "string",
+                    "description": "Conference or journal name, e.g. UIST or CHI.",
+                },
+                "year_min": {"type": "integer"},
+                "year_max": {"type": "integer"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "present_papers",
         "description": (
-            "Present a curated subset of papers returned by search_papers during "
-            "this turn. Call this only after judging relevance. The application "
-            "shows these papers to the user in the supplied order."
+            "Present a curated subset of paper IDs returned by discovery tools in "
+            "this turn (search_papers, find_similar_papers, search_openalex, or "
+            "citations). Pass IDs best-first by relevance to the user question. "
+            "The application shows papers in that order."
         ),
         "inputSchema": {
             "type": "object",
@@ -203,6 +229,12 @@ def execute_tool(
                 selected_paper_ids=selected_paper_ids,
                 candidates=candidates,
             )
+        elif tool == "search_openalex":
+            result = _search_openalex(
+                payload,
+                candidates=candidates,
+                excluded_ids=selected_paper_ids,
+            )
         elif tool == "present_papers":
             result = _present_papers(
                 payload,
@@ -309,8 +341,8 @@ def _search_papers(
                 "papers": papers,
                 "instruction": (
                     "Judge relevance from this metadata. Search again only if it "
-                    "would materially improve coverage; call present_papers when "
-                    "you have a useful set to show."
+                    "would materially improve coverage; call present_papers with a "
+                    "best-first curated subset when you have a useful set to show."
                 ),
             },
             ensure_ascii=False,
@@ -353,8 +385,29 @@ def _candidate_record(paper: dict[str, object], *, source: str) -> tuple[str, di
         "venue": paper.get("Source") or paper.get("source") or paper.get("venue") or "",
         "citation_count": paper.get("CitationCounts") or paper.get("citation_count"),
         "doi": paper.get("doi"),
+        "openalex_id": paper.get("openalex_id"),
+        "in_corpus": bool(paper.get("in_corpus")) if "in_corpus" in paper else None,
         "discovery_source": source,
     }
+
+
+def _remember_candidate(
+    candidates: dict[str, dict[str, object]] | None,
+    paper: dict[str, object],
+    *,
+    source: str,
+) -> str | None:
+    """Store a presentable candidate, preferring corpus IDs over openalex: IDs."""
+    record = _candidate_record(paper, source=source)
+    if record is None or candidates is None:
+        return None
+    paper_id, item = record
+    existing = candidates.get(paper_id)
+    # Prefer a previously stored corpus-backed record when IDs collide.
+    if existing and existing.get("in_corpus") and not item.get("in_corpus"):
+        return paper_id
+    candidates[paper_id] = item
+    return paper_id
 
 
 def _is_search_unavailable(error: Exception) -> bool:
@@ -429,8 +482,7 @@ def _find_similar_papers(
             continue
         paper_id, item = record
         papers.append(item)
-        if candidates is not None:
-            candidates[paper_id] = item
+        _remember_candidate(candidates, paper, source="similar")
         if len(papers) >= limit:
             break
     return tool_result(json.dumps({
@@ -438,7 +490,7 @@ def _find_similar_papers(
         "used_seed_count": len(seeds),
         "seed_sampling_policy": policy,
         "papers": papers,
-        "instruction": "Combine these candidates with text search when it improves coverage, then curate with present_papers.",
+        "instruction": "Combine these candidates with text search when it improves coverage, then curate with present_papers in best-first relevance order.",
     }, ensure_ascii=False), success=True)
 
 
@@ -497,16 +549,96 @@ def _get_selected_paper_citations(
                     continue
                 records.append(paper)
                 paper_id = paper.get("paper_id")
-                if paper.get("in_corpus") and isinstance(paper_id, str) and paper_id not in excluded:
-                    record = _candidate_record(paper, source=group)
-                    if record and candidates is not None:
-                        candidates[record[0]] = record[1]
+                if isinstance(paper_id, str) and paper_id and paper_id not in excluded:
+                    _remember_candidate(candidates, paper, source=group)
             evidence[group] = records
         sources.append(evidence)
     return tool_result(json.dumps({
         "sources": sources,
-        "instruction": "Corpus matches may be presented; external works are citation evidence only and must not be passed to present_papers.",
+        "instruction": (
+            "Citation neighbors may be presented via present_papers. Prefer corpus "
+            "paper IDs when in_corpus is true; otherwise use openalex: IDs. Pass "
+            "IDs best-first by relevance."
+        ),
     }, ensure_ascii=False), success=True)
+
+
+def _search_openalex(
+    payload: dict[str, Any],
+    *,
+    candidates: dict[str, dict[str, object]] | None,
+    excluded_ids: list[str] | None = None,
+) -> dict[str, object]:
+    from service.openalex_papers import (
+        OpenAlexPapersProviderError,
+        OpenAlexPapersUnavailableError,
+        search_openalex_papers,
+    )
+
+    query = str(payload.get("query") or "").strip()
+    venue = str(payload.get("venue") or "").strip()
+
+    def _optional_year(value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    year_min = _optional_year(payload.get("year_min"))
+    year_max = _optional_year(payload.get("year_max"))
+    try:
+        limit = min(max(int(payload.get("limit") or 10), 1), 20)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        found = search_openalex_papers(
+            query=query,
+            venue=venue,
+            year_min=year_min,
+            year_max=year_max,
+            limit=limit,
+        )
+    except OpenAlexPapersUnavailableError as error:
+        return tool_result(str(error), success=False)
+    except OpenAlexPapersProviderError as error:
+        return tool_result(str(error), success=False)
+
+    excluded = set(excluded_ids or [])
+    papers: list[dict[str, object]] = []
+    for paper in found.get("papers") or []:
+        if not isinstance(paper, dict):
+            continue
+        paper_id = paper.get("paper_id")
+        if not isinstance(paper_id, str) or not paper_id or paper_id in excluded:
+            continue
+        remembered = _remember_candidate(candidates, paper, source="openalex")
+        if remembered is None:
+            continue
+        record = _candidate_record(paper, source="openalex")
+        if record is None:
+            continue
+        papers.append(record[1])
+    return tool_result(
+        json.dumps(
+            {
+                "query": found.get("query") or query,
+                "venue": found.get("venue") or venue,
+                "venue_source_id": found.get("venue_source_id"),
+                "year_min": year_min,
+                "year_max": year_max,
+                "papers": papers,
+                "instruction": (
+                    "Results are ordered by OpenAlex relevance. Prefer corpus IDs "
+                    "when in_corpus is true. Call present_papers with a curated "
+                    "best-first subset; do not invent IDs."
+                ),
+            },
+            ensure_ascii=False,
+        ),
+        success=True,
+    )
 
 
 def _present_papers(
@@ -639,6 +771,14 @@ def _started_action_data(
             "query": str(payload.get("query") or "").strip()[:200],
             "mode": str(payload.get("mode") or "bm25"),
         }
+    if tool == "search_openalex":
+        data: dict[str, object] = {
+            "query": str(payload.get("query") or "").strip()[:200],
+        }
+        venue = str(payload.get("venue") or "").strip()
+        if venue:
+            data["venue"] = venue[:120]
+        return data
     if tool == "find_similar_papers":
         return {"paperCount": len(selected_paper_ids)}
     if tool == "get_selected_paper_citations":
@@ -675,10 +815,10 @@ def _completed_action_data(
         return {}
     if not isinstance(payload, dict):
         return {}
-    if tool == "search_papers":
+    if tool in {"search_papers", "search_openalex", "find_similar_papers"}:
         papers = payload.get("papers")
         return {"resultCount": len(papers)} if isinstance(papers, list) else {}
-    if tool in {"find_similar_papers", "get_selected_paper_citations"}:
+    if tool == "get_selected_paper_citations":
         papers = payload.get("papers")
         if isinstance(papers, list):
             return {"resultCount": len(papers)}
@@ -703,6 +843,8 @@ def _completed_action_data(
 def _public_action(tool: str) -> str:
     if tool == "search_papers":
         return "search"
+    if tool == "search_openalex":
+        return "search.openalex"
     if tool == "find_similar_papers":
         return "find.similar_papers"
     if tool == "get_selected_paper_citations":

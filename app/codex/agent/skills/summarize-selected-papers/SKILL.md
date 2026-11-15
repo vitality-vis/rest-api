@@ -13,7 +13,7 @@ Use the selected-paper evidence tools and generate the final answer yourself. Le
 - Call `get_selected_paper_evidence` with the detail and subset needed for the request.
 - Do not infer paper content from IDs.
 - If evidence is sampled, truncated, or title-only, disclose the limitation briefly.
-- Cite factual paper claims as `[[ID:paper_id]]` using only IDs returned by the tool.
+- Cite factual paper claims as `[[ID:paper_id]]` using only IDs returned by the tool. Never use `[[doi:…]]` or other bracket citation forms.
 
 ## Adapt the summary
 

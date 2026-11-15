@@ -12,7 +12,10 @@ from repositories.openalex import (
     list_referenced_works,
     normalize_doi,
     normalize_openalex_id,
+    openalex_paper_id,
+    parse_openalex_paper_id,
     resolve_work_by_doi,
+    search_works,
     summarize_work,
 )
 
@@ -26,6 +29,10 @@ def test_normalize_doi_strips_prefixes():
 def test_normalize_openalex_id_accepts_urls():
     assert normalize_openalex_id("https://openalex.org/W1") == "W1"
     assert normalize_openalex_id("W1") == "W1"
+    assert normalize_openalex_id("openalex:W1") == "W1"
+    assert openalex_paper_id("https://openalex.org/W1") == "openalex:W1"
+    assert parse_openalex_paper_id("openalex:W1") == "W1"
+    assert parse_openalex_paper_id("W1") == ""
 
 
 def test_summarize_work_projects_fields():
@@ -198,3 +205,43 @@ def test_list_citing_works_pages_until_limit(monkeypatch):
     assert session.get.call_count == 2
     first_filter = session.get.call_args_list[0].kwargs["params"]["filter"]
     assert first_filter == "cites:W1"
+
+
+def test_search_works_preserves_relevance_order_and_year_filter():
+    session = Mock()
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {
+        "results": [
+            {
+                "id": "https://openalex.org/W1",
+                "title": "First",
+                "publication_year": 2026,
+                "cited_by_count": 1,
+                "doi": None,
+            },
+            {
+                "id": "https://openalex.org/W2",
+                "title": "Second",
+                "publication_year": 2026,
+                "cited_by_count": 0,
+                "doi": None,
+            },
+        ]
+    }
+    session.get.return_value = response
+
+    works = search_works(
+        "steerable",
+        year_min=2026,
+        year_max=2026,
+        source_id="S7407087746",
+        limit=10,
+        api_key="test-key",
+        session=session,
+    )
+    assert [work["openalex_id"] for work in works] == ["W1", "W2"]
+    params = session.get.call_args.kwargs["params"]
+    assert params["search"] == "steerable"
+    assert "publication_year:2026" in params["filter"]
+    assert "primary_location.source.id:S7407087746" in params["filter"]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Bump when thread-scoped instructions or dynamic tool schemas change.
-_THREAD_SCHEMA_VERSION = "research-v10"
+_THREAD_SCHEMA_VERSION = "research-v12"
 
 
 def get_thread_id(user_id: str | None, chat_id: str) -> str | None:

@@ -1,4 +1,4 @@
-"""OpenAlex Works API adapter for citation neighbor lookup."""
+"""OpenAlex Works API adapter for search, hydration, and citation neighbors."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 MAX_PER_PAGE = 100
 # Keep OR-filter batches small enough for typical URL length limits.
 REFERENCE_BATCH_SIZE = 50
+OPENALEX_PAPER_ID_PREFIX = "openalex:"
 
 # Fields needed to map an OpenAlex work onto our Paper / import metadata shape.
 # (Paper also has ID/umap/dblp_* which OpenAlex does not provide.)
@@ -61,6 +62,8 @@ def normalize_openalex_id(work_id: str) -> str:
     trimmed = (work_id or "").strip()
     if not trimmed:
         return ""
+    if trimmed.startswith(OPENALEX_PAPER_ID_PREFIX):
+        trimmed = trimmed[len(OPENALEX_PAPER_ID_PREFIX) :].strip()
     if trimmed.startswith("https://openalex.org/"):
         return trimmed[len("https://openalex.org/") :].strip()
     if trimmed.startswith("https://api.openalex.org/works/"):
@@ -68,6 +71,20 @@ def normalize_openalex_id(work_id: str) -> str:
     if trimmed.startswith("openalex.org/"):
         return trimmed[len("openalex.org/") :].strip()
     return trimmed.lstrip("/")
+
+
+def openalex_paper_id(work_id: str) -> str:
+    """Return the VitaLITy paper ID used for OpenAlex-only works."""
+    normalized = normalize_openalex_id(work_id)
+    return f"{OPENALEX_PAPER_ID_PREFIX}{normalized}" if normalized else ""
+
+
+def parse_openalex_paper_id(paper_id: str) -> str:
+    """Return the short OpenAlex id when ``paper_id`` uses the openalex: prefix."""
+    trimmed = (paper_id or "").strip()
+    if not trimmed.startswith(OPENALEX_PAPER_ID_PREFIX):
+        return ""
+    return normalize_openalex_id(trimmed)
 
 
 def reconstruct_abstract(inverted_index: Any) -> Optional[str]:
@@ -358,6 +375,163 @@ def list_citing_works(
         page_offset = 0
 
     return collected
+
+
+def resolve_source_id(
+    venue: str,
+    *,
+    api_key: Optional[str] = None,
+    session: Optional[requests.Session] = None,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> Optional[str]:
+    """Resolve a venue/conference name to an OpenAlex source id, when possible."""
+    query = (venue or "").strip()
+    if not query:
+        return None
+    payload = _get_json(
+        "/sources",
+        params={"search": query, "per-page": 5},
+        api_key=api_key,
+        session=session,
+        timeout=timeout,
+    )
+    results = payload.get("results") if isinstance(payload, Mapping) else None
+    if not isinstance(results, list) or not results:
+        return None
+
+    needle = query.casefold()
+    ranked: list[tuple[int, str]] = []
+    for raw in results:
+        if not isinstance(raw, Mapping):
+            continue
+        source_id = normalize_openalex_id(str(raw.get("id") or ""))
+        name = str(raw.get("display_name") or "")
+        if not source_id or not name:
+            continue
+        lowered = name.casefold()
+        score = 0
+        if lowered == needle:
+            score = 3
+        elif needle in lowered:
+            score = 2
+        elif any(token and token in lowered for token in needle.split()):
+            score = 1
+        if score:
+            ranked.append((score, source_id))
+    if not ranked:
+        first = results[0]
+        if isinstance(first, Mapping):
+            return normalize_openalex_id(str(first.get("id") or "")) or None
+        return None
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[0][1]
+
+
+def search_works(
+    query: str = "",
+    *,
+    year_min: Optional[int] = None,
+    year_max: Optional[int] = None,
+    source_id: Optional[str] = None,
+    limit: int = 20,
+    api_key: Optional[str] = None,
+    session: Optional[requests.Session] = None,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    """Search OpenAlex works, preserving API relevance order when ``query`` is set."""
+    safe_limit = min(max(int(limit or 20), 1), 50)
+    filters: list[str] = []
+    normalized_source = normalize_openalex_id(source_id or "")
+    if normalized_source:
+        filters.append(f"primary_location.source.id:{normalized_source}")
+    if isinstance(year_min, int) and isinstance(year_max, int):
+        if year_min == year_max:
+            filters.append(f"publication_year:{year_min}")
+        else:
+            low, high = sorted((year_min, year_max))
+            filters.append(f"publication_year:{low}-{high}")
+    elif isinstance(year_min, int):
+        filters.append(f"from_publication_date:{year_min}-01-01")
+    elif isinstance(year_max, int):
+        filters.append(f"to_publication_date:{year_max}-12-31")
+
+    params: dict[str, Any] = {
+        "per-page": safe_limit,
+        "select": WORK_SUMMARY_SELECT,
+    }
+    trimmed_query = (query or "").strip()
+    if trimmed_query:
+        params["search"] = trimmed_query
+    if filters:
+        params["filter"] = ",".join(filters)
+    if not trimmed_query and not filters:
+        return []
+
+    payload = _get_json(
+        "/works",
+        params=params,
+        api_key=api_key,
+        session=session,
+        timeout=timeout,
+    )
+    results = payload.get("results") if isinstance(payload, Mapping) else None
+    if not isinstance(results, list):
+        return []
+
+    papers: list[dict[str, Any]] = []
+    for raw in results:
+        if not isinstance(raw, Mapping):
+            continue
+        summary = work_to_paper(raw)
+        if summary is not None:
+            papers.append(summary)
+        if len(papers) >= safe_limit:
+            break
+    return papers
+
+
+def get_works_by_ids(
+    work_ids: Sequence[str],
+    *,
+    api_key: Optional[str] = None,
+    session: Optional[requests.Session] = None,
+    timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> dict[str, dict[str, Any]]:
+    """Batch-fetch OpenAlex works keyed by short OpenAlex id."""
+    ids = [
+        normalize_openalex_id(item)
+        for item in work_ids
+        if normalize_openalex_id(item)
+    ]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return {}
+
+    works_by_id: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(ids), REFERENCE_BATCH_SIZE):
+        chunk = ids[start : start + REFERENCE_BATCH_SIZE]
+        filter_value = "openalex:" + "|".join(chunk)
+        payload = _get_json(
+            "/works",
+            params={
+                "filter": filter_value,
+                "per-page": min(MAX_PER_PAGE, len(chunk)),
+                "select": WORK_SUMMARY_SELECT,
+            },
+            api_key=api_key,
+            session=session,
+            timeout=timeout,
+        )
+        results = payload.get("results") if isinstance(payload, Mapping) else None
+        if not isinstance(results, list):
+            continue
+        for raw in results:
+            if not isinstance(raw, Mapping):
+                continue
+            summary = work_to_paper(raw)
+            if summary is not None:
+                works_by_id[str(summary["openalex_id"])] = summary
+    return works_by_id
 
 
 def _bounded_limit(limit: int) -> int:

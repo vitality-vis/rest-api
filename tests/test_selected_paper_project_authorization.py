@@ -88,6 +88,62 @@ def test_public_corpus_only_paper_remains_selectable_across_projects(monkeypatch
         assert resolved[0].library_paper is None
 
 
+def test_selected_openalex_ids_hydrate_as_metadata_only(monkeypatch):
+    monkeypatch.setattr(
+        "service.paper_registry.get_user_papers_by_ids", lambda **_kwargs: []
+    )
+    monkeypatch.setattr(
+        "service.paper_registry._catalog_metadata_by_id",
+        lambda paper_ids: {
+            paper_id: {"ID": paper_id, "Title": "Public", "Abstract": "Corpus"}
+            for paper_id in paper_ids
+            if not paper_id.startswith("openalex:")
+        },
+    )
+    monkeypatch.setattr(
+        "service.openalex_papers.resolve_openalex_api_papers",
+        lambda paper_ids: {
+            paper_id: {
+                "ID": paper_id,
+                "Title": "External",
+                "Abstract": "From OpenAlex",
+            }
+            for paper_id in paper_ids
+        },
+    )
+
+    resolved = resolve_selected_papers(
+        user_id="user-1",
+        paper_ids=["corpus-1", "openalex:W1"],
+    )
+    assert [paper.paper_id for paper in resolved] == ["corpus-1", "openalex:W1"]
+    assert resolved[0].origin == "corpus"
+    assert resolved[1].origin == "openalex"
+    assert resolved[1].library_paper is None
+    assert resolved[1].metadata["Title"] == "External"
+
+
+def test_selected_openalex_provider_error_maps_to_resolution_error(monkeypatch):
+    from service.openalex_papers import OpenAlexPapersProviderError
+
+    monkeypatch.setattr(
+        "service.paper_registry.get_user_papers_by_ids", lambda **_kwargs: []
+    )
+    monkeypatch.setattr(
+        "service.paper_registry._catalog_metadata_by_id",
+        lambda _paper_ids: {},
+    )
+    monkeypatch.setattr(
+        "service.openalex_papers.resolve_openalex_api_papers",
+        lambda _paper_ids: (_ for _ in ()).throw(
+            OpenAlexPapersProviderError("bad request")
+        ),
+    )
+
+    with pytest.raises(LibraryPaperResolutionError, match="OpenAlex paper metadata"):
+        resolve_selected_papers(user_id="user-1", paper_ids=["openalex:W1"])
+
+
 def test_membership_persistence_error_fails_closed(monkeypatch):
     _install_library(monkeypatch)
 

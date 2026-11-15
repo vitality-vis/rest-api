@@ -466,5 +466,5 @@ def _evidence_instruction(
         scope += " Disclose this limited evidence scope in the answer."
     return (
         f"{scope} Generate the answer yourself from these records. "
-        "Cite factual paper claims as [[ID:paper_id]] using only supplied IDs."
+        "Cite factual paper claims as [[ID:paper_id]] using only supplied IDs. Never use [[doi:…]] or other bracket citation forms."
     )

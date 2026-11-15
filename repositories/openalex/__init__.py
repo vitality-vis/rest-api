@@ -1,31 +1,43 @@
 """OpenAlex repository package."""
 
 from .client import (
+    OPENALEX_PAPER_ID_PREFIX,
     OpenAlexConfigurationError,
     OpenAlexError,
     OpenAlexTransientError,
     get_openalex_api_key,
+    get_works_by_ids,
     list_citing_works,
     list_referenced_works,
     normalize_doi,
     normalize_openalex_id,
+    openalex_paper_id,
+    parse_openalex_paper_id,
     reconstruct_abstract,
+    resolve_source_id,
     resolve_work_by_doi,
+    search_works,
     summarize_work,
     work_to_paper,
 )
 
 __all__ = [
+    "OPENALEX_PAPER_ID_PREFIX",
     "OpenAlexConfigurationError",
     "OpenAlexError",
     "OpenAlexTransientError",
     "get_openalex_api_key",
+    "get_works_by_ids",
     "list_citing_works",
     "list_referenced_works",
     "normalize_doi",
     "normalize_openalex_id",
+    "openalex_paper_id",
+    "parse_openalex_paper_id",
     "reconstruct_abstract",
+    "resolve_source_id",
     "resolve_work_by_doi",
+    "search_works",
     "summarize_work",
     "work_to_paper",
 ]

@@ -114,7 +114,7 @@ def test_research_instructions_favor_natural_curated_answers():
     assert "private working evidence" in instructions
     assert "UI only shows papers after `present_papers`" in instructions
     assert "Reformulate, broaden, or narrow queries" in instructions
-    assert "Generate the final answer yourself" in instructions
+    assert "Write the final answer yourself" in instructions
     summarize_skill = (
         Path(__file__).parents[1]
         / "app/codex/agent/skills/summarize-selected-papers/SKILL.md"
@@ -122,8 +122,13 @@ def test_research_instructions_favor_natural_curated_answers():
     assert "adaptively" in summarize_skill
     assert "do not summarize papers one by one" in summarize_skill
     assert "Do not force methods, findings, and differences" in summarize_skill
-    assert "use web search" in instructions
-    assert "say they were added to the library" in instructions
+    assert "search_openalex" in instructions
+    assert "ordered best-first" in instructions
+    assert "claim they were added to the library" in instructions
+    assert "VitaLITy corpus coverage" in instructions
+    assert "`UIST`" in instructions
+    assert "`CSCW`" in instructions
+    assert "[[ID:paper_id]]" in instructions
 
 
 def test_search_tool_describes_results_as_private_working_evidence():
@@ -137,7 +142,7 @@ def test_search_tool_describes_results_as_private_working_evidence():
 
 
 def test_codex_thread_schema_invalidates_old_research_instructions():
-    assert _THREAD_SCHEMA_VERSION == "research-v10"
+    assert _THREAD_SCHEMA_VERSION == "research-v12"
 
 
 def test_turn_text_bounds_large_selection_ids():
@@ -696,7 +701,7 @@ def test_find_similar_tool_requires_trusted_selection(monkeypatch):
     assert "Select or pin" in result["contentItems"][0]["text"]
 
 
-def test_selected_citations_add_only_corpus_matches_to_candidates(monkeypatch):
+def test_selected_citations_add_corpus_and_openalex_candidates(monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -711,7 +716,13 @@ def test_selected_citations_add_only_corpus_matches_to_candidates(monkeypatch):
             "references": {
                 "papers": [
                     {"paper_id": "related-1", "in_corpus": True, "title": "Corpus"},
-                    {"in_corpus": False, "title": "External", "doi": "10.ext/1"},
+                    {
+                        "paper_id": "openalex:W99",
+                        "in_corpus": False,
+                        "title": "External",
+                        "doi": "10.ext/1",
+                        "openalex_id": "W99",
+                    },
                 ]
             },
             "cited_by": {"papers": []},
@@ -731,7 +742,51 @@ def test_selected_citations_add_only_corpus_matches_to_candidates(monkeypatch):
     payload = json.loads(result["contentItems"][0]["text"])
     assert result["success"] is True
     assert len(payload["sources"][0]["references"]) == 2
-    assert set(candidates) == {"related-1"}
+    assert set(candidates) == {"related-1", "openalex:W99"}
+
+
+def test_search_openalex_prefers_corpus_ids_and_keeps_relevance_order(monkeypatch):
+    monkeypatch.setattr(
+        "service.openalex_papers.search_openalex_papers",
+        lambda **_kwargs: {
+            "query": "steerable chatbots",
+            "venue": "UIST",
+            "venue_source_id": "S1",
+            "papers": [
+                {
+                    "paper_id": "corpus-1",
+                    "in_corpus": True,
+                    "title": "In corpus",
+                    "openalex_id": "W1",
+                },
+                {
+                    "paper_id": "openalex:W2",
+                    "in_corpus": False,
+                    "title": "External only",
+                    "openalex_id": "W2",
+                },
+            ],
+        },
+    )
+    candidates: dict[str, dict[str, object]] = {}
+    result = execute_tool(
+        user_id="user-1",
+        selected_paper_ids=[],
+        effort="low",
+        call_id="openalex-1",
+        tool="search_openalex",
+        arguments={"query": "steerable chatbots", "venue": "UIST", "year_min": 2026},
+        emit=lambda _event: None,
+        candidates=candidates,
+    )
+    payload = json.loads(result["contentItems"][0]["text"])
+    assert result["success"] is True
+    assert [paper["paper_id"] for paper in payload["papers"]] == [
+        "corpus-1",
+        "openalex:W2",
+    ]
+    assert set(candidates) == {"corpus-1", "openalex:W2"}
+    assert candidates["corpus-1"]["in_corpus"] is True
 
 
 def test_reasoning_lifecycle_emits_activity_without_private_content():
