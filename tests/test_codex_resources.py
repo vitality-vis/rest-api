@@ -8,8 +8,9 @@ from app.codex.resources import install_managed_skills, load_developer_instructi
 def test_instructions_are_loaded_from_versioned_markdown():
     instructions = load_developer_instructions()
 
-    assert "VitaLITy's collaborative research assistant" in instructions
+    assert "VitaLITy's research assistant" in instructions
     assert "summarize-selected-papers" in instructions
+    assert "Preloaded selected-paper evidence" in instructions
 
 
 def test_managed_skill_install_is_portable_and_preserves_other_skills(tmp_path):

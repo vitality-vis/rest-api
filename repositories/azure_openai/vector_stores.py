@@ -152,6 +152,61 @@ def poll_file_until_terminal(
     raise AzureVectorStoresTransientError("Vector Store file indexing did not finish in time")
 
 
+def search_vector_store(
+    *,
+    vector_store_id: str,
+    query: str,
+    max_num_results: int = 10,
+    filters: dict[str, Any] | None = None,
+    rewrite_query: bool | None = None,
+    settings: AzureVectorStoresSettings | None = None,
+) -> dict[str, Any]:
+    """Search one Vector Store and return Azure's raw results page.
+
+    Azure attribute filters are still unreliable on some resources; callers that
+    need paper-level scope should post-filter by ``file_id`` allowlist.
+    """
+    if not vector_store_id or not query.strip():
+        raise AzureVectorStoresError("Vector Store id and query are required")
+    limit = min(max(int(max_num_results), 1), 50)
+    payload: dict[str, Any] = {"query": query.strip(), "max_num_results": limit}
+    if filters is not None:
+        payload["filters"] = filters
+    if rewrite_query is not None:
+        payload["rewrite_query"] = rewrite_query
+    return _request_json(
+        "POST",
+        f"/openai/v1/vector_stores/{vector_store_id}/search",
+        json=payload,
+        settings=settings,
+    )
+
+
+def get_vector_store_file_content(
+    *,
+    vector_store_id: str,
+    file_id: str,
+    after: str | None = None,
+    limit: int | None = None,
+    settings: AzureVectorStoresSettings | None = None,
+) -> dict[str, Any]:
+    """Return one page of parsed Vector Store file content."""
+    if not vector_store_id or not file_id:
+        raise AzureVectorStoresError("Vector Store id and file id are required")
+    params: dict[str, Any] = {"api-version": API_VERSION}
+    if after:
+        params["after"] = after
+    if limit is not None:
+        params["limit"] = min(max(int(limit), 1), 100)
+    resolved = settings or get_azure_vector_stores_settings()
+    return _request_json_with_params(
+        "GET",
+        f"/openai/v1/vector_stores/{vector_store_id}/files/{file_id}/content",
+        params=params,
+        settings=resolved,
+    )
+
+
 def create_file_search_response(
     *,
     input_text: str,
@@ -274,11 +329,29 @@ def _request_json(
     **kwargs: Any,
 ) -> dict[str, Any]:
     resolved = settings or get_azure_vector_stores_settings()
+    return _request_json_with_params(
+        method,
+        path,
+        params={"api-version": resolved.api_version},
+        settings=resolved,
+        **kwargs,
+    )
+
+
+def _request_json_with_params(
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any],
+    settings: AzureVectorStoresSettings | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    resolved = settings or get_azure_vector_stores_settings()
     try:
         response = requests.request(
             method,
             f"{resolved.endpoint}{path}",
-            params={"api-version": resolved.api_version},
+            params=params,
             headers={"api-key": resolved.api_key, "Content-Type": "application/json"},
             timeout=resolved.timeout_seconds,
             **kwargs,
@@ -332,8 +405,10 @@ __all__ = [
     "detach_file",
     "get_azure_vector_stores_settings",
     "get_vector_store_file",
+    "get_vector_store_file_content",
     "poll_file_until_terminal",
     "response_file_citation_annotations",
     "response_file_citations",
     "response_output_text",
+    "search_vector_store",
 ]

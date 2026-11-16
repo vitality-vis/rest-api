@@ -5,21 +5,23 @@ description: Summarizes the user's current paper selection adaptively. Use when 
 
 # Summarize selected papers
 
-Use the selected-paper evidence tools and generate the final answer yourself. Lead with the substantive summary, not a description of the workflow or tools you are about to use. Do not announce that you are applying a summarization workflow, mapping the scope, or retrieving evidence.
+Lead with the useful summary. Do not narrate the workflow or tools.
+
+## Length and shape (default)
+
+Keep the answer **short by default**—about half a screen unless the user asks for more.
+
+- **Thematic overview** (default for roughly 9+ papers, and fine for smaller sets): a few short paragraphs or bullets on shared themes, contrasts, and useful takeaways. Cite a handful of representative papers as `[[ID:…]]`. **Do not** write one section per paper.
+- **Paper-by-paper** only when the user explicitly asks for it (e.g. 逐篇 / each paper / one by one).
+- Roughly 2–8 papers: still prefer a compact synthesis; mention individuals only where they matter.
+- More than roughly 30 papers: landscape of major themes only; do not walk the list.
+
+Do not pad with methods/findings/limitations templates or a generic closing offer.
 
 ## Evidence
 
-- If a large selection's scope is unclear, call `inspect_selected_papers` first.
-- Call `get_selected_paper_evidence` with the detail and subset needed for the request.
-- Do not infer paper content from IDs.
-- If evidence is sampled, truncated, or title-only, disclose the limitation briefly.
-- Cite factual paper claims as `[[ID:paper_id]]` using only IDs returned by the tool. Never use `[[doi:…]]` or other bracket citation forms.
-
-## Adapt the summary
-
-- One paper: explain its core question, approach, findings, and useful details.
-- Roughly 2–8 papers: synthesize and compare meaningful connections, differences, and newer developments when supported by evidence.
-- Roughly 9–30 papers: foreground major themes and patterns; use only a few representative papers as examples.
-- More than roughly 30 papers: provide a high-level research landscape centered on major themes; do not summarize papers one by one.
-
-Choose the clearest format for the evidence and request. Do not force methods, findings, and differences into separate sections. Do not make the response longer merely because more papers were selected. Keep the answer focused by default, while allowing useful detail for small selections or explicit user requests.
+- If this turn already includes **Preloaded selected-paper evidence**, use it and **do not** call `inspect_selected_papers` or `get_selected_paper_evidence` unless the preload is insufficient or you need a different subset/group.
+- Otherwise: for a large or unclear selection, `inspect_selected_papers` first; then `get_selected_paper_evidence` once with the needed detail.
+- Default to titles/abstracts. Use `search_library_full_text` or `get_selected_paper_full_text` only when the request needs details abstracts unlikely to provide and full text is available.
+- Do not infer content from IDs. Disclose sampling, truncation, or missing full text briefly.
+- Cite factual claims as `[[ID:paper_id]]` using only IDs from preload or tools. Never `[[doi:…]]` or other bracket forms.

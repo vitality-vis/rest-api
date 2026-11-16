@@ -13,7 +13,13 @@ import pytest
 
 from app.chat.events import AgentAction, PapersResult, TextDelta
 from app.chat.run_control import RunAborted, RunControl
-from app.codex.runner import DEVELOPER_INSTRUCTIONS, _conversation_locks, run
+from app.codex.runner import (
+    DEVELOPER_INSTRUCTIONS,
+    _conversation_locks,
+    _papers_result_for_citation_backfill,
+    citation_ids_from_text,
+    run,
+)
 from app.codex.threads import _THREAD_SCHEMA_VERSION, get_thread_id, put_thread_id
 from app.codex.tools import DYNAMIC_TOOLS, execute_tool
 
@@ -120,10 +126,15 @@ def test_research_instructions_favor_natural_curated_answers():
         / "app/codex/agent/skills/summarize-selected-papers/SKILL.md"
     ).read_text(encoding="utf-8")
     assert "adaptively" in summarize_skill
-    assert "do not summarize papers one by one" in summarize_skill
-    assert "Do not force methods, findings, and differences" in summarize_skill
+    assert "one section per paper" in summarize_skill
+    assert "Do not pad with methods/findings/limitations templates" in summarize_skill
     assert "search_openalex" in instructions
     assert "ordered best-first" in instructions
+    assert "after each useful search" in instructions
+    assert "later calls append" in instructions or "append/dedupe" in instructions
+    assert "must also appear in the accumulated presented list" in instructions
+    assert "Do not present every hit by default" not in instructions
+    assert "Cap is 20 IDs per call" not in instructions
     assert "claim they were added to the library" in instructions
     assert "VitaLITy corpus coverage" in instructions
     assert "`UIST`" in instructions
@@ -142,7 +153,7 @@ def test_search_tool_describes_results_as_private_working_evidence():
 
 
 def test_codex_thread_schema_invalidates_old_research_instructions():
-    assert _THREAD_SCHEMA_VERSION == "research-v12"
+    assert _THREAD_SCHEMA_VERSION == "research-v16"
 
 
 def test_turn_text_bounds_large_selection_ids():
@@ -151,12 +162,48 @@ def test_turn_text_bounds_large_selection_ids():
     request = SimpleNamespace(
         text="Summarize these papers",
         selected_paper_ids=[f"private-paper-{index}" for index in range(500)],
+        user_id="user-1",
+        project_id="project-1",
     )
     rendered = _turn_text(request, history=[])
 
     assert "Current paper selection: 500 unique papers" in rendered
     assert "private-paper-0" not in rendered
-    assert "selected-paper tools" in rendered
+    assert "inspect_selected_papers" in rendered
+    assert "Preloaded selected-paper evidence" not in rendered
+
+
+def test_turn_text_preloads_small_selection_evidence(monkeypatch):
+    from app.codex.runner import _turn_text
+
+    def fake_evidence(**kwargs):
+        assert kwargs["request"].detail_level == "abstracts"
+        return {
+            "selected_count": 2,
+            "returned_count": 2,
+            "papers": [
+                {"paper_id": "paper-1", "title": "One", "abstract": "A"},
+                {"paper_id": "paper-2", "title": "Two", "abstract": "B"},
+            ],
+        }
+
+    monkeypatch.setattr(
+        "service.selected_paper_tool.get_selected_paper_evidence", fake_evidence
+    )
+    request = SimpleNamespace(
+        text="帮我总结一下这两篇论文。",
+        selected_paper_ids=["paper-1", "paper-2"],
+        selected_paper_groups={"library": ["paper-1", "paper-2"]},
+        user_id="user-1",
+        project_id="project-1",
+    )
+    rendered = _turn_text(request, history=[])
+
+    assert "Preloaded selected-paper evidence" in rendered
+    assert "answer directly" in rendered
+    assert "paper-1" in rendered
+    assert '"abstract": "A"' in rendered
+    assert "do not call inspect_selected_papers" in rendered
 
 
 def test_codex_runner_returns_selected_paper_evidence(monkeypatch):
@@ -599,6 +646,56 @@ def test_search_tool_emits_ranked_papers(monkeypatch):
     assert papers[1].policy == "agent_curated"
     assert present_result["success"] is True
     assert second_result["success"] is True
+    present_tool = next(tool for tool in DYNAMIC_TOOLS if tool["name"] == "present_papers")
+    assert present_tool["inputSchema"]["properties"]["paper_ids"]["maxItems"] == 100
+    assert "accumulate" in present_tool["description"]
+
+
+def test_citation_backfill_appends_cited_candidates_missing_from_present():
+    assert citation_ids_from_text(
+        "See [[ID:a]] and [[ID:b]] then [[ID:a]] again."
+    ) == ["a", "b"]
+
+    presented: list[str] = ["a"]
+    candidates = {
+        "a": {"paper_id": "a"},
+        "b": {"paper_id": "b"},
+        "c": {"paper_id": "c"},
+    }
+    result = _papers_result_for_citation_backfill(
+        "I recommend [[ID:a]], [[ID:b]], and unknown [[ID:z]].",
+        candidates=candidates,
+        presented_paper_ids=presented,
+        effort="medium",
+    )
+    assert result is not None
+    assert result.ids == ["a", "b"]
+    assert presented == ["a", "b"]
+    assert result.effort == "medium"
+
+    assert (
+        _papers_result_for_citation_backfill(
+            "Only [[ID:a]] again.",
+            candidates=candidates,
+            presented_paper_ids=presented,
+            effort="low",
+        )
+        is None
+    )
+
+
+def test_citation_backfill_presents_cited_papers_when_agent_skipped_present():
+    presented: list[str] = []
+    candidates = {"p1": {"paper_id": "p1"}, "p2": {"paper_id": "p2"}}
+    result = _papers_result_for_citation_backfill(
+        "Top picks: [[ID:p2]] then [[ID:p1]].",
+        candidates=candidates,
+        presented_paper_ids=presented,
+        effort="low",
+    )
+    assert result is not None
+    assert result.ids == ["p2", "p1"]
+    assert presented == ["p2", "p1"]
 
 
 def test_search_tool_overfetches_then_excludes_and_truncates(monkeypatch):

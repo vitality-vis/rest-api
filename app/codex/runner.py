@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -14,9 +15,15 @@ from app.chat.events import AgentAction, PapersResult, TextDelta
 from app.chat.run_control import RunControl
 from app.codex.client import CodexClient, get_shared_client
 from app.codex.threads import drop_thread_id, get_thread_id, put_thread_id
-from app.codex.tools import DYNAMIC_TOOLS, execute_tool
+from app.codex.tools import (
+    DYNAMIC_TOOLS,
+    _PRESENT_PAPERS_TOTAL_CAP,
+    execute_tool,
+)
 
 logger = logging.getLogger(__name__)
+
+_CITATION_RE = re.compile(r"\[\[ID:([^\]\s]+)\]\]")
 
 
 @dataclass
@@ -135,6 +142,13 @@ async def _run_locked(
     try:
         if control is not None:
             control.raise_if_aborted()
+        # Preload may hit Supabase/catalog I/O; keep it off the event loop
+        # (same pattern as execute_tool / history recovery).
+        turn_text = await asyncio.to_thread(
+            _turn_text,
+            request,
+            history=history if not resumed else [],
+        )
         turn = await active.request(
             "turn/start",
             {
@@ -142,9 +156,7 @@ async def _run_locked(
                 "input": [
                     {
                         "type": "text",
-                        "text": _turn_text(
-                            request, history=history if not resumed else []
-                        ),
+                        "text": turn_text,
                     }
                 ],
                 "approvalPolicy": "never",
@@ -156,10 +168,21 @@ async def _run_locked(
             timeout=30,
         )
         turn_id = str(turn["turn"]["id"])
+        answer_chunks: list[str] = []
         async for event in _iter_turn_events(
             active, output, thread_id=thread_id, turn_id=turn_id, control=control
         ):
+            if isinstance(event, TextDelta) and event.text:
+                answer_chunks.append(event.text)
             yield event
+        backfill = _papers_result_for_citation_backfill(
+            "".join(answer_chunks),
+            candidates=candidates,
+            presented_paper_ids=presented_paper_ids,
+            effort=str(request.effort or "low"),
+        )
+        if backfill is not None:
+            yield backfill
         completed = True
         # Publish a fresh mapping only after the turn stream completed normally.
         # Failures, cancellation, or generator close leave no empty mapping.
@@ -260,19 +283,57 @@ def _load_history_for_recovery(request: Any) -> list[dict[str, str]]:
     )
 
 
+# Small selections get abstracts in the turn so summarize/compare can answer
+# without a tool round-trip. Larger selections stay tool-driven.
+_PRELOAD_SELECTED_PAPER_LIMIT = 20
+
+
 def _turn_text(request: Any, *, history: list[dict[str, str]]) -> str:
     sections: list[str] = []
-    selected_count = len({str(item) for item in request.selected_paper_ids or [] if item})
+    selected_ids = list(
+        dict.fromkeys(
+            str(item).strip()
+            for item in (request.selected_paper_ids or [])
+            if str(item).strip()
+        )
+    )
+    selected_count = len(selected_ids)
     if selected_count:
         groups = dict(getattr(request, "selected_paper_groups", None) or {})
         group_summary = ", ".join(
             f"{name}={len(ids)}" for name, ids in groups.items()
         )
-        sections.append(
+        selection_line = (
             f"Current paper selection: {selected_count} unique papers"
-            f"{f' across named groups ({group_summary})' if group_summary else ''}. "
-            "Use the selected-paper tools to inspect IDs and retrieve evidence."
+            f"{f' across named groups ({group_summary})' if group_summary else ''}."
         )
+        preloaded = (
+            _preload_selected_paper_evidence(request, selected_ids)
+            if selected_count <= _PRELOAD_SELECTED_PAPER_LIMIT
+            else None
+        )
+        if preloaded is not None:
+            sections.append(
+                f"{selection_line} Preloaded selected-paper evidence follows. "
+                "If it is enough for the user request, answer directly from it and "
+                "do not call inspect_selected_papers or get_selected_paper_evidence. "
+                "Call those tools only for a different subset/group, more detail, or "
+                "when the preload is insufficient. Use full-text tools only when "
+                "abstracts are clearly not enough and full text is available."
+            )
+            sections.append(preloaded)
+        elif selected_count <= _PRELOAD_SELECTED_PAPER_LIMIT:
+            sections.append(
+                f"{selection_line} "
+                "Use get_selected_paper_evidence to retrieve bounded abstracts, "
+                "then answer. Skip inspect_selected_papers unless the scope is unclear."
+            )
+        else:
+            sections.append(
+                f"{selection_line} "
+                "The selection is large: call inspect_selected_papers first if needed, "
+                "then get_selected_paper_evidence for a bounded sample."
+            )
     if history:
         rendered = [
             f"{item.get('role', 'user')}: {item.get('content', '')}"
@@ -283,6 +344,94 @@ def _turn_text(request: Any, *, history: list[dict[str, str]]) -> str:
             sections.append("Recent conversation:\n" + "\n".join(rendered))
     sections.append(str(request.text or ""))
     return "\n\n".join(sections)
+
+
+def _preload_selected_paper_evidence(
+    request: Any, selected_ids: list[str]
+) -> str | None:
+    """Return compact JSON evidence for small selections, or None on failure."""
+    import json
+
+    from service.selected_paper_tool import (
+        EvidenceRequest,
+        SelectedPaperToolError,
+        get_selected_paper_evidence,
+    )
+
+    try:
+        evidence = get_selected_paper_evidence(
+            user_id=getattr(request, "user_id", None),
+            project_id=getattr(request, "project_id", None),
+            selected_paper_ids=selected_ids,
+            selected_paper_groups=dict(
+                getattr(request, "selected_paper_groups", None) or {}
+            ),
+            request=EvidenceRequest(
+                detail_level="abstracts",
+                limit=min(len(selected_ids), _PRELOAD_SELECTED_PAPER_LIMIT),
+                group="all",
+            ),
+        )
+    except SelectedPaperToolError:
+        return None
+    except Exception:
+        logger.exception("Selected-paper evidence preload failed")
+        return None
+    return (
+        "Preloaded selected-paper evidence (JSON). "
+        "Cite factual claims as [[ID:paper_id]] using only these IDs:\n"
+        f"{json.dumps(evidence, ensure_ascii=False)}"
+    )
+
+
+def citation_ids_from_text(text: str) -> list[str]:
+    """Return unique [[ID:…]] paper IDs in first-seen order."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for match in _CITATION_RE.finditer(text or ""):
+        paper_id = match.group(1).strip()
+        if not paper_id or paper_id in seen:
+            continue
+        seen.add(paper_id)
+        ids.append(paper_id)
+    return ids
+
+
+def _papers_result_for_citation_backfill(
+    text: str,
+    *,
+    candidates: dict[str, dict[str, object]],
+    presented_paper_ids: list[str],
+    effort: str,
+) -> PapersResult | None:
+    """Append cited candidate IDs the agent forgot to present_papers.
+
+    Keeps agent present order first, then appends missing cited IDs in citation
+    order, capped at _PRESENT_PAPERS_TOTAL_CAP. Only IDs from this-turn candidates
+    are accepted (same gate as present_papers).
+    """
+    cited = citation_ids_from_text(text)
+    if not cited:
+        return None
+    cumulative = list(presented_paper_ids)
+    added = False
+    for paper_id in cited:
+        if paper_id in cumulative or paper_id not in candidates:
+            continue
+        if len(cumulative) >= _PRESENT_PAPERS_TOTAL_CAP:
+            break
+        cumulative.append(paper_id)
+        added = True
+    if not added:
+        return None
+    presented_paper_ids[:] = cumulative
+    return PapersResult(
+        ids=list(cumulative),
+        ranked_ids=list(cumulative),
+        policy="agent_curated",
+        effort=effort if effort in {"low", "medium", "high"} else "low",
+        count_known=True,
+    )
 
 
 async def _iter_turn_events(

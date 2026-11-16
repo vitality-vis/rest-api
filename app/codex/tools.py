@@ -18,8 +18,8 @@ DYNAMIC_TOOLS = [
             "Search the VitaLITy paper corpus. Use bm25 for exact terminology, "
             "vector for conceptual questions, and bool for exact phrases or "
             "Boolean expressions. Results are private working evidence and are not "
-            "shown as papers in the user interface; use present_papers to show a "
-            "curated subset."
+            "shown as papers in the user interface; use present_papers to show all "
+            "clearly relevant hits in best-first order (drop only off-topic ones)."
         ),
         "inputSchema": {
             "type": "object",
@@ -82,11 +82,13 @@ DYNAMIC_TOOLS = [
         "type": "function",
         "name": "search_openalex",
         "description": (
-            "Search OpenAlex for literature outside or beyond the VitaLITy corpus, "
-            "including recent conference papers. Prefer search_papers first for "
-            "corpus discovery. Results preserve OpenAlex relevance order. Works "
-            "already in the corpus are returned with corpus paper IDs; others use "
-            "openalex: IDs. Both may be passed to present_papers."
+            "Supplement VitaLITy corpus search with OpenAlex. Always try "
+            "search_papers first. Use this only when the topic/venue is outside "
+            "the corpus, or corpus results are empty/clearly insufficient after "
+            "reformulation—not merely because the user asked for recent years. "
+            "Results preserve OpenAlex relevance order. Works already in the "
+            "corpus are returned with corpus paper IDs; others use openalex: IDs. "
+            "Both may be passed to present_papers."
         ),
         "inputSchema": {
             "type": "object",
@@ -107,10 +109,14 @@ DYNAMIC_TOOLS = [
         "type": "function",
         "name": "present_papers",
         "description": (
-            "Present a curated subset of paper IDs returned by discovery tools in "
-            "this turn (search_papers, find_similar_papers, search_openalex, or "
-            "citations). Pass IDs best-first by relevance to the user question. "
-            "The application shows papers in that order."
+            "Update the Papers list shown in the UI with paper IDs from discovery "
+            "tools in this turn (search_papers, find_similar_papers, search_openalex, "
+            "or citations). Calls accumulate: each call appends new IDs (deduped) and "
+            "the UI refreshes immediately, so call it mid-turn after each useful "
+            "search batch—do not wait until the final answer. Pass IDs best-first by "
+            "relevance within each batch; omit only off-topic or duplicate hits. Do "
+            "not shortlist further among relevant papers. Papers you cite in prose "
+            "must appear in the accumulated list."
         ),
         "inputSchema": {
             "type": "object",
@@ -119,7 +125,7 @@ DYNAMIC_TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
-                    "maxItems": 20,
+                    "maxItems": 100,
                 }
             },
             "required": ["paper_ids"],
@@ -170,6 +176,57 @@ DYNAMIC_TOOLS = [
                     "description": "Named current-selection group such as library or map; use all for the union.",
                 },
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "search_library_full_text",
+        "description": (
+            "Search user-uploaded library PDFs for passages relevant to a query. "
+            "Searches the user's library vector store, then keeps only chunks from "
+            "requested/selected papers that have completed full-text indexing. "
+            "Use when abstracts are insufficient and you have a concrete question. "
+            "Returns evidence chunks only; you write the answer yourself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "paper_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 40,
+                },
+                "group": {
+                    "type": "string",
+                    "description": "Named current-selection group such as library or map; use all for the union.",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_selected_paper_full_text",
+        "description": (
+            "Read bounded parsed full text for one selected paper with an uploaded "
+            "PDF. Use for single-paper close reading when you need contiguous text "
+            "rather than query-retrieved chunks. Paginate with offset when has_more "
+            "is true. Returns evidence only; you write the answer yourself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 40},
+                "max_chars": {"type": "integer", "minimum": 500, "maximum": 24000},
+            },
+            "required": ["paper_id"],
             "additionalProperties": False,
         },
     },
@@ -258,6 +315,22 @@ def execute_tool(
                 selected_paper_ids=selected_paper_ids,
                 selected_paper_groups=selected_paper_groups,
             )
+        elif tool == "search_library_full_text":
+            result = _search_library_full_text(
+                payload,
+                user_id=user_id,
+                project_id=project_id,
+                selected_paper_ids=selected_paper_ids,
+                selected_paper_groups=selected_paper_groups,
+            )
+        elif tool == "get_selected_paper_full_text":
+            result = _get_selected_paper_full_text(
+                payload,
+                user_id=user_id,
+                project_id=project_id,
+                selected_paper_ids=selected_paper_ids,
+                selected_paper_groups=selected_paper_groups,
+            )
         else:
             result = tool_result(f"{tool} is not available.", success=False)
     except Exception as error:
@@ -297,9 +370,9 @@ def _search_papers(
     if mode not in {"bm25", "vector", "bool"}:
         mode = "bm25"
     try:
-        limit = int(payload.get("limit") or 10)
+        limit = int(payload.get("limit") or 20)
     except (TypeError, ValueError):
-        limit = 10
+        limit = 20
     limit = min(max(limit, 1), 20)
     fetch_limit = min(limit * 3, 60)
     try:
@@ -340,9 +413,11 @@ def _search_papers(
                 "mode": mode,
                 "papers": papers,
                 "instruction": (
-                    "Judge relevance from this metadata. Search again only if it "
-                    "would materially improve coverage; call present_papers with a "
-                    "best-first curated subset when you have a useful set to show."
+                    "Judge relevance from this metadata. Call present_papers now "
+                    "with every clearly relevant paper in best-first order (drop "
+                    "only off-topic or duplicate hits)—do not wait until the final "
+                    "answer; later calls append. Search again only if it would "
+                    "materially improve coverage."
                 ),
             },
             ensure_ascii=False,
@@ -490,7 +565,7 @@ def _find_similar_papers(
         "used_seed_count": len(seeds),
         "seed_sampling_policy": policy,
         "papers": papers,
-        "instruction": "Combine these candidates with text search when it improves coverage, then curate with present_papers in best-first relevance order.",
+        "instruction": "Combine these candidates with text search when it improves coverage, then present_papers now with every clearly relevant ID in best-first order (later calls append).",
     }, ensure_ascii=False), success=True)
 
 
@@ -589,9 +664,9 @@ def _search_openalex(
     year_min = _optional_year(payload.get("year_min"))
     year_max = _optional_year(payload.get("year_max"))
     try:
-        limit = min(max(int(payload.get("limit") or 10), 1), 20)
+        limit = min(max(int(payload.get("limit") or 20), 1), 20)
     except (TypeError, ValueError):
-        limit = 10
+        limit = 20
     try:
         found = search_openalex_papers(
             query=query,
@@ -631,14 +706,19 @@ def _search_openalex(
                 "papers": papers,
                 "instruction": (
                     "Results are ordered by OpenAlex relevance. Prefer corpus IDs "
-                    "when in_corpus is true. Call present_papers with a curated "
-                    "best-first subset; do not invent IDs."
+                    "when in_corpus is true. Call present_papers now with every "
+                    "clearly relevant ID in best-first order (later calls append); "
+                    "do not invent IDs."
                 ),
             },
             ensure_ascii=False,
         ),
         success=True,
     )
+
+
+# Soft safety bound for the cumulative Papers list (not a relevance shortlist).
+_PRESENT_PAPERS_TOTAL_CAP = 100
 
 
 def _present_papers(
@@ -664,9 +744,14 @@ def _present_papers(
             success=False,
         )
     cumulative = list(presented_paper_ids or [])
+    truncated: list[str] = []
     for paper_id in accepted:
-        if paper_id not in cumulative:
-            cumulative.append(paper_id)
+        if paper_id in cumulative:
+            continue
+        if len(cumulative) >= _PRESENT_PAPERS_TOTAL_CAP:
+            truncated.append(paper_id)
+            continue
+        cumulative.append(paper_id)
     if presented_paper_ids is not None:
         presented_paper_ids[:] = cumulative
     emit(
@@ -681,9 +766,13 @@ def _present_papers(
     return tool_result(
         json.dumps(
             {
-                "presented_paper_ids": accepted,
+                "presented_paper_ids": [
+                    paper_id for paper_id in accepted if paper_id in cumulative
+                ],
                 "all_presented_paper_ids": cumulative,
                 "rejected_unknown_ids": rejected,
+                "truncated_over_cap_ids": truncated,
+                "total_cap": _PRESENT_PAPERS_TOTAL_CAP,
             },
             ensure_ascii=False,
         ),
@@ -753,6 +842,81 @@ def _get_selected_paper_evidence(
     return tool_result(json.dumps(evidence, ensure_ascii=False), success=True)
 
 
+def _search_library_full_text(
+    payload: dict[str, Any],
+    *,
+    user_id: str | None,
+    project_id: str | None,
+    selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None,
+) -> dict[str, object]:
+    from service.library_fulltext import (
+        LibraryFulltextError,
+        LibrarySearchRequest,
+        search_library_full_text,
+    )
+
+    requested_ids = payload.get("paper_ids")
+    paper_ids = (
+        [str(item).strip() for item in requested_ids if str(item).strip()]
+        if isinstance(requested_ids, list)
+        else None
+    )
+    try:
+        evidence = search_library_full_text(
+            user_id=user_id,
+            project_id=project_id,
+            selected_paper_ids=selected_paper_ids,
+            selected_paper_groups=selected_paper_groups,
+            request=LibrarySearchRequest(
+                query=str(payload.get("query") or ""),
+                paper_ids=paper_ids,
+                group=str(payload.get("group") or "all"),
+                limit=payload.get("limit"),
+            ),
+        )
+    except LibraryFulltextError as error:
+        return tool_result(str(error), success=False)
+    return tool_result(json.dumps(evidence, ensure_ascii=False), success=True)
+
+
+def _get_selected_paper_full_text(
+    payload: dict[str, Any],
+    *,
+    user_id: str | None,
+    project_id: str | None,
+    selected_paper_ids: list[str],
+    selected_paper_groups: dict[str, list[str]] | None,
+) -> dict[str, object]:
+    from service.library_fulltext import (
+        LibraryContentRequest,
+        LibraryFulltextError,
+        get_selected_paper_full_text,
+    )
+
+    try:
+        evidence = get_selected_paper_full_text(
+            user_id=user_id,
+            project_id=project_id,
+            selected_paper_ids=selected_paper_ids,
+            selected_paper_groups=selected_paper_groups,
+            request=LibraryContentRequest(
+                paper_id=str(payload.get("paper_id") or ""),
+                offset=int(payload.get("offset") or 0),
+                limit=payload.get("limit"),
+                max_chars=payload.get("max_chars"),
+            ),
+        )
+    except (LibraryFulltextError, TypeError, ValueError) as error:
+        message = (
+            str(error)
+            if isinstance(error, LibraryFulltextError)
+            else "Invalid full-text request."
+        )
+        return tool_result(message, success=False)
+    return tool_result(json.dumps(evidence, ensure_ascii=False), success=True)
+
+
 def _arguments(value: object) -> dict[str, Any]:
     if isinstance(value, str):
         try:
@@ -796,6 +960,15 @@ def _started_action_data(
             "paperCount": len(paper_ids),
             "detailLevel": str(payload.get("detail_level") or "auto"),
         }
+    if tool == "search_library_full_text":
+        requested = payload.get("paper_ids")
+        paper_ids = requested if isinstance(requested, list) else selected_paper_ids
+        return {
+            "query": str(payload.get("query") or "").strip()[:200],
+            "paperCount": len(paper_ids),
+        }
+    if tool == "get_selected_paper_full_text":
+        return {"paperId": str(payload.get("paper_id") or "").strip()[:120]}
     return {}
 
 
@@ -837,6 +1010,23 @@ def _completed_action_data(
         if isinstance(payload.get("detailed_count"), int):
             data["detailedCount"] = payload["detailed_count"]
         return data
+    if tool == "search_library_full_text":
+        data = {}
+        if isinstance(payload.get("chunk_count"), int):
+            data["chunkCount"] = payload["chunk_count"]
+        searched = payload.get("searched_paper_ids")
+        if isinstance(searched, list):
+            data["paperCount"] = len(searched)
+        return data
+    if tool == "get_selected_paper_full_text":
+        data = {}
+        if isinstance(payload.get("paper_id"), str):
+            data["paperId"] = payload["paper_id"]
+        if isinstance(payload.get("chars_returned"), int):
+            data["charsReturned"] = payload["chars_returned"]
+        if isinstance(payload.get("has_more"), bool):
+            data["hasMore"] = payload["has_more"]
+        return data
     return {}
 
 
@@ -855,6 +1045,10 @@ def _public_action(tool: str) -> str:
         return "inspect.selected_papers"
     if tool == "get_selected_paper_evidence":
         return "get.selected_paper_evidence"
+    if tool == "search_library_full_text":
+        return "search.library_full_text"
+    if tool == "get_selected_paper_full_text":
+        return "get.selected_paper_full_text"
     return "tool"
 
 
