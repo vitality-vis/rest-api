@@ -3,6 +3,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 
 from repositories.supabase.client import SupabaseSettings
 from repositories.supabase.projects_repository import (
@@ -104,3 +105,29 @@ def test_get_project_absent_is_not_found():
         pytest.raises(ProjectNotFoundError),
     ):
         get_project(user_id="user-1", project_id="project-1")
+
+
+def test_get_project_retries_transient_network_error():
+    project = {"id": "project-1", "user_id": "user-1", "is_default": False}
+    with (
+        patch("repositories.supabase.projects_repository.get_supabase_settings", return_value=SETTINGS),
+        patch(
+            "repositories.supabase.projects_repository.requests.request",
+            side_effect=[requests.ConnectionError("boom"), response(200, [project])],
+        ) as request,
+    ):
+        assert get_project(user_id="user-1", project_id="project-1") == project
+    assert request.call_count == 2
+
+
+def test_get_project_raises_after_exhausted_network_retries():
+    with (
+        patch("repositories.supabase.projects_repository.get_supabase_settings", return_value=SETTINGS),
+        patch(
+            "repositories.supabase.projects_repository.requests.request",
+            side_effect=requests.Timeout("slow"),
+        ) as request,
+        pytest.raises(ProjectsPersistenceError, match="Could not reach the projects database"),
+    ):
+        get_project(user_id="user-1", project_id="project-1")
+    assert request.call_count == 2

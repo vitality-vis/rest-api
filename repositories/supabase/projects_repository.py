@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+
 import requests
 
 from repositories.supabase.client import get_supabase_settings, service_role_headers
 
 DATABASE_REQUEST_TIMEOUT_SECONDS = 10
+DATABASE_REQUEST_ATTEMPTS = 2
 PROJECT_COLUMNS = "id,user_id,name,description,is_default,created_at,updated_at"
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectsPersistenceError(RuntimeError):
@@ -131,15 +136,28 @@ def _rpc(name: str, access_token: str, payload: dict[str, object]) -> dict[str, 
 
 def _request(method: str, path: str, **kwargs) -> requests.Response:
     settings = get_supabase_settings()
-    try:
-        return requests.request(
-            method,
-            f"{settings.url}/rest/v1/{path}",
-            timeout=DATABASE_REQUEST_TIMEOUT_SECONDS,
-            **kwargs,
-        )
-    except requests.RequestException as error:
-        raise ProjectsPersistenceError("Could not reach the projects database") from error
+    url = f"{settings.url}/rest/v1/{path}"
+    last_error: requests.RequestException | None = None
+    for attempt in range(1, DATABASE_REQUEST_ATTEMPTS + 1):
+        try:
+            return requests.request(
+                method,
+                url,
+                timeout=DATABASE_REQUEST_TIMEOUT_SECONDS,
+                **kwargs,
+            )
+        except requests.RequestException as error:
+            last_error = error
+            logger.warning(
+                "Projects database %s %s failed (attempt %s/%s): %s",
+                method,
+                path,
+                attempt,
+                DATABASE_REQUEST_ATTEMPTS,
+                error,
+            )
+    assert last_error is not None
+    raise ProjectsPersistenceError("Could not reach the projects database") from last_error
 
 
 def _raise_rpc_error(response: requests.Response) -> None:
