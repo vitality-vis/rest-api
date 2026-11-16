@@ -244,14 +244,18 @@ def _hydrate_openalex_api_papers(
 
 
 def resolve_papers(
-    *, user_id: str | None, paper_ids: list[str]
+    *,
+    user_id: str | None,
+    paper_ids: list[str],
+    hydrate_openalex: bool = True,
 ) -> list[dict[str, object]]:
     """Resolve public corpus papers and, when authorized, user-library papers.
 
     Imported ``user:`` IDs are only resolved from the current user's library;
     they are never sent to the corpus.  Other IDs resolve from the corpus when
-    they are absent from that library. ``openalex:`` IDs hydrate from OpenAlex
-    after library/corpus lookup misses.
+    they are absent from that library. When ``hydrate_openalex`` is true,
+    ``openalex:`` IDs hydrate from OpenAlex after library/corpus lookup misses;
+    otherwise unresolved IDs are omitted.
     """
     requested_ids = _unique_ids(paper_ids)
     resolved_library_by_id, corpus_by_id = _resolved_sources_by_id(
@@ -259,12 +263,16 @@ def resolve_papers(
         paper_ids=requested_ids,
         library_unavailable_message="User library is temporarily unavailable.",
     )
-    openalex_by_id = _hydrate_openalex_api_papers(
-        [
-            paper_id
-            for paper_id in requested_ids
-            if paper_id not in resolved_library_by_id and paper_id not in corpus_by_id
-        ]
+    openalex_by_id = (
+        _hydrate_openalex_api_papers(
+            [
+                paper_id
+                for paper_id in requested_ids
+                if paper_id not in resolved_library_by_id and paper_id not in corpus_by_id
+            ]
+        )
+        if hydrate_openalex
+        else {}
     )
 
     return [

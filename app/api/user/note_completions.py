@@ -12,10 +12,13 @@ from repositories.supabase.note_completion_repository import (
 )
 from service.note_completion import NoteCompletionError, complete_note, sample_project_paper_titles
 from service.note_completion_rate_limit import note_completion_rate_limiter
+from service.paper_registry import LibraryPaperResolutionError, resolve_papers
 
 note_completions_bp = Blueprint("note_completions", __name__)
 MAX_CONTEXT_BEFORE = 2_000
 MAX_CONTEXT_AFTER = 500
+MAX_CITED_PAPERS = 8
+MAX_CITED_PAPER_ID_CHARS = 128
 
 
 def _authenticate() -> tuple[str | None, str | None, Response | None]:
@@ -35,7 +38,32 @@ def _authenticate() -> tuple[str | None, str | None, Response | None]:
         return None, None, Response("Unauthorized", status=401, mimetype="text/plain")
 
 
-def _payload(value: object) -> tuple[str, str, str]:
+def _cited_paper_ids(value: dict) -> list[str]:
+    if "cited_paper_ids" not in value:
+        return []
+    raw = value.get("cited_paper_ids")
+    if not isinstance(raw, list):
+        raise ValueError("cited_paper_ids must be an array")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("cited_paper_ids must contain strings")
+        paper_id = item.strip()
+        if not paper_id or paper_id in seen:
+            continue
+        if len(paper_id) > MAX_CITED_PAPER_ID_CHARS:
+            raise ValueError(
+                f"cited_paper_ids entries must be at most {MAX_CITED_PAPER_ID_CHARS} characters"
+            )
+        seen.add(paper_id)
+        ids.append(paper_id)
+        if len(ids) >= MAX_CITED_PAPERS:
+            break
+    return ids
+
+
+def _payload(value: object) -> tuple[str, str, str, list[str]]:
     if not isinstance(value, dict):
         raise ValueError("JSON body must be an object")
     before = value.get("context_before_cursor")
@@ -51,7 +79,27 @@ def _payload(value: object) -> tuple[str, str, str]:
         raise ValueError(f"context_before_cursor exceeds {MAX_CONTEXT_BEFORE} characters")
     if len(after) > MAX_CONTEXT_AFTER:
         raise ValueError(f"context_after_cursor exceeds {MAX_CONTEXT_AFTER} characters")
-    return before, after, request_id.strip()
+    return before, after, request_id.strip(), _cited_paper_ids(value)
+
+
+def _resolve_paragraph_citations(*, user_id: str, paper_ids: list[str]) -> list[dict[str, object]]:
+    if not paper_ids:
+        return []
+    try:
+        # Skip OpenAlex: note completion is latency-sensitive; missing IDs stay omitted.
+        return resolve_papers(
+            user_id=user_id, paper_ids=paper_ids, hydrate_openalex=False
+        )
+    except LibraryPaperResolutionError as resolution_error:
+        current_app.logger.warning(
+            "Note completion citation resolve failed: %s", resolution_error
+        )
+        return []
+    except Exception as unexpected_error:
+        current_app.logger.warning(
+            "Note completion citation resolve unexpected failure: %s", unexpected_error
+        )
+        return []
 
 
 @note_completions_bp.route("/projects/<uuid:project_id>/notes/completions", methods=["POST"])
@@ -66,7 +114,9 @@ def create_note_completion(project_id):
     auth_completed = time.perf_counter()
     project_id_text = str(project_id)
     try:
-        before, after, client_request_id = _payload(request.get_json(silent=True))
+        before, after, client_request_id, cited_paper_ids = _payload(
+            request.get_json(silent=True)
+        )
     except ValueError as error_value:
         return jsonify({"error": str(error_value)}), 400
 
@@ -84,11 +134,15 @@ def create_note_completion(project_id):
             user_id=user_id, access_token=access_token, project_id=project_id_text
         )
         library = sample_project_paper_titles(papers)
+        paragraph_citations = _resolve_paragraph_citations(
+            user_id=user_id, paper_ids=cited_paper_ids
+        )
         context_completed = time.perf_counter()
         suggestion, model, model_timing = complete_note(
             context_before_cursor=before,
             context_after_cursor=after,
             library=library,
+            paragraph_citations=paragraph_citations,
         )
     except NoteCompletionProjectNotFoundError:
         return jsonify({"error": "Project not found"}), 404
