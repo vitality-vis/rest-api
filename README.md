@@ -179,6 +179,20 @@ POST /chat/v2
 
 ---
 
+## Database migrations (Supabase)
+
+Run from `rest-api/`. The Supabase CLI defaults to the **local** stack, so always pass `--remote` for the Vitality2 production project.
+
+```bash
+npx supabase login                      # one-time, opens browser
+npx supabase migration list --remote    # see which migrations are pending on remote
+npx supabase db push --remote           # apply pending migrations (production!)
+```
+
+- Fallback if `--remote` is not recognised by your CLI version: use `--linked`.
+- Or paste the SQL file from `supabase/migrations/` into the Supabase Dashboard SQL Editor.
+- Always check `migration list --remote` before `db push`.
+
 ## Project structure
 
 ```
